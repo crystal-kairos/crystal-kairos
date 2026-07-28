@@ -33,6 +33,7 @@ export const createSavingsPlanAction = async (
     bankName: string
     accountNumber: string
     accountName: string
+    productId?: string
   }
 ) => {
   try {
@@ -43,7 +44,21 @@ export const createSavingsPlanAction = async (
       return { success: false, error: 'Unauthorized' }
     }
 
-    const interestRate = getInterestRate(data.savingsType, data.maturity)
+    let interestRate = 0
+    if (data.productId) {
+      const product = await prisma.savingsProduct.findUnique({ where: { id: data.productId } })
+      if (product) {
+        switch (data.maturity) {
+          case SavingsMaturity.ONE_MONTH: interestRate = Number(product.interestRate1Month || 0); break;
+          case SavingsMaturity.THREE_MONTHS: interestRate = Number(product.interestRate3Months || 0); break;
+          case SavingsMaturity.SIX_MONTHS: interestRate = Number(product.interestRate6Months || 0); break;
+          case SavingsMaturity.TWELVE_MONTHS: interestRate = Number(product.interestRate12Months || 0); break;
+        }
+      }
+    } else {
+      // Fallback for older creations
+      interestRate = getInterestRate(data.savingsType, data.maturity)
+    }
     
     // Calculate expected maturity amount
     let totalContribution = data.targetAmount
@@ -67,7 +82,9 @@ export const createSavingsPlanAction = async (
         accountNumber: data.accountNumber,
         accountName: data.accountName,
         expectedMaturityAmount: new Prisma.Decimal(expectedMaturityAmount.toString()),
+        isAnonymousRequest: false,
         status: SavingsStatus.PENDING,
+        productId: data.productId || null,
       },
     })
 

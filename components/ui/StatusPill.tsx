@@ -72,7 +72,7 @@ export const StatusPill = ({ status, className }: StatusPillProps) => {
   return (
     <span
       className={cn(
-        'inline-flex items-center justify-center rounded-full px-2.5 py-0.5 text-xs font-semibold h-[24px] font-sans border-0 select-none tracking-wide transition-colors duration-150',
+        'inline-flex items-center justify-center rounded-full px-2.5 py-0.5 text-xs font-semibold h-6 font-sans border-0 select-none tracking-wide transition-colors duration-150',
         config.bgClass,
         config.textClass,
         className,
