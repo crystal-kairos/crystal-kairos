@@ -19,6 +19,7 @@ import {
   Briefcase,
   Users,
   XCircle,
+  Loader2,
 } from 'lucide-react'
 import Link from 'next/link'
 import { Card, CardContent } from '../ui/card'
@@ -30,9 +31,14 @@ import { Input } from '../ui/input'
 import { Textarea } from '../ui/textarea'
 import { ReceiptDropzone } from '../ui/ReceiptDropzone'
 import { ReceiptLightbox } from '../ui/ReceiptLightbox'
-import { submitLoanRepaymentAction } from '@/models/loans/actions'
+import {
+  submitLoanRepaymentAction,
+  acceptLoanOfferAction,
+  declineLoanOfferAction,
+} from '@/models/loans/actions'
 import { uploadReceiptAction } from '@/models/eajo/actions'
 import { useRouter } from 'next/navigation'
+import { toast } from 'sonner'
 
 interface Transaction {
   id: string
@@ -109,6 +115,42 @@ export const LoanDetailsClient = ({ userId, loan }: LoanDetailsClientProps) => {
   const [notes, setNotes] = useState('')
   const [repayError, setRepayError] = useState<string | null>(null)
   const [repaySuccess, setRepaySuccess] = useState(false)
+
+  // Decline states
+  const [declineOpen, setDeclineOpen] = useState(false)
+  const [declineReason, setDeclineReason] = useState('')
+  const [declineError, setDeclineError] = useState<string | null>(null)
+
+  const handleAcceptOffer = () => {
+    startTransition(async () => {
+      const res = await acceptLoanOfferAction(userId, loan.id)
+      if (res.success) {
+        toast.success('Loan offer accepted successfully!')
+        router.refresh()
+      } else {
+        toast.error(res.error || 'Failed to accept loan offer.')
+      }
+    })
+  }
+
+  const handleDeclineSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!declineReason.trim()) {
+      setDeclineError('Please provide a reason for declining the offer.')
+      return
+    }
+    setDeclineError(null)
+    startTransition(async () => {
+      const res = await declineLoanOfferAction(userId, loan.id, declineReason)
+      if (res.success) {
+        toast.success('Loan offer declined.')
+        setDeclineOpen(false)
+        router.refresh()
+      } else {
+        setDeclineError(res.error || 'Failed to decline loan offer.')
+      }
+    })
+  }
 
   const formatCurrency = (val: number) => {
     return new Intl.NumberFormat('en-NG', {
@@ -252,15 +294,19 @@ export const LoanDetailsClient = ({ userId, loan }: LoanDetailsClientProps) => {
         </div>
       )}
 
-      {loan.status === 'REJECTED' && loan.rejectionReason && (
-        <div className='bg-red-50 border-red-200 text-red-800 p-4 rounded-xl border flex gap-3'>
-          <XCircle className='w-5 h-5 shrink-0 mt-0.5' />
-          <div>
-            <h4 className='font-bold text-sm mb-1'>Application Rejected</h4>
-            <p className='text-xs'>{loan.rejectionReason}</p>
+      {(loan.status === 'REJECTED' || loan.status === 'DECLINED') &&
+        loan.rejectionReason && (
+          <div className='bg-red-50 border-red-200 text-red-800 p-4 rounded-xl border flex gap-3'>
+            <XCircle className='w-5 h-5 shrink-0 mt-0.5' />
+            <div>
+              <h4 className='font-bold text-sm mb-1'>
+                Application{' '}
+                {loan.status === 'DECLINED' ? 'Declined by You' : 'Rejected'}
+              </h4>
+              <p className='text-xs'>{loan.rejectionReason}</p>
+            </div>
           </div>
-        </div>
-      )}
+        )}
 
       {/* Loan Header */}
       <div className='bg-surface-container-lowest border border-outline-variant/10 rounded-xl p-6 md:p-8 relative overflow-hidden'>
@@ -281,18 +327,43 @@ export const LoanDetailsClient = ({ userId, loan }: LoanDetailsClientProps) => {
           </div>
 
           <div className='flex flex-wrap gap-3'>
-            <Button
-              onClick={() => setRepayOpen(true)}
-              disabled={
-                loan.status !== 'ACTIVE' &&
-                loan.status !== 'OVERDUE' &&
-                loan.status !== 'DEFAULTED'
-              }
-              className='cursor-pointer rounded-sm bg-primary text-on-primary hover:bg-primary/95 flex items-center justify-center gap-1.5 h-10 px-5 shadow-sm font-semibold'
-            >
-              <Upload className='w-4 h-4' />
-              <span>Upload Repayment Receipt</span>
-            </Button>
+            {loan.status === 'APPROVED' ? (
+              <>
+                <Button
+                  onClick={() => setDeclineOpen(true)}
+                  variant='outline'
+                  disabled={isPending}
+                  className='rounded-sm h-10 px-5 shadow-sm font-semibold text-error hover:text-error hover:bg-error/10 border-error/20'
+                >
+                  Decline Offer
+                </Button>
+                <Button
+                  onClick={handleAcceptOffer}
+                  disabled={isPending}
+                  className='rounded-sm bg-success text-on-success hover:bg-success-green/90 flex items-center justify-center gap-1.5 h-10 px-5 shadow-sm font-semibold'
+                >
+                  {isPending ? (
+                    <Loader2 className='w-4 h-4 animate-spin' />
+                  ) : (
+                    <CheckCircle className='w-4 h-4' />
+                  )}
+                  <span>Accept Offer</span>
+                </Button>
+              </>
+            ) : (
+              <Button
+                onClick={() => setRepayOpen(true)}
+                disabled={
+                  loan.status !== 'ACTIVE' &&
+                  loan.status !== 'OVERDUE' &&
+                  loan.status !== 'DEFAULTED'
+                }
+                className='cursor-pointer rounded-sm bg-primary text-on-primary hover:bg-primary/95 flex items-center justify-center gap-1.5 h-10 px-5 shadow-sm font-semibold'
+              >
+                <Upload className='w-4 h-4' />
+                <span>Upload Repayment Receipt</span>
+              </Button>
+            )}
           </div>
         </div>
 
@@ -331,7 +402,7 @@ export const LoanDetailsClient = ({ userId, loan }: LoanDetailsClientProps) => {
 
       {/* Loan Metrics Grid */}
       <section className='grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4'>
-        <Card className='border-0 bg-surface-container rounded-md shadow-none p-5 flex flex-col justify-between min-h-[100px]'>
+        <Card className='border-0 bg-surface-container rounded-md shadow-none p-5 flex flex-col justify-between min-h-25'>
           <span className='text-[10px] text-muted-foreground uppercase tracking-wider font-semibold'>
             Approved Principal
           </span>
@@ -340,7 +411,7 @@ export const LoanDetailsClient = ({ userId, loan }: LoanDetailsClientProps) => {
           </span>
         </Card>
 
-        <Card className='border-0 bg-surface-container rounded-md shadow-none p-5 flex flex-col justify-between min-h-[100px]'>
+        <Card className='border-0 bg-surface-container rounded-md shadow-none p-5 flex flex-col justify-between min-h-25'>
           <span className='text-[10px] text-muted-foreground uppercase tracking-wider font-semibold'>
             Monthly Interest Rate
           </span>
@@ -349,7 +420,7 @@ export const LoanDetailsClient = ({ userId, loan }: LoanDetailsClientProps) => {
           </span>
         </Card>
 
-        <Card className='border-0 bg-surface-container rounded-md shadow-none p-5 flex flex-col justify-between min-h-[100px]'>
+        <Card className='border-0 bg-surface-container rounded-md shadow-none p-5 flex flex-col justify-between min-h-25'>
           <span className='text-[10px] text-muted-foreground uppercase tracking-wider font-semibold'>
             Repayment Term
           </span>
@@ -359,7 +430,7 @@ export const LoanDetailsClient = ({ userId, loan }: LoanDetailsClientProps) => {
         </Card>
 
         <Card
-          className={`border-0 rounded-md shadow-none p-5 flex flex-col justify-between min-h-[100px] ${penaltyAmt > 0 ? 'bg-red-50 text-red-800' : 'bg-surface-container'}`}
+          className={`border-0 rounded-md shadow-none p-5 flex flex-col justify-between min-h-25 ${penaltyAmt > 0 ? 'bg-red-50 text-red-800' : 'bg-surface-container'}`}
         >
           <span
             className={`text-[10px] uppercase tracking-wider font-semibold ${penaltyAmt > 0 ? 'text-red-600' : 'text-muted-foreground'}`}
@@ -687,6 +758,80 @@ export const LoanDetailsClient = ({ userId, loan }: LoanDetailsClientProps) => {
         </DialogContent>
       </Dialog>
 
+      {/* Decline Reason Modal */}
+      <Dialog
+        open={declineOpen}
+        onOpenChange={(val) => !isPending && setDeclineOpen(val)}
+      >
+        <DialogContent className='sm:max-w-106.25 bg-surface-container-lowest border-outline-variant/30 shadow-2xl p-0 overflow-hidden'>
+          <div className='bg-error/10 p-4 border-b border-error/20 flex items-center gap-3'>
+            <div className='w-10 h-10 rounded-full bg-error/20 flex items-center justify-center text-error'>
+              <AlertTriangle className='w-5 h-5' />
+            </div>
+            <div>
+              <DialogTitle className='text-lg font-bold text-error font-heading'>
+                Decline Loan Offer
+              </DialogTitle>
+              <p className='text-xs text-error/80 mt-0.5'>
+                Please provide a reason for declining.
+              </p>
+            </div>
+          </div>
+          <div className='p-6 pt-4 bg-surface-container-lowest'>
+            <form
+              onSubmit={handleDeclineSubmit}
+              className='flex flex-col gap-4'
+            >
+              {declineError && (
+                <div className='p-3 bg-red-50 text-red-600 text-[11px] font-semibold rounded-md flex items-start gap-2 border border-red-100'>
+                  <AlertCircle className='w-3.5 h-3.5 mt-0.5 shrink-0' />
+                  <span>{declineError}</span>
+                </div>
+              )}
+              <div className='flex flex-col gap-2'>
+                <Label
+                  htmlFor='declineReason'
+                  className='text-xs font-semibold'
+                >
+                  Reason <span className='text-error'>*</span>
+                </Label>
+                <Textarea
+                  id='declineReason'
+                  placeholder='Why are you declining this approved amount?'
+                  value={declineReason}
+                  onChange={(e) => setDeclineReason(e.target.value)}
+                  className='min-h-25 resize-none'
+                  required
+                  disabled={isPending}
+                />
+              </div>
+              <div className='flex gap-3 justify-end mt-2 pt-4 border-t border-outline-variant/10'>
+                <Button
+                  type='button'
+                  variant='outline'
+                  onClick={() => setDeclineOpen(false)}
+                  disabled={isPending}
+                  className='h-9 px-4 font-semibold text-xs rounded-sm hover:bg-surface-container-low transition-colors'
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type='submit'
+                  disabled={isPending}
+                  className='h-9 px-5 bg-error text-white hover:bg-error/90 font-semibold text-xs rounded-sm shadow-sm transition-all'
+                >
+                  {isPending ? (
+                    <Loader2 className='w-3.5 h-3.5 mr-1.5 animate-spin' />
+                  ) : (
+                    <CheckCircle className='w-3.5 h-3.5 mr-1.5' />
+                  )}
+                  Confirm Decline
+                </Button>
+              </div>
+            </form>
+          </div>
+        </DialogContent>
+      </Dialog>
       {/* 2. Zoomable Receipt Modal Lightbox */}
       <ReceiptLightbox
         url={selectedReceiptUrl}
@@ -696,4 +841,3 @@ export const LoanDetailsClient = ({ userId, loan }: LoanDetailsClientProps) => {
     </div>
   )
 }
-export default LoanDetailsClient

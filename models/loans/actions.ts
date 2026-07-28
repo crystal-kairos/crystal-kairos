@@ -98,33 +98,14 @@ export const applyForLoanAction = async (
       }
     }
 
-    // 3. Determine tier, interest rate, and application fee
-    let interestRate = 5 // Standard member monthly interest rate (5%)
-    let applicationFee = 2000 // Standard form/application fee
-
-    if (totalSavings > 0) {
-      // Members with savings
-      if (data.requestedAmount < 20000 && data.duration === 1) {
-        interestRate = 0 // Tier 2: Interest-free
-        applicationFee = 500
-      } else if (data.requestedAmount >= 20000 && data.requestedAmount <= 100000 && data.duration <= 2) {
-        interestRate = 5 // Tier 3
-        applicationFee = 2000
-      } else if (data.requestedAmount > 100000) {
-        interestRate = 3.5 // Tier 4
-        applicationFee = 2000
-      }
-    } else {
-      // Member without savings (Tier 1)
-      interestRate = 5
-      applicationFee = 0
+    // 3. Fetch global loan interest rate
+    let interestRate = 5 // Fallback
+    const settings = await prisma.loanSettings.findUnique({ where: { id: 'global' } })
+    if (settings) {
+      interestRate = Number(settings.interestRate)
     }
 
-    // Adjust for non-members if collateral is specified but no savings
-    if (data.collateralDetails && totalSavings === 0) {
-      interestRate = 10 // Tier 5
-      applicationFee = 2000
-    }
+    const applicationFee = 2000 // Standard form/application fee
 
     // 4. Resolve guarantor details
     let guarantorId: string | null = null
@@ -235,5 +216,55 @@ export const submitLoanRepaymentAction = async (
       success: false,
       error: error instanceof Error ? error.message : 'Failed to submit loan repayment.',
     }
+  }
+}
+
+export const acceptLoanOfferAction = async (userId: string, loanId: string) => {
+  try {
+    const loan = await prisma.loan.findFirst({
+      where: { id: loanId, userId },
+    })
+
+    if (!loan) return { success: false, error: 'Loan not found' }
+    if (loan.status !== 'APPROVED') return { success: false, error: 'Only approved loans can be accepted' }
+
+    await prisma.loan.update({
+      where: { id: loanId },
+      data: {
+        status: LoanStatus.ACCEPTED,
+      },
+    })
+
+    revalidatePath(`/dashboard/${userId}/loans`)
+    return { success: true }
+  } catch (error: any) {
+    console.error('Failed to accept loan:', error)
+    return { success: false, error: error.message || 'Failed to accept loan' }
+  }
+}
+
+export const declineLoanOfferAction = async (userId: string, loanId: string, reason: string) => {
+  try {
+    const loan = await prisma.loan.findFirst({
+      where: { id: loanId, userId },
+    })
+
+    if (!loan) return { success: false, error: 'Loan not found' }
+    if (loan.status !== 'APPROVED') return { success: false, error: 'Only approved loans can be declined' }
+    if (!reason || !reason.trim()) return { success: false, error: 'Decline reason is required' }
+
+    await prisma.loan.update({
+      where: { id: loanId },
+      data: {
+        status: LoanStatus.DECLINED,
+        rejectionReason: reason,
+      },
+    })
+
+    revalidatePath(`/dashboard/${userId}/loans`)
+    return { success: true }
+  } catch (error: any) {
+    console.error('Failed to decline loan:', error)
+    return { success: false, error: error.message || 'Failed to decline loan' }
   }
 }

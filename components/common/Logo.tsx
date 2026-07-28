@@ -4,7 +4,7 @@ import { cn } from '@/lib/utils'
 import Image from 'next/image'
 import Link from 'next/link'
 import { useTranslation } from 'react-i18next'
-import logo from '@/public/logo.png'
+import logo from '@/public/crv-logo.png'
 
 const Logo = ({
   size = 'small',
@@ -35,9 +35,15 @@ const Logo = ({
       href={href}
       className={cn('flex items-center justify-center gap-2', alignmentClass)}
     >
-      <Image src={logo} alt='Logo' className={cn(logoSize)} />
+      <div
+        className={cn(
+          'w-fit bg-background dark:bg-surface-container-highest rounded-xl flex items-center justify-center shadow-lg p-2',
+        )}
+      >
+        <Image src={logo} alt='Logo' className={cn(logoSize)} />
+      </div>
       {showText && (
-        <h2 className={cn('text-primary font-semibold', textSizeClass)}>
+        <h2 className={cn('font-semibold text-on-primary', textSizeClass)}>
           {t('header.logo.app_name')}
         </h2>
       )}
