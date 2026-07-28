@@ -9,7 +9,7 @@ const RegisterPage = () => {
       <AuthShowcase />
 
       <div className='flex flex-col items-center justify-center p-6 sm:p-10 xl:p-16 h-full overflow-y-auto'>
-        <div className='w-full max-w-[700px] flex flex-col gap-8'>
+        <div className='w-full max-w-175 flex flex-col gap-8'>
           <RegisterPageHead />
           <RegisterStepsHeader />
           <RegistrationForm />

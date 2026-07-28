@@ -60,7 +60,7 @@ const Sidebar = ({ role, data }: { role: UserRole; data: Data[] }) => {
     >
       <Button
         size='icon'
-        className='absolute right-0 translate-x-[50%] top-2 bg-tertiary hover:bg-tertiary-dim text-white border-surface-container-low'
+        className='absolute right-0 translate-x-[50%] top-2 bg-sidebar-primary text-on-primary dark:bg-background dark:text-on-surface hover:bg-primary border-surface-container-low'
         onClick={() => dispatch(setSidebarIsCollapsed(!sidebarIsCollapsed))}
       >
         {sidebarIsCollapsed ? <ChevronRight /> : <ChevronLeft />}
@@ -68,14 +68,14 @@ const Sidebar = ({ role, data }: { role: UserRole; data: Data[] }) => {
 
       <div
         className={cn(
-          'p-3 bg-tertiary flex',
+          'p-3 flex border-b-2 border-outline-variant/30',
           sidebarIsCollapsed ? 'justify-center' : 'justify-start',
         )}
       >
         <Logo showText={!sidebarIsCollapsed} />
       </div>
 
-      <div className='p-3'>
+      <div className='p-3 border-t border-outline-variant/15'>
         <Link
           href={`${values.dashboardLink}/profile`}
           className='p-3 bg-sidebar-accent flex gap-2 rounded-md'

@@ -66,8 +66,8 @@ const SetPasswordForm = ({
   }
 
   return (
-    <div className='w-full max-w-[440px] mx-auto'>
-      <Card className='rounded-2xl border-0 shadow-none bg-transparent'>
+    <div className='w-full max-w-110 mx-auto'>
+      <div className='rounded-2xl shadow-none bg-transparent'>
         <CardHeader className='px-0 pb-6'>
           <CardTitle className='font-heading font-bold text-2xl text-primary tracking-tight'>
             {t('set_password.page_title')}
@@ -78,7 +78,10 @@ const SetPasswordForm = ({
         </CardHeader>
 
         <CardContent className='px-0'>
-          <form onSubmit={handleSubmit(onSubmit)} className='flex flex-col gap-5'>
+          <form
+            onSubmit={handleSubmit(onSubmit)}
+            className='flex flex-col gap-5'
+          >
             <Controller
               control={control}
               name='email'
@@ -177,14 +180,16 @@ const SetPasswordForm = ({
               variant='secondary'
               disabled={isLoading}
             >
-              {isLoading ? t('set_password.form.loading') : t('set_password.form.submit')}
+              {isLoading
+                ? t('set_password.form.loading')
+                : t('set_password.form.submit')}
             </Button>
           </form>
         </CardContent>
         <CardFooter className='flex justify-center text-primary underline'>
           <Link href='/login'>{t('set_password.login')}</Link>
         </CardFooter>
-      </Card>
+      </div>
     </div>
   )
 }

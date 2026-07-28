@@ -157,6 +157,8 @@ enum SavingsStatus {
 enum LoanStatus {
   PENDING
   APPROVED
+  ACCEPTED
+  DECLINED
   REJECTED
   DISBURSED
   ACTIVE
@@ -676,4 +678,9 @@ model Loan {
   @@map("loans")
 }
 
-// Deprecated loan repayments removed
+model LoanSettings {
+  id           String   @id @default("global") // singleton
+  interestRate Decimal  @default(5.0) @db.Decimal(5, 2)
+  updatedAt    DateTime @updatedAt
+  updatedBy    String?
+}

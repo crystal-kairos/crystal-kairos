@@ -4,6 +4,8 @@ import { prisma } from '@/lib/prisma'
 import { getSessionHelper } from '../members/actions'
 import { revalidatePath } from 'next/cache'
 import { LoanStatus, TransactionCategory, TransactionStatus, TransactionType } from '@/generated/prisma/enums'
+import { auth } from '@/auth'
+import { Prisma } from '@/generated/prisma/client'
 
 /**
  * Admin approves a loan and sets the final approved amount.
@@ -89,7 +91,9 @@ export const disburseLoanAction = async (loanId: string, receiptUrl: string) => 
 
     const loan = await prisma.loan.findUnique({ where: { id: loanId } })
     if (!loan) return { success: false, error: 'Loan not found.' }
-    if (loan.status !== LoanStatus.APPROVED) return { success: false, error: 'Only approved loans can be disbursed.' }
+    if (loan.status !== LoanStatus.ACCEPTED) {
+      return { success: false, error: 'Only accepted loans can be disbursed' }
+    }
     if (!loan.approvedAmount) return { success: false, error: 'Approved amount is missing.' }
 
     const now = new Date()
@@ -146,5 +150,64 @@ export const disburseLoanAction = async (loanId: string, receiptUrl: string) => 
   } catch (error) {
     console.error('Error disbursing loan:', error)
     return { success: false, error: error instanceof Error ? error.message : 'Failed to disburse loan.' }
+  }
+}
+
+export const reviewLoanRepaymentAction = async (transactionId: string, status: 'CONFIRMED' | 'REJECTED', rejectionReason?: string) => {
+  try {
+    const session = await auth()
+    if (!session || (session.user.role !== 'ADMIN' && session.user.role !== 'OWNER')) {
+      return { success: false, error: 'Unauthorized.' }
+    }
+
+    const tx = await prisma.transaction.findUnique({
+      where: { id: transactionId },
+      include: { loan: true },
+    })
+
+    if (!tx || !tx.loanId) {
+      return { success: false, error: 'Transaction or associated loan not found.' }
+    }
+    if (tx.status !== 'PENDING') {
+      return { success: false, error: 'Transaction is not pending review.' }
+    }
+    if (tx.category !== 'LOAN_REPAYMENT' && tx.category !== 'FEE') {
+      return { success: false, error: 'Not a loan transaction.' }
+    }
+
+    await prisma.$transaction(async (txPrisma) => {
+      await txPrisma.transaction.update({
+        where: { id: transactionId },
+        data: {
+          status,
+          rejectionReason: status === 'REJECTED' ? rejectionReason : null,
+          processedBy: session.user.id,
+          processedAt: new Date(),
+        },
+      })
+
+      if (status === 'CONFIRMED') {
+        const loan = tx.loan!
+        
+        const newTotalRepaid = new Prisma.Decimal(Number(loan.totalRepaid) + Number(tx.amount))
+        const newOutstandingBalance = new Prisma.Decimal(Math.max(0, Number(loan.outstandingBalance) - Number(tx.amount)))
+
+        await txPrisma.loan.update({
+          where: { id: loan.id },
+          data: {
+            totalRepaid: newTotalRepaid,
+            outstandingBalance: newOutstandingBalance,
+            actualRepaymentDate: newOutstandingBalance.toNumber() <= 0 ? new Date() : undefined,
+            status: newOutstandingBalance.toNumber() <= 0 ? LoanStatus.COMPLETED : loan.status,
+          },
+        })
+      }
+    })
+
+    revalidatePath(`/admin/loans/${tx.loanId}`)
+    return { success: true }
+  } catch (error: any) {
+    console.error('Failed to review loan repayment:', error)
+    return { success: false, error: error.message || 'Failed to review loan repayment.' }
   }
 }
