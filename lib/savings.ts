@@ -35,7 +35,12 @@ export const getInterestRate = (type: SavingsType, maturity: SavingsMaturity): n
 
 // Calculate total periods for regular savings
 export const getPeriodsCount = (frequency: SavingsFrequency, maturity: SavingsMaturity): number => {
-  const months = maturity === 'SIX_MONTHS' ? 6 : 12
+  let months = 6;
+  if (maturity === 'ONE_MONTH') months = 1;
+  else if (maturity === 'THREE_MONTHS') months = 3;
+  else if (maturity === 'SIX_MONTHS') months = 6;
+  else if (maturity === 'TWELVE_MONTHS') months = 12;
+
   if (frequency === 'DAILY') {
     return months * 30
   }

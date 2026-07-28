@@ -23,7 +23,7 @@ import {
   SavingsMaturity,
 } from '@/generated/prisma/enums'
 import { createSavingsPlanAction } from '@/models/savings/actions'
-import { getInterestRate, getPeriodsCount } from '@/lib/savings'
+import { getPeriodsCount } from '@/lib/savings'
 import { useRouter } from 'next/navigation'
 
 interface BankAccount {
@@ -38,12 +38,14 @@ interface NewSavingsClientProps {
   userId: string
   bankAccounts: BankAccount[]
   initialType?: string
+  product?: any
 }
 
 export const NewSavingsClient = ({
   userId,
   bankAccounts,
   initialType = 'FIXED',
+  product,
 }: NewSavingsClientProps) => {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
@@ -82,7 +84,18 @@ export const NewSavingsClient = ({
   }, [savingsType])
 
   // Calculation helpers
-  const interestRate = getInterestRate(savingsType, maturity)
+  const getProductInterestRate = (maturityLevel: SavingsMaturity) => {
+    if (!product) return 0
+    switch (maturityLevel) {
+      case SavingsMaturity.ONE_MONTH: return Number(product.interestRate1Month || 0)
+      case SavingsMaturity.THREE_MONTHS: return Number(product.interestRate3Months || 0)
+      case SavingsMaturity.SIX_MONTHS: return Number(product.interestRate6Months || 0)
+      case SavingsMaturity.TWELVE_MONTHS: return Number(product.interestRate12Months || 0)
+      default: return 0
+    }
+  }
+
+  const interestRate = getProductInterestRate(maturity)
   
   let totalContribution = targetAmount
   let periodsCount = 1
@@ -154,6 +167,7 @@ export const NewSavingsClient = ({
         bankName,
         accountNumber,
         accountName,
+        productId: product?.id,
       })
 
       if (res.success) {
@@ -267,8 +281,10 @@ export const NewSavingsClient = ({
                   onChange={(e) => setMaturity(e.target.value as SavingsMaturity)}
                   className="w-full bg-surface border border-outline-variant/35 rounded-sm p-2 text-sm h-10 focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
                 >
-                  <option value={SavingsMaturity.SIX_MONTHS}>6 Months Term</option>
-                  <option value={SavingsMaturity.TWELVE_MONTHS}>12 Months (1 Year) Term</option>
+                  {product && Number(product.interestRate1Month) > 0 && <option value={SavingsMaturity.ONE_MONTH}>1 Month Term</option>}
+                  {product && Number(product.interestRate3Months) > 0 && <option value={SavingsMaturity.THREE_MONTHS}>3 Months Term</option>}
+                  {(!product || Number(product.interestRate6Months) > 0) && <option value={SavingsMaturity.SIX_MONTHS}>6 Months Term</option>}
+                  {(!product || Number(product.interestRate12Months) > 0) && <option value={SavingsMaturity.TWELVE_MONTHS}>12 Months (1 Year) Term</option>}
                 </select>
               </div>
 

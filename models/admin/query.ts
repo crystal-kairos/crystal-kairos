@@ -523,8 +523,57 @@ export const getLoanByIdQuery = async (loanId: string) => {
     return { success: true, data: serialized }
   } catch (error) {
     console.error('Error fetching admin loan details:', error)
-    return { success: false, error: error instanceof Error ? error.message : 'Failed to fetch loan details.' }
+    return { success: false, error: 'Failed to fetch loan details', data: null }
   }
 }
 
+/**
+ * Fetches all savings products for admin management
+ */
+export const getAllSavingsProducts = async () => {
+  try {
+    const products = await prisma.savingsProduct.findMany({
+      orderBy: { createdAt: 'desc' },
+      include: {
+        createdByUser: {
+          select: { name: true, email: true },
+        },
+      },
+    })
+    return { success: true, data: products }
+  } catch (error) {
+    console.error('Error fetching admin savings products:', error)
+    return { success: false, error: 'Failed to fetch savings products', data: [] }
+  }
+}
 
+/**
+ * Fetches all user savings records for admin management
+ */
+export const getAllUserSavings = async () => {
+  try {
+    const savings = await prisma.savings.findMany({
+      orderBy: { createdAt: 'desc' },
+      include: {
+        user: {
+          select: { name: true, email: true, username: true },
+        },
+      },
+    })
+
+    const serialized = savings.map((s) => ({
+      ...s,
+      targetAmount: s.targetAmount ? Number(s.targetAmount) : null,
+      interestRate: Number(s.interestRate),
+      currentBalance: Number(s.currentBalance),
+      accruedInterest: Number(s.accruedInterest),
+      totalDeposited: Number(s.totalDeposited),
+      expectedMaturityAmount: s.expectedMaturityAmount ? Number(s.expectedMaturityAmount) : null,
+    }))
+
+    return { success: true, data: serialized }
+  } catch (error) {
+    console.error('Error fetching admin user savings:', error)
+    return { success: false, error: 'Failed to fetch user savings', data: [] }
+  }
+}

@@ -42,3 +42,31 @@ export const getSavingsPlanById = async (savingsId: string) => {
     }
   }
 }
+
+/**
+ * Fetches all active savings products
+ */
+export const getSavingsProducts = async () => {
+  try {
+    const products = await prisma.savingsProduct.findMany({
+      where: { isActive: true },
+      orderBy: { createdAt: 'asc' },
+    })
+    return { success: true, data: products }
+  } catch (error: any) {
+    console.error('Failed to fetch savings products:', error)
+    return { success: false, error: error.message || 'Failed to fetch products' }
+  }
+}
+
+export const getSavingsProductById = async (id: string) => {
+  try {
+    const product = await prisma.savingsProduct.findUnique({
+      where: { id },
+    })
+    return { success: true, data: product }
+  } catch (error: any) {
+    console.error('Failed to fetch savings product:', error)
+    return { success: false, error: error.message || 'Failed to fetch product' }
+  }
+}

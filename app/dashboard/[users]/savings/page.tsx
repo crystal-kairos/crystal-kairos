@@ -1,6 +1,7 @@
 import { auth } from '@/auth'
 import { redirect } from 'next/navigation'
 import { getSavingsRecords } from '@/models/members/query'
+import { getSavingsProducts } from '@/models/savings/query'
 import { SavingsHubClient } from '@/components/savings/SavingsHubClient'
 import { ShieldAlert } from 'lucide-react'
 
@@ -31,8 +32,13 @@ const SavingsHubPage = async ({ params }: PageProps) => {
     )
   }
 
-  const result = await getSavingsRecords(profileId)
-  const savingsPlans = result.success && result.data ? result.data : []
+  const [recordsResult, productsResult] = await Promise.all([
+    getSavingsRecords(profileId),
+    getSavingsProducts(),
+  ])
+  
+  const savingsPlans = recordsResult.success && recordsResult.data ? recordsResult.data : []
+  const availableProducts = productsResult.success && productsResult.data ? productsResult.data : []
 
   // Map database savings plan structures to plain client component structures
   const mappedPlans = savingsPlans.map((p) => ({
@@ -50,7 +56,7 @@ const SavingsHubPage = async ({ params }: PageProps) => {
     maturityDate: p.maturityDate,
   }))
 
-  return <SavingsHubClient userId={profileId} savingsPlans={mappedPlans} />
+  return <SavingsHubClient userId={profileId} savingsPlans={mappedPlans} availableProducts={availableProducts} />
 }
 
 export default SavingsHubPage

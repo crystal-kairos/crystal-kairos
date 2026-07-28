@@ -114,12 +114,12 @@ enum EAjoStatus {
 }
 
 enum EAjoMemberStatus {
-  PENDING    // Member applied, awaiting admin approval
-  APPROVED   // Admin approved the slot assignment
-  REJECTED   // Admin rejected the application
-  ACTIVE     // Group is running and member is contributing
-  COMPLETED  // Member received their payout
-  CANCELLED  // Member or admin cancelled
+  PENDING // Member applied, awaiting admin approval
+  APPROVED // Admin approved the slot assignment
+  REJECTED // Admin rejected the application
+  ACTIVE // Group is running and member is contributing
+  COMPLETED // Member received their payout
+  CANCELLED // Member or admin cancelled
 }
 
 // SAVINGS ENUMS
@@ -137,6 +137,8 @@ enum SavingsFrequency {
 }
 
 enum SavingsMaturity {
+  ONE_MONTH
+  THREE_MONTHS
   SIX_MONTHS
   TWELVE_MONTHS
 }
@@ -198,20 +200,21 @@ model User {
   triggeredNotifications Notification[] @relation("TriggeredNotifications")
 
   // Relations
-  accounts              Account[]
-  sessions              Session[]
-  userInfo              UserInfo?
-  bankAccounts          BankAccount[]
-  nextOfKin             NextOfKin?
-  membership            Membership?
-  eAjo                  EAjo[]
-  eAjoGroups            EAjoGroup[]  @relation("EAjoGroupCreator")
-  eAjoMembers           EAjoMember[]
-  savings               Savings[]
-  loans                 Loan[]
-  transactions          Transaction[] @relation("TransactionOwner")
-  transactionsRecorded  Transaction[] @relation("TransactionRecorder")
-  transactionsProcessed Transaction[] @relation("TransactionProcessor")
+  accounts               Account[]
+  sessions               Session[]
+  userInfo               UserInfo?
+  bankAccounts           BankAccount[]
+  nextOfKin              NextOfKin?
+  membership             Membership?
+  eAjo                   EAjo[]
+  eAjoGroups             EAjoGroup[]      @relation("EAjoGroupCreator")
+  eAjoMembers            EAjoMember[]
+  savings                Savings[]
+  loans                  Loan[]
+  transactions           Transaction[]    @relation("TransactionOwner")
+  transactionsRecorded   Transaction[]    @relation("TransactionRecorder")
+  transactionsProcessed  Transaction[]    @relation("TransactionProcessor")
+  createdSavingsProducts SavingsProduct[] @relation("SavingsProductCreator")
 
   @@map("users")
 }
@@ -428,12 +431,12 @@ model EAjoGroup {
   contributionAmount Decimal       @db.Decimal(15, 2)
   frequency          EAjoFrequency
   duration           EAjoDuration
-  totalSlots         Int           // Number of positions (4, 6, or 12)
+  totalSlots         Int // Number of positions (4, 6, or 12)
   filledSlots        Int           @default(0)
   status             EAjoStatus    @default(PENDING)
   startDate          DateTime?
   endDate            DateTime?
-  createdBy          String        // Admin User ID
+  createdBy          String // Admin User ID
   createdAt          DateTime      @default(now())
   updatedAt          DateTime      @updatedAt
 
@@ -448,7 +451,7 @@ model EAjoMember {
   id                   String           @id @default(uuid())
   groupId              String
   userId               String
-  payoutPosition       Int              // Requested/assigned slot number (1 to totalSlots)
+  payoutPosition       Int // Requested/assigned slot number (1 to totalSlots)
   feePercentage        Decimal          @default(0) @db.Decimal(5, 2)
   feeAmount            Decimal          @default(0) @db.Decimal(15, 2)
   totalExpectedPayout  Decimal          @default(0) @db.Decimal(15, 2)
@@ -464,7 +467,7 @@ model EAjoMember {
   payoutDate           DateTime?
   status               EAjoMemberStatus @default(PENDING)
   approvedAt           DateTime?
-  approvedBy           String?          // Admin User ID
+  approvedBy           String? // Admin User ID
   rejectionReason      String?
   createdAt            DateTime         @default(now())
   updatedAt            DateTime         @updatedAt
@@ -474,7 +477,7 @@ model EAjoMember {
   transactions Transaction[]
 
   @@unique([groupId, payoutPosition]) // One member per slot per group
-  @@unique([groupId, userId])         // One application per user per group
+  @@unique([groupId, userId]) // One application per user per group
   @@index([userId])
   @@index([groupId])
   @@map("e_ajo_members")
@@ -524,7 +527,7 @@ model Transaction {
 
   // Reference IDs to specific packages
   eAjoId       String?
-  eAjoMemberId String?   // Reference to new EAjoMember model
+  eAjoMemberId String? // Reference to new EAjoMember model
   savingsId    String?
   loanId       String?
 
@@ -565,9 +568,33 @@ model Transaction {
 // SAVINGS MODELS
 // ============================================
 
+model SavingsProduct {
+  id                   String      @id @default(uuid())
+  type                 SavingsType // (FIXED, REGULAR, STAGGERED)
+  title                String
+  description          String
+  rates                String // e.g. "12% (6 Months) / 36% (1 Year)"
+  badge                String // e.g. "High Yield"
+  icon                 String // Name of the lucide icon, e.g. "Lock", "PiggyBank"
+  interestRate1Month   Decimal?
+  interestRate3Months  Decimal?
+  interestRate6Months  Decimal?
+  interestRate12Months Decimal?
+  isActive             Boolean     @default(true)
+  createdBy            String // Admin userId
+  createdAt            DateTime    @default(now())
+  updatedAt            DateTime    @updatedAt
+
+  createdByUser User      @relation("SavingsProductCreator", fields: [createdBy], references: [id])
+  savings       Savings[]
+
+  @@map("savings_products")
+}
+
 model Savings {
   id                     String           @id @default(uuid())
   userId                 String
+  productId              String?
   savingsType            SavingsType
   targetAmount           Decimal? // For FIXED, the bulk amount; For REGULAR, amount per period
   frequency              SavingsFrequency
@@ -591,11 +618,13 @@ model Savings {
   createdAt              DateTime         @default(now())
   updatedAt              DateTime         @updatedAt
 
-  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  product      SavingsProduct? @relation(fields: [productId], references: [id])
   transactions Transaction[]
 
   @@index([userId])
   @@index([status])
+  @@index([productId])
   @@map("savings")
 }
 
