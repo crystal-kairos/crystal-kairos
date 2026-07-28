@@ -11,6 +11,7 @@ export const getSavingsPlanById = async (savingsId: string) => {
     const savings = await prisma.savings.findUnique({
       where: { id: savingsId },
       include: {
+        user: { select: { name: true, email: true, username: true } },
         transactions: {
           orderBy: { createdAt: 'desc' },
         },

@@ -20,7 +20,19 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { MoreHorizontal, Plus, Search, Check, X, Edit, Eye, ShieldCheck, Lock, PiggyBank, RefreshCw } from 'lucide-react'
+import {
+  MoreHorizontal,
+  Plus,
+  Search,
+  Check,
+  X,
+  Edit,
+  Eye,
+  ShieldCheck,
+  Lock,
+  PiggyBank,
+  RefreshCw,
+} from 'lucide-react'
 import Link from 'next/link'
 import { toggleSavingsProductStatusAction } from '@/models/admin/savingsActions'
 import { toast } from 'sonner'
@@ -59,10 +71,17 @@ interface AdminSavingsClientProps {
 
 const getIcon = (name: string) => {
   const IconComponent = (LucideIcons as any)[name]
-  return IconComponent ? <IconComponent className='w-4 h-4' /> : <PiggyBank className='w-4 h-4' />
+  return IconComponent ? (
+    <IconComponent className='w-4 h-4' />
+  ) : (
+    <PiggyBank className='w-4 h-4' />
+  )
 }
 
-export const AdminSavingsClient = ({ products, userSavings }: AdminSavingsClientProps) => {
+export const AdminSavingsClient = ({
+  products,
+  userSavings,
+}: AdminSavingsClientProps) => {
   const [searchTerm, setSearchTerm] = useState('')
   const router = useRouter()
 
@@ -100,13 +119,14 @@ export const AdminSavingsClient = ({ products, userSavings }: AdminSavingsClient
             Savings Management
           </h2>
           <p className='text-muted-foreground text-sm mt-1'>
-            Manage available savings products and oversee all user savings accounts.
+            Manage available savings products and oversee all user savings
+            accounts.
           </p>
         </div>
       </header>
 
       <Tabs defaultValue='user-savings' className='w-full'>
-        <TabsList className='grid w-full md:w-[400px] grid-cols-2 bg-surface-container'>
+        <TabsList className='grid w-full md:w-100 grid-cols-2 bg-surface-container'>
           <TabsTrigger value='user-savings'>User Savings</TabsTrigger>
           <TabsTrigger value='products'>Savings Products</TabsTrigger>
         </TabsList>
@@ -132,23 +152,35 @@ export const AdminSavingsClient = ({ products, userSavings }: AdminSavingsClient
                     <TableHead className='font-semibold'>Balance</TableHead>
                     <TableHead className='font-semibold'>Interest</TableHead>
                     <TableHead className='font-semibold'>Status</TableHead>
-                    <TableHead className='font-semibold text-right'>Actions</TableHead>
+                    <TableHead className='font-semibold text-right'>
+                      Actions
+                    </TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {filteredUserSavings.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={6} className='text-center py-8 text-muted-foreground'>
+                      <TableCell
+                        colSpan={6}
+                        className='text-center py-8 text-muted-foreground'
+                      >
                         No user savings found.
                       </TableCell>
                     </TableRow>
                   ) : (
                     filteredUserSavings.map((savings) => (
-                      <TableRow key={savings.id} className='hover:bg-surface-container-low transition-colors'>
+                      <TableRow
+                        key={savings.id}
+                        className='hover:bg-surface-container-low transition-colors'
+                      >
                         <TableCell>
                           <div className='flex flex-col'>
-                            <span className='font-bold text-primary text-sm'>{savings.user.name}</span>
-                            <span className='text-xs text-muted-foreground'>{savings.user.email}</span>
+                            <span className='font-bold text-primary text-sm'>
+                              {savings.user.name}
+                            </span>
+                            <span className='text-xs text-muted-foreground'>
+                              {savings.user.email}
+                            </span>
                           </div>
                         </TableCell>
                         <TableCell>
@@ -166,8 +198,15 @@ export const AdminSavingsClient = ({ products, userSavings }: AdminSavingsClient
                           <StatusPill status={savings.status} />
                         </TableCell>
                         <TableCell className='text-right'>
-                          <Button variant='ghost' size='sm' className='text-muted-foreground hover:text-primary'>
-                            <Eye className='w-4 h-4' />
+                          <Button
+                            variant='ghost'
+                            size='sm'
+                            className='text-muted-foreground hover:text-primary'
+                            asChild
+                          >
+                            <Link href={`/admin/savings/accounts/${savings.id}`}>
+                              <Eye className='w-4 h-4' />
+                            </Link>
                           </Button>
                         </TableCell>
                       </TableRow>
@@ -197,34 +236,58 @@ export const AdminSavingsClient = ({ products, userSavings }: AdminSavingsClient
                 </div>
               ) : (
                 products.map((product) => (
-                  <Card key={product.id} className='bg-surface-container-lowest rounded-xl shadow-sm border border-outline-variant/20 p-5 flex flex-col justify-between hover:shadow-md transition-all'>
+                  <Card
+                    key={product.id}
+                    className='bg-surface-container-lowest rounded-xl shadow-sm border border-outline-variant/20 p-5 flex flex-col justify-between hover:shadow-md transition-all'
+                  >
                     <div>
                       <div className='flex justify-between items-start mb-3'>
                         <div className='w-10 h-10 rounded-lg bg-primary/10 text-primary flex items-center justify-center shrink-0'>
                           {getIcon(product.icon)}
                         </div>
                         <div className='flex items-center gap-2'>
-                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${product.isActive ? 'bg-success-green/10 text-success-green' : 'bg-outline-variant/20 text-muted-foreground'}`}>
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${product.isActive ? 'bg-success-green/10 text-success-green' : 'bg-outline-variant/20 text-muted-foreground'}`}
+                          >
                             {product.isActive ? 'Active' : 'Inactive'}
                           </span>
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
-                              <Button variant='ghost' size='icon' className='h-8 w-8 text-muted-foreground hover:text-primary'>
+                              <Button
+                                variant='ghost'
+                                size='icon'
+                                className='h-8 w-8 text-muted-foreground hover:text-primary'
+                              >
                                 <MoreHorizontal className='w-4 h-4' />
                               </Button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align='end' className='w-40'>
-                              <DropdownMenuItem asChild className='cursor-pointer'>
-                                <Link href={`/admin/savings/${product.id}/edit`}>
+                              <DropdownMenuItem
+                                asChild
+                                className='cursor-pointer'
+                              >
+                                <Link
+                                  href={`/admin/savings/${product.id}/edit`}
+                                >
                                   <Edit className='w-4 h-4 mr-2' /> Edit
                                 </Link>
                               </DropdownMenuItem>
                               {product.isActive ? (
-                                <DropdownMenuItem className='cursor-pointer text-error focus:text-error' onClick={() => handleToggleProduct(product.id, false)}>
+                                <DropdownMenuItem
+                                  className='cursor-pointer text-error focus:text-error'
+                                  onClick={() =>
+                                    handleToggleProduct(product.id, false)
+                                  }
+                                >
                                   <X className='w-4 h-4 mr-2' /> Deactivate
                                 </DropdownMenuItem>
                               ) : (
-                                <DropdownMenuItem className='cursor-pointer text-success-green focus:text-success-green' onClick={() => handleToggleProduct(product.id, true)}>
+                                <DropdownMenuItem
+                                  className='cursor-pointer text-success-green focus:text-success-green'
+                                  onClick={() =>
+                                    handleToggleProduct(product.id, true)
+                                  }
+                                >
                                   <Check className='w-4 h-4 mr-2' /> Activate
                                 </DropdownMenuItem>
                               )}
@@ -233,17 +296,29 @@ export const AdminSavingsClient = ({ products, userSavings }: AdminSavingsClient
                         </div>
                       </div>
 
-                      <h4 className='font-bold text-primary text-lg'>{product.title}</h4>
-                      <p className='text-muted-foreground text-xs mt-1 leading-relaxed'>{product.description}</p>
-                      
+                      <h4 className='font-bold text-primary text-lg'>
+                        {product.title}
+                      </h4>
+                      <p className='text-muted-foreground text-xs mt-1 leading-relaxed'>
+                        {product.description}
+                      </p>
+
                       <div className='flex flex-col gap-1.5 mt-4 text-xs bg-surface-container/50 p-3 rounded-lg border border-outline-variant/20'>
                         <div className='flex justify-between'>
-                          <span className='text-muted-foreground font-medium'>Type</span>
-                          <span className='font-bold text-primary'>{product.type}</span>
+                          <span className='text-muted-foreground font-medium'>
+                            Type
+                          </span>
+                          <span className='font-bold text-primary'>
+                            {product.type}
+                          </span>
                         </div>
                         <div className='flex justify-between'>
-                          <span className='text-muted-foreground font-medium'>Rates</span>
-                          <span className='font-bold text-success-green'>{product.rates}</span>
+                          <span className='text-muted-foreground font-medium'>
+                            Rates
+                          </span>
+                          <span className='font-bold text-success-green'>
+                            {product.rates}
+                          </span>
                         </div>
                       </div>
                     </div>

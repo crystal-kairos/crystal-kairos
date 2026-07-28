@@ -106,3 +106,63 @@ export const updateSavingsProductAction = async (id: string, data: Partial<Creat
     return { error: error.message || 'Failed to update savings product' }
   }
 }
+
+export const reviewSavingsTransactionAction = async (transactionId: string, status: 'CONFIRMED' | 'REJECTED', notes?: string, rejectionReason?: string) => {
+  try {
+    const session = await auth()
+    if (!session || (session.user.role !== 'ADMIN' && session.user.role !== 'OWNER')) {
+      return { error: 'Unauthorized' }
+    }
+
+    const transaction = await prisma.transaction.findUnique({
+      where: { id: transactionId },
+      include: { savings: true },
+    })
+
+    if (!transaction) return { error: 'Transaction not found' }
+    if (transaction.status !== 'PENDING') return { error: 'Only pending transactions can be reviewed' }
+    if (!transaction.savings) return { error: 'Transaction is not linked to a savings plan' }
+
+    // Start a Prisma transaction to update both the transaction and the savings balance atomically
+    await prisma.$transaction(async (tx) => {
+      // 1. Update Transaction status
+      await tx.transaction.update({
+        where: { id: transactionId },
+        data: {
+          status,
+          notes: notes || transaction.notes,
+          rejectionReason: status === 'REJECTED' ? rejectionReason : undefined,
+          processedBy: session.user.id,
+          processedAt: new Date(),
+        },
+      })
+
+      // 2. If approved and it's a deposit, increment the balance
+      if (status === 'CONFIRMED' && transaction.type === 'DEPOSIT') {
+        const amount = transaction.amount.toNumber()
+        const newTotalDeposited = transaction.savings!.totalDeposited.toNumber() + amount
+        const newCurrentBalance = transaction.savings!.currentBalance.toNumber() + amount
+
+        await tx.savings.update({
+          where: { id: transaction.savingsId! },
+          data: {
+            totalDeposited: newTotalDeposited,
+            currentBalance: newCurrentBalance,
+            status: transaction.savings!.status === 'PENDING' ? 'ACTIVE' : undefined,
+          },
+        })
+      }
+    })
+
+    revalidatePath('/admin/savings')
+    if (transaction.savingsId) {
+      revalidatePath(`/admin/savings/accounts/${transaction.savingsId}`)
+      revalidatePath(`/dashboard/${transaction.userId}/savings/${transaction.savingsId}`)
+    }
+
+    return { success: true }
+  } catch (error: any) {
+    console.error('Error reviewing savings transaction:', error)
+    return { error: error.message || 'Failed to review transaction' }
+  }
+}
