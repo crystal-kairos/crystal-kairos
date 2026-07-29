@@ -151,7 +151,7 @@ export const MemberDashboardBento = ({
             <Button
               asChild
               size='sm'
-              className='cursor-pointer rounded-sm bg-warning-amber hover:bg-warning-amber/90 text-white border-0 h-9 px-4 shrink-0'
+              className='cursor-pointer rounded-sm bg-warning hover:bg-warning/90 text-white border-0 h-9 px-4 shrink-0'
             >
               <Link href={`/dashboard/${userId}/profile`}>Update Profile</Link>
             </Button>
@@ -162,7 +162,7 @@ export const MemberDashboardBento = ({
       {/* 3. Bento Grid */}
       <div className='grid grid-cols-1 md:grid-cols-12 gap-6'>
         {/* A. Confirmed Balance Card (col-span-8) */}
-        <div className='col-span-1 md:col-span-8 bg-surface-container-lowest rounded-lg p-6 border border-outline-variant/15 shadow-[0_4px_12px_rgba(0,0,0,0.03)] relative overflow-hidden group flex flex-col justify-between min-h-[200px]'>
+        <div className='col-span-1 md:col-span-8 bg-surface-container-lowest rounded-lg p-6 border border-outline-variant/15 shadow-[0_4px_12px_rgba(0,0,0,0.03)] relative overflow-hidden group flex flex-col justify-between min-h-50'>
           <div className='absolute inset-0 bg-linear-to-br from-primary/5 to-transparent pointer-events-none' />
           <div className='relative z-10'>
             <div className='flex items-center gap-2 text-muted-foreground'>
@@ -206,41 +206,83 @@ export const MemberDashboardBento = ({
             Quick Actions
           </h3>
           <div className='grid grid-cols-2 gap-3'>
-            <Link
-              href={`/dashboard/${userId}/eajo`}
-              className='flex flex-col items-center justify-center p-3 bg-surface-container-low hover:bg-primary/5 rounded-lg border border-outline-variant/10 group transition-all duration-200'
-            >
-              <div className='w-9 h-9 rounded-full bg-primary/10 text-primary flex items-center justify-center mb-2 group-hover:scale-110 transition-transform'>
-                <UserPlus className='w-4 h-4' />
+            {!hasBankAccounts || !hasNextOfKin ? (
+              <div
+                title='Complete your profile (Bank & Next of Kin) to join Ajo'
+                className='flex flex-col items-center justify-center p-3 bg-surface-container-low rounded-lg border border-outline-variant/10 opacity-60 cursor-not-allowed'
+              >
+                <div className='w-9 h-9 rounded-full bg-primary/10 text-primary flex items-center justify-center mb-2'>
+                  <UserPlus className='w-4 h-4' />
+                </div>
+                <span className='text-xs font-semibold text-on-surface'>
+                  Join Ajo
+                </span>
               </div>
-              <span className='text-xs font-semibold text-on-surface'>
-                Join Ajo
-              </span>
-            </Link>
+            ) : (
+              <Link
+                href={`/dashboard/${userId}/eajo`}
+                className='flex flex-col items-center justify-center p-3 bg-surface-container-low hover:bg-primary/5 rounded-lg border border-outline-variant/10 group transition-all duration-200'
+              >
+                <div className='w-9 h-9 rounded-full bg-primary/10 text-primary flex items-center justify-center mb-2 group-hover:scale-110 transition-transform'>
+                  <UserPlus className='w-4 h-4' />
+                </div>
+                <span className='text-xs font-semibold text-on-surface'>
+                  Join Ajo
+                </span>
+              </Link>
+            )}
 
-            <Link
-              href={`/dashboard/${userId}/loans`}
-              className='flex flex-col items-center justify-center p-3 bg-surface-container-low hover:bg-secondary/5 rounded-lg border border-outline-variant/10 group transition-all duration-200'
-            >
-              <div className='w-9 h-9 rounded-full bg-secondary/15 text-secondary flex items-center justify-center mb-2 group-hover:scale-110 transition-transform'>
-                <Banknote className='w-4 h-4' />
+            {!hasBankAccounts || !hasNextOfKin ? (
+              <div
+                title='Complete your profile (Bank & Next of Kin) to get a loan'
+                className='flex flex-col items-center justify-center p-3 bg-surface-container-low rounded-lg border border-outline-variant/10 opacity-60 cursor-not-allowed'
+              >
+                <div className='w-9 h-9 rounded-full bg-secondary/15 text-secondary flex items-center justify-center mb-2'>
+                  <Banknote className='w-4 h-4' />
+                </div>
+                <span className='text-xs font-semibold text-on-surface'>
+                  Get Loan
+                </span>
               </div>
-              <span className='text-xs font-semibold text-on-surface'>
-                Get Loan
-              </span>
-            </Link>
+            ) : (
+              <Link
+                href={`/dashboard/${userId}/loans`}
+                className='flex flex-col items-center justify-center p-3 bg-surface-container-low hover:bg-secondary/5 rounded-lg border border-outline-variant/10 group transition-all duration-200'
+              >
+                <div className='w-9 h-9 rounded-full bg-secondary/15 text-secondary flex items-center justify-center mb-2 group-hover:scale-110 transition-transform'>
+                  <Banknote className='w-4 h-4' />
+                </div>
+                <span className='text-xs font-semibold text-on-surface'>
+                  Get Loan
+                </span>
+              </Link>
+            )}
 
-            <Link
-              href={`/dashboard/${userId}/savings`}
-              className='flex flex-col items-center justify-center p-3 bg-surface-container-low hover:bg-success-green/5 rounded-lg border border-outline-variant/10 group transition-all duration-200'
-            >
-              <div className='w-9 h-9 rounded-full bg-success-green/10 text-success-green flex items-center justify-center mb-2 group-hover:scale-110 transition-transform'>
-                <PiggyBank className='w-4 h-4' />
+            {!hasBankAccounts || !hasNextOfKin ? (
+              <div
+                title='Complete your profile (Bank & Next of Kin) to start saving'
+                className='flex flex-col items-center justify-center p-3 bg-surface-container-low rounded-lg border border-outline-variant/10 opacity-60 cursor-not-allowed'
+              >
+                <div className='w-9 h-9 rounded-full bg-success-green/10 text-success-green flex items-center justify-center mb-2'>
+                  <PiggyBank className='w-4 h-4' />
+                </div>
+                <span className='text-xs font-semibold text-on-surface'>
+                  My Savings
+                </span>
               </div>
-              <span className='text-xs font-semibold text-on-surface'>
-                My Savings
-              </span>
-            </Link>
+            ) : (
+              <Link
+                href={`/dashboard/${userId}/savings`}
+                className='flex flex-col items-center justify-center p-3 bg-surface-container-low hover:bg-success-green/5 rounded-lg border border-outline-variant/10 group transition-all duration-200'
+              >
+                <div className='w-9 h-9 rounded-full bg-success-green/10 text-success-green flex items-center justify-center mb-2 group-hover:scale-110 transition-transform'>
+                  <PiggyBank className='w-4 h-4' />
+                </div>
+                <span className='text-xs font-semibold text-on-surface'>
+                  My Savings
+                </span>
+              </Link>
+            )}
 
             <Link
               href={`/dashboard/${userId}/banks`}

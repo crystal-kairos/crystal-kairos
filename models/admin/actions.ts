@@ -4,7 +4,9 @@ import { prisma } from '@/lib/prisma'
 import { getSessionHelper } from '../members/actions'
 import { hash } from 'bcryptjs'
 import { revalidatePath } from 'next/cache'
-import { UserRole, EAjoFrequency, EAjoDuration, EAjoStatus, EAjoMemberStatus } from '@/generated/prisma/enums'
+import { UserRole, EAjoFrequency, EAjoDuration, EAjoStatus, EAjoMemberStatus, NotificationEventType, MembershipStatus } from '@/generated/prisma/enums'
+import { sendEmail } from '@/features/notification'
+import { generateMembershipNumber } from '@/lib/membership-number'
 
 /**
  * Creates a new administrative staff member (ADMIN or OWNER)
@@ -263,5 +265,69 @@ export const rejectEAjoMemberAction = async (memberId: string, rejectionReason: 
       success: false,
       error: error instanceof Error ? error.message : 'Failed to reject member application.',
     }
+  }
+}
+
+export const createMemberAction = async (formData: {
+  name: string
+  email: string
+}) => {
+  try {
+    const session = await getSessionHelper()
+    if (!session?.user || (session.user.role !== 'ADMIN' && session.user.role !== 'OWNER')) {
+      return { success: false, error: 'Unauthorized.' }
+    }
+
+    const { name, email } = formData
+    
+    // Check if user exists
+    const existing = await prisma.user.findUnique({ where: { email } })
+    if (existing) {
+      return { success: false, error: 'User with this email already exists.' }
+    }
+
+    // Generate random 8-character password
+    const tempPassword = Math.random().toString(36).slice(-8)
+    const passwordHash = await hash(tempPassword, 10)
+
+    const user = await prisma.user.create({
+      data: {
+        name,
+        email,
+        passwordHash,
+        hasSetPassword: false,
+        role: UserRole.USER,
+        membership: {
+          create: {
+            membershipNumber: generateMembershipNumber(),
+            status: MembershipStatus.APPROVED,
+            approvedAt: new Date(),
+            approvedBy: session.user.id,
+          }
+        }
+      }
+    })
+
+    // Send email with temporary password
+    const emailHtml = `
+      <h1>Welcome to Crystal Kairos, ${name}!</h1>
+      <p>An administrator has created an account for you.</p>
+      <p>Your temporary password is: <strong>${tempPassword}</strong></p>
+      <p>Please log in and you will be prompted to change your password immediately.</p>
+    `
+    
+    await sendEmail({
+      to: email,
+      subject: 'Welcome to Crystal Kairos - Your Account Details',
+      html: emailHtml,
+      recipientId: user.id,
+      type: NotificationEventType.CUSTOM,
+    })
+
+    revalidatePath('/admin/members')
+    return { success: true, data: user }
+  } catch (error: any) {
+    console.error('Error creating member:', error)
+    return { success: false, error: error.message || 'Failed to create member.' }
   }
 }

@@ -577,3 +577,20 @@ export const getAllUserSavings = async () => {
     return { success: false, error: 'Failed to fetch user savings', data: [] }
   }
 }
+
+export const getAllMembers = async () => {
+  try {
+    const members = await prisma.user.findMany({
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+      }
+    })
+    return { success: true, data: members }
+  } catch (error) {
+    console.error('Error fetching members:', error)
+    return { success: false, error: 'Failed to fetch members', data: [] }
+  }
+}

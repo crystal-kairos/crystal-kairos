@@ -23,6 +23,7 @@ import { setPassword } from '@/models/auth/query'
 import { toast } from 'sonner'
 import { useRouter } from 'next/navigation'
 import { REDIRECT_DELAY } from '@/lib/constants'
+import { signOut } from 'next-auth/react'
 
 const SetPasswordForm = ({
   email,
@@ -60,7 +61,7 @@ const SetPasswordForm = ({
         t('set_password.success', { seconds: REDIRECT_DELAY / 1000 }),
       )
       setTimeout(() => {
-        router.replace('/login')
+        signOut({ callbackUrl: '/login' })
       }, REDIRECT_DELAY)
     }
   }
@@ -181,8 +182,8 @@ const SetPasswordForm = ({
               disabled={isLoading}
             >
               {isLoading
-                ? t('set_password.form.loading')
-                : t('set_password.form.submit')}
+                ? t('set_password.form.buttons.loading')
+                : t('set_password.form.buttons.submit')}
             </Button>
           </form>
         </CardContent>

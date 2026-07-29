@@ -22,6 +22,15 @@ export const proxy = auth((req) => {
     }
   }
 
+  // If user is on /set-password but has already set their password, redirect them
+  if (pathname === '/set-password' && session && (session.user as any).hasSetPassword) {
+    if (isAdminUser) {
+      return NextResponse.redirect(new URL('/admin', req.url))
+    } else {
+      return NextResponse.redirect(new URL(`/dashboard/${userId}`, req.url))
+    }
+  }
+
   // redirect to login page if user is not logged in and not a public route
   if (!session && !isPublicRoute) {
     const newUrl = new URL('/login', req.url)
@@ -36,9 +45,18 @@ export const proxy = auth((req) => {
   }
 
   // redirect to unauthorized page if user is not a user
-  if (isUserRoute) {
+  if (session && isUserRoute) {
     if (userRole !== 'USER') {
       return NextResponse.redirect(new URL('/unauthorized', req.url))
+    }
+
+    // Check if user has set their password
+    if (
+      session.user &&
+      !(session.user as any).hasSetPassword &&
+      pathname !== '/set-password'
+    ) {
+      return NextResponse.redirect(new URL('/set-password', req.url))
     }
   }
 

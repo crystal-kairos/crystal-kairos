@@ -211,3 +211,90 @@ export const reviewLoanRepaymentAction = async (transactionId: string, status: '
     return { success: false, error: error.message || 'Failed to review loan repayment.' }
   }
 }
+
+export const createLoanForMemberAction = async (data: {
+  userId: string
+  purpose: string
+  requestedAmount: number
+  duration: number
+  status: LoanStatus
+  approvedAmount?: number
+}) => {
+  try {
+    const session = await auth()
+    if (!session || (session.user.role !== 'ADMIN' && session.user.role !== 'OWNER')) {
+      return { success: false, error: 'Unauthorized.' }
+    }
+
+    const { userId, purpose, requestedAmount, duration, status, approvedAmount } = data
+
+    // Verify member exists
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      include: { bankAccounts: true }
+    })
+    
+    if (!user) return { success: false, error: 'Member not found.' }
+    if (!user.bankAccounts || user.bankAccounts.length === 0) {
+      return { success: false, error: 'Member must have a bank account set up first.' }
+    }
+    const defaultBank = user.bankAccounts[0]
+
+    // Fetch Global Loan Interest Rate
+    const loanSettings = await prisma.loanSettings.findUnique({
+      where: { id: 'global' },
+    })
+    const interestRate = loanSettings?.interestRate ? Number(loanSettings.interestRate) : 10
+
+    const actualApprovedAmount = approvedAmount || requestedAmount
+    
+    // Total repayment = Principal + (Principal * Interest Rate / 100)
+    let totalRepayment = requestedAmount
+    let outstandingBalance = requestedAmount
+
+    if (status === LoanStatus.DISBURSED || status === LoanStatus.ACCEPTED || status === LoanStatus.APPROVED) {
+      const interestAmount = (actualApprovedAmount * interestRate) / 100
+      totalRepayment = actualApprovedAmount + interestAmount
+      outstandingBalance = totalRepayment
+    }
+
+    const newLoan = await prisma.loan.create({
+      data: {
+        userId,
+        purpose,
+        requestedAmount: new Prisma.Decimal(requestedAmount),
+        approvedAmount: (status === LoanStatus.DISBURSED || status === LoanStatus.ACCEPTED || status === LoanStatus.APPROVED) ? new Prisma.Decimal(actualApprovedAmount) : null,
+        outstandingBalance: new Prisma.Decimal(outstandingBalance),
+        interestRate: new Prisma.Decimal(interestRate),
+        duration,
+        status,
+        repaymentEndDate: new Date(Date.now() + duration * 30 * 24 * 60 * 60 * 1000), // Approx. duration months
+      }
+    })
+
+    if (status === LoanStatus.DISBURSED) {
+      // Create a disbursement transaction record automatically if disbursed
+      await prisma.transaction.create({
+        data: {
+          userId,
+          amount: new Prisma.Decimal(actualApprovedAmount),
+          type: TransactionType.WITHDRAWAL, // Disbursement is a withdrawal from system to user
+          category: TransactionCategory.LOAN_DISBURSEMENT,
+          status: TransactionStatus.CONFIRMED,
+          loanId: newLoan.id,
+          notes: 'Loan auto-disbursed by Admin during record creation',
+          recordedBy: session.user.id,
+          processedBy: session.user.id,
+          processedAt: new Date(),
+        }
+      })
+    }
+
+    revalidatePath('/admin/loans')
+    revalidatePath(`/dashboard/${userId}/loans`)
+    return { success: true, data: newLoan }
+  } catch (error: any) {
+    console.error('Error creating loan for member:', error)
+    return { success: false, error: error.message || 'Failed to create loan record.' }
+  }
+}

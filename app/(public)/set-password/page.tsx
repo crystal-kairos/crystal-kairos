@@ -3,7 +3,8 @@ import { AuthShowcase } from '@/components/auth/AuthShowcase'
 import { verifyPasswordSetToken } from '@/models/auth/query'
 import { redirect } from 'next/navigation'
 import { AlertTriangle } from 'lucide-react'
-
+import { auth } from '@/auth'
+import { signUser } from '@/models/auth/query'
 const SetPasswordPage = async ({
   searchParams,
 }: {
@@ -26,8 +27,22 @@ const SetPasswordPage = async ({
     </div>
   )
 
+  const session = await auth()
+
   if (!token || Array.isArray(token)) {
+    if (session?.user && !(session.user as any).hasSetPassword) {
+      const response = await signUser(session.user.id as string, session.user.email as string)
+      if (response.success && response.token) {
+        redirect(`/set-password?token=${response.token}`)
+      }
+    }
     return renderError('Missing or malformed reset token.')
+  }
+
+  // Double check they shouldn't just be redirected away
+  if (session?.user && (session.user as any).hasSetPassword) {
+    const role = (session.user as any).role
+    redirect(role === 'USER' ? `/dashboard/${session.user.id}` : '/admin')
   }
 
   const data = await verifyPasswordSetToken(token)
