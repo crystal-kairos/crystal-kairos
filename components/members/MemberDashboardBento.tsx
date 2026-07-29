@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState } from 'react'
+import { useState } from 'react'
 import {
   Wallet,
   PlusCircle,
@@ -15,7 +15,6 @@ import {
   ArrowRight,
   Landmark,
   Users,
-  Eye,
   ArrowUpRight,
   ArrowDownLeft,
 } from 'lucide-react'
@@ -24,6 +23,7 @@ import { StatusPill } from '../ui/StatusPill'
 import { ReceiptLightbox } from '../ui/ReceiptLightbox'
 import { TransactionType } from '@/generated/prisma/enums'
 import Link from 'next/link'
+import { cn } from '@/lib/utils'
 
 interface AjoRecord {
   id: string
@@ -179,9 +179,26 @@ export const MemberDashboardBento = ({
           <div className='relative z-10 flex flex-wrap gap-3 mt-6'>
             <Button
               asChild
-              className='cursor-pointer rounded-sm bg-primary text-on-primary hover:bg-primary/95 flex items-center gap-1.5 h-10 px-5'
+              className={cn(
+                'cursor-pointer rounded-sm bg-primary text-on-primary hover:bg-primary/95 flex items-center gap-1.5 h-10 px-5',
+                hasBankAccounts && hasNextOfKin
+                  ? 'opacity-100 cursor-pointer'
+                  : 'opacity-10 cursor-not-allowed',
+              )}
+              // ={!hasBankAccounts || !hasNextOfKin}
+              title={
+                hasBankAccounts && hasNextOfKin
+                  ? ''
+                  : 'Complete your profile (Bank & Next of Kin) to join Ajo'
+              }
             >
-              <Link href={`/dashboard/${userId}/savings/new`}>
+              <Link
+                href={
+                  hasBankAccounts && hasNextOfKin
+                    ? `/dashboard/${userId}/savings`
+                    : '#'
+                }
+              >
                 <PlusCircle className='w-4 h-4' />
                 <span>Save</span>
               </Link>

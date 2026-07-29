@@ -1,16 +1,24 @@
-import NewSavingsClient from '@/components/admin/savings/NewSavingsClient'
 import { Metadata } from 'next'
-import { prisma } from '@/lib/prisma'
+import { NewSavingsProductClient } from '@/components/admin/NewSavingsProductClient'
+import { auth } from '@/auth'
+import { redirect } from 'next/navigation'
 
 export const metadata: Metadata = {
-  title: 'Create Savings Record | Crystal Kairos Admin',
+  title: 'Create Savings Product | Crystal Kairos Admin',
 }
 
 export default async function NewSavingsPage() {
-  const products = await prisma.savingsProduct.findMany({
-    where: { isActive: true },
-    select: { id: true, title: true }
-  })
+  const session = await auth()
+  if (
+    !session ||
+    (session.user.role !== 'ADMIN' && session.user.role !== 'OWNER')
+  ) {
+    redirect('/unauthorized')
+  }
 
-  return <NewSavingsClient products={products} />
+  return (
+    <div className='p-6 w-full'>
+      <NewSavingsProductClient />
+    </div>
+  )
 }
