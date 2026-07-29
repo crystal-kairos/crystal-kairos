@@ -53,7 +53,7 @@ export const { auth, signIn, signOut, handlers } = NextAuth({
           throw new AccountNotActivatedError()
         }
 
-        if (!user.hasSetPassword || !user.passwordHash) {
+        if (!user.passwordHash) {
           throw new PasswordNotSetError()
         }
 
@@ -75,6 +75,7 @@ export const { auth, signIn, signOut, handlers } = NextAuth({
       if (user) {
         token.role = (user as any).role as UserRole
         token.id = user.id
+        token.hasSetPassword = (user as any).hasSetPassword
       }
       return token
     },
@@ -82,6 +83,7 @@ export const { auth, signIn, signOut, handlers } = NextAuth({
       if (session.user) {
         ;(session.user as any).role = token.role
         session.user.id = token.id as string
+        ;(session.user as any).hasSetPassword = token.hasSetPassword
       }
       return session
     },

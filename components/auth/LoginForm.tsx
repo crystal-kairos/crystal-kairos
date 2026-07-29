@@ -69,10 +69,12 @@ const LoginForm = () => {
   }, [session])
 
   return (
-    <div className='w-full max-w-[440px] mx-auto flex justify-center items-center'>
+    <div className='w-full max-w-110 mx-auto flex justify-center items-center'>
       <div className='flex flex-col gap-6 w-full'>
         <section className='flex flex-col items-start'>
-          <h3 className='font-heading font-bold text-2xl text-primary tracking-tight'>{t('login.welcome_back')}</h3>
+          <h3 className='font-heading font-bold text-2xl text-primary tracking-tight'>
+            {t('login.welcome_back')}
+          </h3>
           <p className='text-muted-foreground text-sm mt-1'>
             {t('login.access_your_portal')}
           </p>

@@ -3,7 +3,8 @@
 import { auth } from '@/auth'
 import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
-
+import { SavingsStatus, TransactionCategory, TransactionStatus, TransactionType, SavingsType, SavingsFrequency, SavingsMaturity } from '@/generated/prisma/enums'
+import { Prisma } from '@/generated/prisma/client'
 export interface CreateSavingsProductPayload {
   type: 'FIXED' | 'REGULAR' | 'STAGGERED'
   title: string
@@ -164,5 +165,112 @@ export const reviewSavingsTransactionAction = async (transactionId: string, stat
   } catch (error: any) {
     console.error('Error reviewing savings transaction:', error)
     return { error: error.message || 'Failed to review transaction' }
+  }
+}
+
+export const createSavingsForMemberAction = async (data: {
+  userId: string
+  productId: string
+  targetAmount: number
+  frequency: SavingsFrequency
+  maturity: SavingsMaturity
+  receiptUrl?: string
+}) => {
+  try {
+    const session = await auth()
+    if (!session || (session.user.role !== 'ADMIN' && session.user.role !== 'OWNER')) {
+      return { success: false, error: 'Unauthorized.' }
+    }
+
+    const { userId, productId, targetAmount, frequency, maturity, receiptUrl } = data
+
+    // Verify member exists and has bank accounts
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      include: { bankAccounts: true }
+    })
+    
+    if (!user) return { success: false, error: 'Member not found.' }
+    if (!user.bankAccounts || user.bankAccounts.length === 0) {
+      return { success: false, error: 'Member must have a bank account set up first.' }
+    }
+    const defaultBank = user.bankAccounts[0]
+
+    // Verify product
+    const product = await prisma.savingsProduct.findUnique({ where: { id: productId } })
+    if (!product) return { success: false, error: 'Savings product not found.' }
+
+    let interestRate = 0
+    switch (maturity) {
+      case SavingsMaturity.ONE_MONTH: interestRate = Number(product.interestRate1Month || 0); break;
+      case SavingsMaturity.THREE_MONTHS: interestRate = Number(product.interestRate3Months || 0); break;
+      case SavingsMaturity.SIX_MONTHS: interestRate = Number(product.interestRate6Months || 0); break;
+      case SavingsMaturity.TWELVE_MONTHS: interestRate = Number(product.interestRate12Months || 0); break;
+    }
+
+    const savingsType = SavingsType.REGULAR
+
+    let periods = 1
+    if (frequency === SavingsFrequency.DAILY) periods = maturity === 'ONE_MONTH' ? 30 : maturity === 'THREE_MONTHS' ? 90 : maturity === 'SIX_MONTHS' ? 180 : 365
+    else if (frequency === SavingsFrequency.WEEKLY) periods = maturity === 'ONE_MONTH' ? 4 : maturity === 'THREE_MONTHS' ? 12 : maturity === 'SIX_MONTHS' ? 26 : 52
+    else if (frequency === SavingsFrequency.MONTHLY) periods = maturity === 'ONE_MONTH' ? 1 : maturity === 'THREE_MONTHS' ? 3 : maturity === 'SIX_MONTHS' ? 6 : 12
+
+    const totalContribution = targetAmount * periods
+    const interestAmount = (totalContribution * interestRate) / 100
+    const expectedMaturityAmount = totalContribution + interestAmount
+
+    const result = await prisma.$transaction(async (tx) => {
+      const savings = await tx.savings.create({
+        data: {
+          userId,
+          savingsType,
+          targetAmount,
+          frequency,
+          maturity,
+          interestRate: new Prisma.Decimal(interestRate),
+          bankName: defaultBank.bankName,
+          accountNumber: defaultBank.accountNumber,
+          accountName: defaultBank.accountName,
+          expectedMaturityAmount: new Prisma.Decimal(expectedMaturityAmount),
+          isAnonymousRequest: false,
+          status: receiptUrl ? SavingsStatus.ACTIVE : SavingsStatus.PENDING,
+          productId,
+        }
+      })
+
+      if (receiptUrl) {
+        await tx.transaction.create({
+          data: {
+            userId,
+            amount: new Prisma.Decimal(targetAmount),
+            type: TransactionType.DEPOSIT,
+            category: TransactionCategory.SAVINGS_DEPOSIT,
+            status: TransactionStatus.CONFIRMED,
+            savingsId: savings.id,
+            receiptUrl,
+            notes: 'Initial deposit by Admin',
+            recordedBy: session.user.id,
+            processedBy: session.user.id,
+            processedAt: new Date(),
+          }
+        })
+
+        await tx.savings.update({
+          where: { id: savings.id },
+          data: {
+            currentBalance: new Prisma.Decimal(targetAmount)
+          }
+        })
+      }
+
+      return savings
+    })
+
+    revalidatePath('/admin/savings')
+    revalidatePath(`/dashboard/${userId}/savings`)
+    return { success: true, data: result }
+  } catch (error: any) {
+    console.error('Error creating savings for member:', error)
+    return { success: false, error: error.message || 'Failed to create savings plan.' }
   }
 }

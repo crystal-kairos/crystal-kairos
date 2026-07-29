@@ -18,7 +18,6 @@ export const publicRoutes = [
 ]
 
 export const loggedInRestrictedRoutes = [
-  '/set-password',
   '/login',
   '/register',
   '/forgot-password',
