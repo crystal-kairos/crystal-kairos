@@ -1,24 +1,17 @@
-import NewEAjoClient from '@/components/admin/eajo/NewEAjoClient'
 import { Metadata } from 'next'
-import { prisma } from '@/lib/prisma'
-import { EAjoStatus } from '@/generated/prisma/enums'
+import { AdminCreateEAjoGroupClient } from '@/components/admin/AdminCreateEAjoGroupClient'
+import { auth } from '@/auth'
+import { redirect } from 'next/navigation'
 
 export const metadata: Metadata = {
-  title: 'Add Member to eAjo | Crystal Kairos Admin',
+  title: 'Create EAjo Group | Crystal Kairos Admin',
 }
 
 export default async function NewEAjoPage() {
-  const groups = await prisma.eAjoGroup.findMany({
-    where: { 
-      status: { in: [EAjoStatus.PENDING, EAjoStatus.ACTIVE] }
-    },
-    select: { 
-      id: true, 
-      contributionAmount: true, 
-      frequency: true, 
-      totalSlots: true 
-    }
-  })
+  const session = await auth()
+  if (!session?.user) redirect('/login')
+  if (session.user.role !== 'ADMIN' && session.user.role !== 'OWNER')
+    redirect('/dashboard')
 
-  return <NewEAjoClient groups={groups} />
+  return <AdminCreateEAjoGroupClient />
 }

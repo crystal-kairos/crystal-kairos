@@ -49,7 +49,11 @@ interface SavingsHubClientProps {
 
 const getIcon = (name: string) => {
   const IconComponent = (LucideIcons as any)[name]
-  return IconComponent ? <IconComponent className='w-5 h-5' /> : <PiggyBank className='w-5 h-5' />
+  return IconComponent ? (
+    <IconComponent className='w-5 h-5' />
+  ) : (
+    <PiggyBank className='w-5 h-5' />
+  )
 }
 
 export const SavingsHubClient = ({
@@ -105,7 +109,7 @@ export const SavingsHubClient = ({
 
       {/* Balance stats */}
       <section className='grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4'>
-        <Card className='border-0 bg-primary text-on-primary rounded-md shadow-none relative overflow-hidden p-6 min-h-[120px] flex flex-col justify-between'>
+        <Card className='border-0 bg-primary text-on-primary rounded-md shadow-none relative overflow-hidden p-6 min-h-30 flex flex-col justify-between'>
           <div className='absolute top-0 right-0 w-32 h-32 bg-white/5 rounded-full blur-2xl pointer-events-none' />
           <span className='text-[10px] uppercase tracking-wider font-semibold opacity-85'>
             Total Saved Balance
@@ -118,7 +122,7 @@ export const SavingsHubClient = ({
           </span>
         </Card>
 
-        <Card className='border-0 bg-surface-container rounded-md shadow-none p-6 min-h-[120px] flex flex-col justify-between'>
+        <Card className='border-0 bg-surface-container rounded-md shadow-none p-6 min-h-30 flex flex-col justify-between'>
           <span className='text-[10px] text-muted-foreground uppercase tracking-wider font-semibold'>
             Total Accrued Interest
           </span>
@@ -130,7 +134,7 @@ export const SavingsHubClient = ({
           </span>
         </Card>
 
-        <Card className='border-0 bg-surface-container rounded-md shadow-none p-6 min-h-[120px] flex flex-col justify-between'>
+        <Card className='border-0 bg-surface-container rounded-md shadow-none p-6 min-h-30 flex flex-col justify-between'>
           <span className='text-[10px] text-muted-foreground uppercase tracking-wider font-semibold'>
             Active Savings Plans
           </span>
@@ -161,7 +165,7 @@ export const SavingsHubClient = ({
                 key={plan.id}
                 href={`/dashboard/${userId}/savings/${plan.id}`}
               >
-                <Card className='border-0 bg-surface-container rounded-md shadow-none hover:ring-1 hover:ring-primary/20 transition-all duration-200 cursor-pointer p-5 flex flex-col justify-between min-h-[160px] group'>
+                <Card className='border-0 bg-surface-container rounded-md shadow-none hover:ring-1 hover:ring-primary/20 transition-all duration-200 cursor-pointer p-5 flex flex-col justify-between min-h-40 group'>
                   <div className='flex justify-between items-start mb-3'>
                     <div>
                       <h4 className='font-bold text-primary text-sm flex items-center gap-1.5'>
@@ -252,56 +256,56 @@ export const SavingsHubClient = ({
                         {p.badge}
                       </span>
                     </div>
-                  <h4 className='font-bold text-primary text-base leading-snug mt-2'>
-                    {p.title}
-                  </h4>
-                  <p className='text-muted-foreground text-xs leading-relaxed mt-1'>
-                    {p.description}
-                  </p>
+                    <h4 className='font-bold text-primary text-base leading-snug mt-2'>
+                      {p.title}
+                    </h4>
+                    <p className='text-muted-foreground text-xs leading-relaxed mt-1'>
+                      {p.description}
+                    </p>
 
-                  <div className='flex flex-col gap-1.5 mt-4 pt-3 border-t border-outline-variant/20 text-xs'>
-                    <div className='flex justify-between'>
-                      <span className='text-muted-foreground'>
-                        Interest rate:
-                      </span>
-                      <span className='font-bold text-success-green'>
-                        {p.rates}
-                      </span>
-                    </div>
-                    <div className='flex justify-between'>
-                      <span className='text-muted-foreground'>
-                        Term Options:
-                      </span>
-                      <span className='font-semibold text-primary'>
-                        1, 3, 6, 12 Months
-                      </span>
-                    </div>
-                    <div className='flex justify-between'>
-                      <span className='text-muted-foreground'>
-                        Loan multiplier:
-                      </span>
-                      <span className='font-bold text-primary font-mono'>
-                        2x saved amount
-                      </span>
+                    <div className='flex flex-col gap-1.5 mt-4 pt-3 border-t border-outline-variant/20 text-xs'>
+                      <div className='flex justify-between'>
+                        <span className='text-muted-foreground'>
+                          Interest rate:
+                        </span>
+                        <span className='font-bold text-success-green'>
+                          {p.rates}
+                        </span>
+                      </div>
+                      <div className='flex justify-between'>
+                        <span className='text-muted-foreground'>
+                          Term Options:
+                        </span>
+                        <span className='font-semibold text-primary'>
+                          1, 3, 6, 12 Months
+                        </span>
+                      </div>
+                      <div className='flex justify-between'>
+                        <span className='text-muted-foreground'>
+                          Loan multiplier:
+                        </span>
+                        <span className='font-bold text-primary font-mono'>
+                          2x saved amount
+                        </span>
+                      </div>
                     </div>
                   </div>
-                </div>
 
-                <Button
-                  asChild
-                  className='cursor-pointer rounded-sm bg-primary hover:bg-primary/95 text-on-primary font-semibold flex items-center justify-center gap-1.5 w-full mt-6 h-10'
-                >
-                  <Link
-                    href={`/dashboard/${userId}/savings/new?type=${p.type}&productId=${p.id}`}
+                  <Button
+                    asChild
+                    className='cursor-pointer rounded-sm bg-primary hover:bg-primary/95 text-on-primary font-semibold flex items-center justify-center gap-1.5 w-full mt-6 h-10'
                   >
-                    <span>Configure Plan</span>
-                    <ArrowRight className='w-4 h-4' />
-                  </Link>
-                </Button>
-              </Card>
-            )
-          })
-        )}
+                    <Link
+                      href={`/dashboard/${userId}/savings/new?type=${p.type}&productId=${p.id}`}
+                    >
+                      <span>Configure Plan</span>
+                      <ArrowRight className='w-4 h-4' />
+                    </Link>
+                  </Button>
+                </Card>
+              )
+            })
+          )}
         </div>
       </section>
 

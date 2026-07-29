@@ -84,12 +84,12 @@ const Sidebar = ({ role, data }: { role: UserRole; data: Data[] }) => {
           <UserAvatar />
           <div
             className={cn(
-              'text-sidebar-foreground',
+              'text-sidebar-foreground w-full',
               sidebarIsCollapsed ? 'hidden' : 'block',
             )}
           >
             <h3>{values.isAdmin ? 'System Admin' : session.data?.user.name}</h3>
-            <p className='text-xs'>
+            <p className='text-xs overflow-hidden text-ellipsis whitespace-nowrap'>
               {values.isAdmin
                 ? session.data?.user.name
                 : session.data?.user.email}
