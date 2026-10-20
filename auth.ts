@@ -9,18 +9,6 @@ class InvalidCredentialsError extends CredentialsSignin {
   code = 'invalid_credentials'
 }
 
-class AccountNotActivatedError extends CredentialsSignin {
-  code = 'account_not_activated'
-}
-
-class PasswordNotSetError extends CredentialsSignin {
-  code = 'password_not_set'
-}
-
-class UserNotFoundError extends CredentialsSignin {
-  code = 'user_not_found'
-}
-
 export const { auth, signIn, signOut, handlers } = NextAuth({
   adapter: PrismaAdapter(prisma),
   session: {
@@ -33,8 +21,9 @@ export const { auth, signIn, signOut, handlers } = NextAuth({
         password: { label: 'Password', type: 'password' },
       },
       async authorize(credentials) {
-        if (!credentials.email) return null
-        if (!credentials.password) return null
+        if (!credentials.email || !credentials.password) {
+          throw new InvalidCredentialsError()
+        }
 
         const user = await prisma.user.findUnique({
           where: {
@@ -45,21 +34,20 @@ export const { auth, signIn, signOut, handlers } = NextAuth({
           },
         })
 
-        if (!user) {
-          throw new UserNotFoundError()
-        }
-
-        if (user.membership?.status === MembershipStatus.PENDING) {
-          throw new AccountNotActivatedError()
-        }
-
-        if (!user.passwordHash) {
-          throw new PasswordNotSetError()
+        // Generic error on all login failures to prevent email or status enumeration
+        if (
+          !user ||
+          user.membership?.status === MembershipStatus.PENDING ||
+          user.membership?.status === MembershipStatus.REJECTED ||
+          !user.passwordHash ||
+          !user.hasSetPassword
+        ) {
+          throw new InvalidCredentialsError()
         }
 
         const isMatch = await bcrypt.compare(
           credentials.password as string,
-          user.passwordHash as string,
+          user.passwordHash,
         )
 
         if (!isMatch) {
@@ -73,17 +61,27 @@ export const { auth, signIn, signOut, handlers } = NextAuth({
   callbacks: {
     async jwt({ token, user }) {
       if (user) {
-        token.role = (user as any).role as UserRole
-        token.id = user.id
-        token.hasSetPassword = (user as any).hasSetPassword
+        const typedUser = user as {
+          id?: string
+          role?: UserRole
+          hasSetPassword?: boolean
+        }
+        token.role = typedUser.role
+        token.id = typedUser.id
+        token.hasSetPassword = typedUser.hasSetPassword
       }
       return token
     },
     async session({ session, token }) {
       if (session.user) {
-        ;(session.user as any).role = token.role
+        const sessionUser = session.user as {
+          id?: string
+          role?: unknown
+          hasSetPassword?: unknown
+        }
+        sessionUser.role = token.role
         session.user.id = token.id as string
-        ;(session.user as any).hasSetPassword = token.hasSetPassword
+        sessionUser.hasSetPassword = token.hasSetPassword
       }
       return session
     },

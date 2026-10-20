@@ -11,7 +11,6 @@ import { useState } from 'react'
 import { Button } from '../ui/button'
 import { Eye, EyeOff } from 'lucide-react'
 import {
-  Card,
   CardContent,
   CardDescription,
   CardFooter,
@@ -21,7 +20,6 @@ import {
 import Link from 'next/link'
 import { setPassword } from '@/models/auth/query'
 import { toast } from 'sonner'
-import { useRouter } from 'next/navigation'
 import { REDIRECT_DELAY } from '@/lib/constants'
 import { signOut } from 'next-auth/react'
 
@@ -34,7 +32,8 @@ const SetPasswordForm = ({
 }) => {
   const { t } = useTranslation('auth')
   const [isLoading, setIsLoading] = useState(false)
-  const router = useRouter()
+  const [showPassword, setShowPassword] = useState(false)
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false)
 
   const { control, handleSubmit } = useForm<SetPasswordFormSchema>({
     mode: 'onChange',
@@ -52,7 +51,11 @@ const SetPasswordForm = ({
     setIsLoading(false)
 
     if (response.error) {
-      toast.error(response.error.toString())
+      toast.error(
+        typeof response.error === 'string'
+          ? response.error
+          : 'This setup link is no longer valid.',
+      )
       return
     }
 
@@ -108,8 +111,6 @@ const SetPasswordForm = ({
               control={control}
               name='password'
               render={({ field, fieldState }) => {
-                const [showPassword, setShowPassword] = useState(false)
-
                 return (
                   <Field className='mb-5'>
                     <FieldLabel>{t('set_password.form.password')}</FieldLabel>
@@ -143,8 +144,6 @@ const SetPasswordForm = ({
               control={control}
               name='confirmPassword'
               render={({ field, fieldState }) => {
-                const [showPassword, setShowPassword] = useState(false)
-
                 return (
                   <Field className='mb-5'>
                     <FieldLabel>
@@ -155,16 +154,18 @@ const SetPasswordForm = ({
                         {...field}
                         placeholder={t('set_password.form.confirm_password')}
                         className='rounded-sm'
-                        type={showPassword ? 'text' : 'password'}
+                        type={showConfirmPassword ? 'text' : 'password'}
                       />
                       <InputGroupAddon align='inline-end'>
                         <Button
                           variant='ghost'
                           size='icon'
                           type='button'
-                          onClick={() => setShowPassword(!showPassword)}
+                          onClick={() =>
+                            setShowConfirmPassword(!showConfirmPassword)
+                          }
                         >
-                          {showPassword ? <EyeOff /> : <Eye />}
+                          {showConfirmPassword ? <EyeOff /> : <Eye />}
                         </Button>
                       </InputGroupAddon>
                     </InputGroup>

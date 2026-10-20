@@ -4,9 +4,10 @@ import { prisma } from '@/lib/prisma'
 import { getSessionHelper } from '../members/actions'
 import { hash } from 'bcryptjs'
 import { revalidatePath } from 'next/cache'
-import { UserRole, EAjoFrequency, EAjoDuration, EAjoStatus, EAjoMemberStatus, NotificationEventType, MembershipStatus } from '@/generated/prisma/enums'
+import { UserRole, EAjoFrequency, EAjoDuration, EAjoStatus, EAjoMemberStatus, NotificationEventType, MembershipStatus, PasswordSetupTokenPurpose } from '@/generated/prisma/enums'
 import { sendEmail } from '@/features/notification'
 import { generateMembershipNumber } from '@/lib/membership-number'
+import { issuePasswordSetupToken } from '@/lib/authz/tokens'
 
 /**
  * Creates a new administrative staff member (ADMIN or OWNER)
@@ -30,12 +31,44 @@ export const createAdminStaffAction = async (formData: {
       return { success: false, error: 'User with this email already exists.' }
     }
 
-    const defaultPassword = password || 'CrystalKairos2026!'
-    const passwordHash = await hash(defaultPassword, 10)
+    const hasProvidedPassword = Boolean(password && password.trim().length > 0)
+    const passwordHash = hasProvidedPassword ? await hash(password!.trim(), 12) : null
 
     const user = await prisma.user.create({
-      data: { name, email, role: role as UserRole, passwordHash, hasSetPassword: true },
+      data: {
+        name,
+        email,
+        role: role as UserRole,
+        passwordHash,
+        hasSetPassword: hasProvidedPassword,
+      },
     })
+
+    if (!hasProvidedPassword) {
+      const issued = await issuePasswordSetupToken({
+        userId: user.id,
+        purpose: PasswordSetupTokenPurpose.SET_PASSWORD,
+        createdById: session.user.id,
+      })
+      const appUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.NEXTAUTH_URL || 'http://localhost:3000'
+      const setPasswordUrl = `${appUrl.replace(/\/+$/, '')}/set-password?token=${encodeURIComponent(issued.rawToken)}`
+
+      try {
+        await sendEmail({
+          to: email,
+          subject: 'Activate Your Crystal Kairos Staff Account',
+          html: `
+            <h1>Welcome to Crystal Kairos, ${name}!</h1>
+            <p>A staff account has been created for you.</p>
+            <p><a href="${setPasswordUrl}">Click here to set your password</a> (link expires in 24 hours).</p>
+          `,
+          recipientId: user.id,
+          type: NotificationEventType.CUSTOM,
+        })
+      } catch (emailErr) {
+        console.error('Staff activation email failed:', emailErr)
+      }
+    }
 
     try { revalidatePath('/admin/settings') } catch {}
     return { success: true, data: user }
@@ -286,15 +319,11 @@ export const createMemberAction = async (formData: {
       return { success: false, error: 'User with this email already exists.' }
     }
 
-    // Generate random 8-character password
-    const tempPassword = Math.random().toString(36).slice(-8)
-    const passwordHash = await hash(tempPassword, 10)
-
     const user = await prisma.user.create({
       data: {
         name,
         email,
-        passwordHash,
+        passwordHash: null,
         hasSetPassword: false,
         role: UserRole.USER,
         membership: {
@@ -308,26 +337,40 @@ export const createMemberAction = async (formData: {
       }
     })
 
-    // Send email with temporary password
+    const issued = await issuePasswordSetupToken({
+      userId: user.id,
+      purpose: PasswordSetupTokenPurpose.SET_PASSWORD,
+      createdById: session.user.id,
+    })
+
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.NEXTAUTH_URL || 'http://localhost:3000'
+    const setPasswordUrl = `${appUrl.replace(/\/+$/, '')}/set-password?token=${encodeURIComponent(issued.rawToken)}`
+
     const emailHtml = `
       <h1>Welcome to Crystal Kairos, ${name}!</h1>
       <p>An administrator has created an account for you.</p>
-      <p>Your temporary password is: <strong>${tempPassword}</strong></p>
-      <p>Please log in and you will be prompted to change your password immediately.</p>
+      <p><a href="${setPasswordUrl}">Click here to set your password and activate your account</a> (link expires in 24 hours).</p>
     `
     
-    await sendEmail({
-      to: email,
-      subject: 'Welcome to Crystal Kairos - Your Account Details',
-      html: emailHtml,
-      recipientId: user.id,
-      type: NotificationEventType.CUSTOM,
-    })
+    try {
+      await sendEmail({
+        to: email,
+        subject: 'Welcome to Crystal Kairos - Activate Your Account',
+        html: emailHtml,
+        recipientId: user.id,
+        type: NotificationEventType.CUSTOM,
+      })
+    } catch (emailErr) {
+      console.error('Member activation email failed:', emailErr)
+    }
 
-    revalidatePath('/admin/members')
+    try { revalidatePath('/admin/members') } catch {}
     return { success: true, data: user }
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Error creating member:', error)
-    return { success: false, error: error.message || 'Failed to create member.' }
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to create member.',
+    }
   }
 }
