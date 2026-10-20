@@ -1,8 +1,6 @@
 'use server'
 
-import { assumptionsData } from '@/components/auth/registration-steps/data'
 import { onMemberRegistered } from '@/features/notification/triggers/member.triggers'
-import { getRequiredEnv } from '@/lib/env'
 import { prisma } from '@/lib/prisma'
 import {
   bankInfoSchema,
@@ -20,9 +18,15 @@ import {
   Step4State,
   Step5State,
 } from '@/types/register.interface'
-import axios from 'axios'
 import { hash } from 'bcryptjs'
-import jwt from 'jsonwebtoken'
+import {
+  consumePasswordSetupTokenAndSetPassword,
+  issuePasswordSetupToken,
+  TokenError,
+  verifyPasswordSetupToken,
+} from '@/lib/authz/tokens'
+import { PasswordSetupTokenPurpose, UserRole } from '@/generated/prisma/enums'
+import { getSessionHelper } from '@/models/members/actions'
 
 export const register = async (
   personalInfo: Step1State['data'],
@@ -42,7 +46,7 @@ export const register = async (
     membershipInfoSchema.parse(membershipInfo)
     reviewAndSubmitSchema.parse(reviewAndSubmit)
 
-    //   check if user already exists
+    // Check if user already exists
     const existingUser = await prisma.user.findUnique({
       where: {
         email: personalInfo.email,
@@ -51,11 +55,11 @@ export const register = async (
     if (existingUser) {
       return {
         success: false,
-        error: `Email ${personalInfo.email} already in use`,
+        error: 'Unable to complete registration with the provided details.',
       }
     }
 
-    //   create a new user
+    // Create a new user
     const { user } = await prisma.$transaction(async (tx) => {
       const newUser = await tx.user.create({
         data: {
@@ -128,67 +132,112 @@ export const register = async (
   }
 }
 
+/**
+ * Issues a single-use password setup token.
+ * Requires an authenticated ADMIN or OWNER session; callers cannot issue tokens
+ * for arbitrary user IDs without staff authorization.
+ */
 export const signUser = async (userId: string, userEmail: string) => {
   try {
-    const secret = getRequiredEnv('JWT_SECRET')
-    const expiresIn = getRequiredEnv(
-      'JWT_EXPIRATION',
-    ) as jwt.SignOptions['expiresIn']
-    if (!secret || !expiresIn) {
-      return { success: false, error: 'Missing JWT configuration' }
-    }
-    const token = jwt.sign({ userId, userEmail }, secret, { expiresIn })
+    const session = await getSessionHelper()
+    const actorRole = session?.user?.role as UserRole | undefined
+    const isStaff = actorRole === UserRole.ADMIN || actorRole === UserRole.OWNER
 
-    return { success: true, token }
+    if (!session?.user?.id || !isStaff) {
+      return {
+        success: false,
+        error: 'Unauthorized to issue setup tokens.',
+      }
+    }
+
+    const targetUser = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, email: true, hasSetPassword: true },
+    })
+
+    if (
+      !targetUser ||
+      targetUser.email.trim().toLowerCase() !== userEmail.trim().toLowerCase()
+    ) {
+      return {
+        success: false,
+        error: 'Unable to issue setup token for this account.',
+      }
+    }
+
+    const issued = await issuePasswordSetupToken({
+      userId: targetUser.id,
+      purpose: PasswordSetupTokenPurpose.SET_PASSWORD,
+      createdById: session.user.id,
+    })
+
+    return { success: true, token: issued.rawToken }
   } catch (error) {
-    return { success: false, error: error as Error }
+    return {
+      success: false,
+      error:
+        error instanceof TokenError
+          ? error.message
+          : 'Unable to issue setup token.',
+    }
   }
 }
 
 export const verifyToken = async (token: string) => {
   try {
-    const decoded = jwt.verify(token, getRequiredEnv('JWT_SECRET'))
-    if (!decoded) {
-      return { success: false, error: 'Invalid token' }
-    }
+    const verified = await verifyPasswordSetupToken({
+      rawToken: token,
+      purpose: PasswordSetupTokenPurpose.SET_PASSWORD,
+    })
+
     return {
       success: true,
-      data: decoded as { userId: string; userEmail: string },
+      data: {
+        userId: verified.userId,
+        userEmail: verified.userEmail,
+      },
     }
   } catch (error) {
-    return { success: false, error: error as Error }
+    return {
+      success: false,
+      error:
+        error instanceof TokenError
+          ? error.message
+          : 'This setup link is no longer valid.',
+    }
   }
 }
 
 export const verifyPasswordSetToken = async (token: string) => {
   try {
-    const response = await verifyToken(token)
-    if (!response.success) {
-      return {
-        success: false,
-        error: response.error,
-      }
-    }
-
-    if (response.success && response.data?.userEmail) {
-      const user = await prisma.user.findUnique({
-        where: { email: response.data.userEmail },
-      })
-      if (user && user.hasSetPassword) {
-        return {
-          success: false,
-          error: 'Password set',
-          redirect: '/login',
-        }
-      }
-    }
+    const verified = await verifyPasswordSetupToken({
+      rawToken: token,
+      purpose: PasswordSetupTokenPurpose.SET_PASSWORD,
+    })
 
     return {
       success: true,
-      data: response.data as { userEmail: string; userId: string },
+      data: {
+        userId: verified.userId,
+        userEmail: verified.userEmail,
+      },
     }
   } catch (error) {
-    return { success: false, data: null, error: error as Error }
+    if (error instanceof TokenError && error.code === 'ACCOUNT_NOT_ELIGIBLE') {
+      return {
+        success: false,
+        error: error.message,
+        redirect: '/login',
+      }
+    }
+    return {
+      success: false,
+      data: null,
+      error:
+        error instanceof TokenError
+          ? error.message
+          : 'This setup link is no longer valid.',
+    }
   }
 }
 
@@ -197,43 +246,31 @@ export const setPassword = async (
   token: string,
 ) => {
   try {
-    // Validations
-    setPasswordSchema.parse(formData)
+    const parsed = setPasswordSchema.parse(formData)
+    const hashedPassword = await hash(parsed.password, 12)
 
-    // verify token
-    const response = await verifyToken(token)
-    if (!response.success) {
-      return {
-        success: false,
-        error: response.error,
-      }
-    }
-
-    if (response.data) {
-      if (response.data.userEmail !== formData.email) {
-        return {
-          success: false,
-          error: 'Invalid email address',
-        }
-      }
-    }
-
-    const user = await prisma.user.findUnique({
-      where: { email: formData.email },
+    const result = await consumePasswordSetupTokenAndSetPassword({
+      rawToken: token,
+      email: parsed.email,
+      passwordHash: hashedPassword,
+      purpose: PasswordSetupTokenPurpose.SET_PASSWORD,
     })
-    if (!user) {
-      return {
-        success: false,
-        error: 'No account found with this email address.',
-      }
+
+    return {
+      success: true,
+      data: {
+        id: result.userId,
+        email: result.email,
+      },
     }
-    const hashedPassword = await hash(formData.password, 10)
-    await prisma.user.update({
-      where: { id: user.id },
-      data: { passwordHash: hashedPassword, hasSetPassword: true },
-    })
-    return { success: true, data: user }
   } catch (error) {
-    return { success: false, data: null, error: error as Error }
+    return {
+      success: false,
+      data: null,
+      error:
+        error instanceof TokenError
+          ? error.message
+          : 'This setup link is no longer valid.',
+    }
   }
 }

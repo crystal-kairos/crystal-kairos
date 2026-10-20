@@ -185,6 +185,12 @@ enum TransactionType {
 // ============================================
 // CORE USER MODELS
 // ============================================
+
+enum PasswordSetupTokenPurpose {
+  SET_PASSWORD
+  RESET_PASSWORD
+}
+
 model User {
   id                     String         @id @default(uuid())
   email                  String         @unique
@@ -204,6 +210,7 @@ model User {
   // Relations
   accounts               Account[]
   sessions               Session[]
+  passwordSetupTokens    PasswordSetupToken[]
   userInfo               UserInfo?
   bankAccounts           BankAccount[]
   nextOfKin              NextOfKin?
@@ -253,6 +260,24 @@ model Session {
   user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("sessions")
+}
+
+model PasswordSetupToken {
+  id            String                    @id @default(uuid())
+  userId        String
+  tokenHash     String                    @unique
+  purpose       PasswordSetupTokenPurpose @default(SET_PASSWORD)
+  expiresAt     DateTime
+  usedAt        DateTime?
+  requestedIp   String?
+  createdById   String?
+  createdAt     DateTime                  @default(now())
+  user          User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, purpose, createdAt])
+  @@index([requestedIp, createdAt])
+  @@index([expiresAt])
+  @@map("password_setup_tokens")
 }
 
 model UserInfo {

@@ -4,7 +4,7 @@ import { verifyPasswordSetToken } from '@/models/auth/query'
 import { redirect } from 'next/navigation'
 import { AlertTriangle } from 'lucide-react'
 import { auth } from '@/auth'
-import { signUser } from '@/models/auth/query'
+
 const SetPasswordPage = async ({
   searchParams,
 }: {
@@ -30,19 +30,17 @@ const SetPasswordPage = async ({
   const session = await auth()
 
   if (!token || Array.isArray(token)) {
-    if (session?.user && !(session.user as any).hasSetPassword) {
-      const response = await signUser(session.user.id as string, session.user.email as string)
-      if (response.success && response.token) {
-        redirect(`/set-password?token=${response.token}`)
-      }
-    }
-    return renderError('Missing or malformed reset token.')
+    return renderError('Missing or malformed setup token.')
   }
 
-  // Double check they shouldn't just be redirected away
-  if (session?.user && (session.user as any).hasSetPassword) {
-    const role = (session.user as any).role
-    redirect(role === 'USER' ? `/dashboard/${session.user.id}` : '/admin')
+  const sessionUser = session?.user as
+    | { id?: string; role?: string; hasSetPassword?: boolean }
+    | undefined
+
+  if (sessionUser?.hasSetPassword) {
+    redirect(
+      sessionUser.role === 'USER' ? `/dashboard/${sessionUser.id}` : '/admin',
+    )
   }
 
   const data = await verifyPasswordSetToken(token)
@@ -52,7 +50,7 @@ const SetPasswordPage = async ({
   }
 
   if (data.error || !data.data) {
-    return renderError('The password reset link is invalid or has expired.')
+    return renderError('The password setup link is invalid or has expired.')
   }
 
   return (

@@ -10,7 +10,9 @@ import {
   onMembershipApproved,
   onMembershipRejected,
 } from '@/features/notification/triggers/member.triggers'
-import { signUser } from '../auth/query'
+import { issuePasswordSetupToken } from '@/lib/authz/tokens'
+import { PasswordSetupTokenPurpose } from '@/generated/prisma/enums'
+import { getSessionHelper } from './actions'
 import { MembersLoansQueryParams } from '@/types/loans.interface'
 
 export const getAllMembers = async (filters: AllMembersQueryParams) => {
@@ -194,16 +196,19 @@ export const getMemberById = async (memberId: string) => {
 export const approveMember = async (
   userId: string,
   adminId: string,
-  userEmail: string,
+  userEmail?: string,
 ) => {
   try {
+    void userEmail
+    const session = await getSessionHelper()
+    const actorId = session?.user?.id ?? adminId
     const membershipNumber = generateMembershipNumber()
     const member = await prisma.membership.update({
       where: { userId },
       data: {
         status: MembershipStatus.APPROVED,
         approvedAt: new Date(),
-        approvedBy: adminId,
+        approvedBy: actorId,
         membershipNumber,
       },
     })
@@ -223,14 +228,18 @@ export const approveMember = async (
           error: new Error('API URL is not set'),
         }
       }
-      const data = await signUser(userId, userEmail)
+      const issued = await issuePasswordSetupToken({
+        userId,
+        purpose: PasswordSetupTokenPurpose.SET_PASSWORD,
+        createdById: actorId,
+      })
 
-      if (data.token) {
+      if (issued.rawToken) {
         await onMembershipApproved(
           userId,
           membershipNumber,
           member.tier,
-          data.token,
+          issued.rawToken,
         )
       }
     } catch (error) {
