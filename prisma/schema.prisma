@@ -237,6 +237,15 @@ model User {
   hasSetPassword         Boolean        @default(false) // Track if user has activated account
   sessionVersion         Int            @default(0)
   lastLoginAt            DateTime?
+  mfaEnabled             Boolean        @default(false)
+  mfaSecret              String? // AES-256-GCM encrypted TOTP secret
+  mfaBackupCodes         Json? // Array of { hash: string, usedAt?: string }
+  mfaEnrolledAt          DateTime?
+  mfaResetAt             DateTime?
+  lockedUntil            DateTime?
+  lockoutCount           Int            @default(0)
+  isActive               Boolean        @default(true)
+  deactivationReason     String?
   createdAt              DateTime       @default(now())
   updatedAt              DateTime       @updatedAt
   receivedNotifications  Notification[] @relation("ReceivedNotifications")
@@ -245,6 +254,8 @@ model User {
   // Relations
   accounts                Account[]
   sessions                Session[]
+  userSessions            UserSession[]
+  loginAttempts           LoginAttempt[]
   passwordSetupTokens     PasswordSetupToken[]
   adminPermissionGrants   AdminPermissionGrant[] @relation("AdminPermissionGrants")
   createdPermissionGrants AdminPermissionGrant[] @relation("PermissionGrantCreator")
@@ -787,4 +798,45 @@ model LoanSettings {
   interestRate Decimal  @default(5.0) @db.Decimal(5, 2)
   updatedAt    DateTime @updatedAt
   updatedBy    String?
+}
+
+
+model UserSession {
+  id             String    @id @default(uuid())
+  userId         String
+  createdAt      DateTime  @default(now())
+  lastSeenAt     DateTime  @default(now())
+  expiresAt      DateTime
+  idleExpiresAt  DateTime
+  userAgentLabel String?
+  ipHash         String?
+  mfaVerifiedAt  DateTime?
+  revokedAt      DateTime?
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt, expiresAt])
+  @@map("user_sessions")
+}
+
+model LoginAttempt {
+  id        String   @id @default(uuid())
+  userId    String?
+  emailHash String
+  ipHash    String
+  succeeded Boolean
+  createdAt DateTime @default(now())
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([emailHash, createdAt])
+  @@index([ipHash, createdAt])
+  @@map("login_attempts")
+}
+
+model SocietySetting {
+  key       String   @id
+  value     Json
+  updatedBy String?
+  updatedAt DateTime @updatedAt
+
+  @@map("society_settings")
 }

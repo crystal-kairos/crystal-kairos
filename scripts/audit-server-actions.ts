@@ -9,6 +9,7 @@ export const PUBLIC_ACTION_ALLOWLIST = new Set<string>([
   'models/auth/query.ts:verifyToken',
   'models/auth/query.ts:verifyPasswordSetToken',
   'models/auth/query.ts:setPassword',
+  'models/auth/mfaActions.ts:verifyMfaChallengeAction',
   'models/members/actions.ts:getSessionHelper',
 ])
 

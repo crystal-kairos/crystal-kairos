@@ -5,6 +5,7 @@ import {
   ALL_ADMIN_PERMISSIONS,
   hasPermissionInSet,
 } from '@/lib/authz/permissions'
+import { validateAndTouchUserSession } from '@/lib/authz/sessions'
 
 export type AuthzErrorCode =
   | 'UNAUTHENTICATED'
@@ -12,6 +13,7 @@ export type AuthzErrorCode =
   | 'NOT_FOUND'
   | 'DUAL_CONTROL_REQUIRED'
   | 'STAFF_CANNOT_BE_MEMBER'
+  | 'MFA_REQUIRED'
 
 export class AuthzError extends Error {
   readonly code: AuthzErrorCode
@@ -29,6 +31,8 @@ export interface AuthenticatedActor {
   name: string
   role: UserRole
   sessionVersion: number
+  sessionId?: string
+  mfaEnabled?: boolean
   isActive?: boolean
 }
 
@@ -51,11 +55,27 @@ async function loadLiveActor(
         email?: string
         role?: UserRole
         sessionVersion?: number
+        sid?: string
       }
     | undefined
 
   if (!sessionUser?.id) {
     throw new AuthzError('UNAUTHENTICATED', 'Please sign in.')
+  }
+
+  // 1. If session carries a sid (database session), validate it against user_sessions table
+  if (sessionUser.sid) {
+    const sessionValidation = await validateAndTouchUserSession(
+      sessionUser.sid,
+      new Date(),
+      db,
+    )
+    if (!sessionValidation.valid) {
+      throw new AuthzError(
+        'UNAUTHENTICATED',
+        'Your session has expired or been revoked. Please sign in again.',
+      )
+    }
   }
 
   const dbUser = (await db.user.findUnique({
@@ -66,8 +86,10 @@ async function loadLiveActor(
       name: true,
       role: true,
       sessionVersion: true,
+      mfaEnabled: true,
+      isActive: true,
     },
-  })) as (AuthenticatedActor & { isActive?: boolean }) | null
+  })) as (AuthenticatedActor & { isActive?: boolean; mfaEnabled?: boolean }) | null
 
   if (!dbUser) {
     throw new AuthzError('UNAUTHENTICATED', 'Please sign in.')
@@ -97,7 +119,11 @@ async function loadLiveActor(
     )
   }
 
-  return dbUser
+  return {
+    ...dbUser,
+    mfaEnabled: dbUser.mfaEnabled ?? true,
+    sessionId: sessionUser.sid,
+  }
 }
 
 export async function requireAuthenticatedSession(
@@ -141,6 +167,14 @@ export async function requireStaffSession(
     throw new AuthzError('FORBIDDEN', 'Not authorised.')
   }
 
+  // P1-07: Staff accounts must have MFA enrolled and verified
+  if (actor.mfaEnabled === false) {
+    throw new AuthzError(
+      'MFA_REQUIRED',
+      'Multi-factor authentication must be enabled for staff accounts.',
+    )
+  }
+
   if (actor.role === UserRole.OWNER) {
     return {
       ...actor,
@@ -173,6 +207,13 @@ export async function requireOwner(
     )
   }
 
+  if (actor.mfaEnabled === false) {
+    throw new AuthzError(
+      'MFA_REQUIRED',
+      'Multi-factor authentication must be enabled for the cooperative owner account.',
+    )
+  }
+
   return {
     ...actor,
     role: UserRole.OWNER,
@@ -184,18 +225,10 @@ export async function requirePermission(
   permission: AdminPermission,
   db: typeof prisma = prisma,
 ): Promise<StaffActor> {
-  const actor = await loadLiveActor(db)
+  const actor = await requireStaffSession(db)
 
   if (actor.role === UserRole.OWNER) {
-    return {
-      ...actor,
-      role: UserRole.OWNER,
-      permissions: ALL_ADMIN_PERMISSIONS,
-    }
-  }
-
-  if (actor.role !== UserRole.ADMIN) {
-    throw new AuthzError('FORBIDDEN', 'Not authorised.')
+    return actor
   }
 
   const grant = await db.adminPermissionGrant.findUnique({
@@ -214,16 +247,7 @@ export async function requirePermission(
     )
   }
 
-  const allGrants = await db.adminPermissionGrant.findMany({
-    where: { adminUserId: actor.id },
-    select: { permission: true },
-  })
-
-  return {
-    ...actor,
-    role: UserRole.ADMIN,
-    permissions: allGrants.map((g) => g.permission),
-  }
+  return actor
 }
 
 export async function requireAnyPermission(

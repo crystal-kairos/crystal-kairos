@@ -1,12 +1,19 @@
 import { NextResponse } from 'next/server'
 import { auth } from './auth'
 import { loggedInRestrictedRoutes, publicRoutes } from './routes-def'
+import { prisma } from './lib/prisma'
 
-export const proxy = auth((req) => {
+export const proxy = auth(async (req) => {
   const pathname = req.nextUrl.pathname
   const session = req.auth
   const sessionUser = session?.user as
-    | { id?: string; role?: string; hasSetPassword?: boolean }
+    | {
+        id?: string
+        role?: string
+        hasSetPassword?: boolean
+        mfaEnabled?: boolean
+        mfaVerified?: boolean
+      }
     | undefined
   const userRole = sessionUser?.role
   const userId = sessionUser?.id
@@ -16,7 +23,7 @@ export const proxy = auth((req) => {
   const isUserRoute = pathname.startsWith('/dashboard')
   const isAdminUser = userRole === 'ADMIN' || userRole === 'OWNER'
 
-  // Redirect to admin or user page if user is logged in
+  // Redirect to admin or user page if user is logged in and trying to visit login/register
   if (loggedInRestrictedRoutes.includes(pathname) && session) {
     if (isAdminUser) {
       return NextResponse.redirect(new URL('/admin', req.url))
@@ -45,7 +52,26 @@ export const proxy = auth((req) => {
     return NextResponse.redirect(new URL('/unauthorized', req.url))
   }
 
-  // Redirect to unauthorized page if user is not a regular member
+  // P1-07: Staff users (OWNER and ADMIN) must enrol in MFA before opening any /admin page
+  if (isAdminRoute && isAdminUser) {
+    let mfaEnabled = sessionUser?.mfaEnabled
+    if (!mfaEnabled && sessionUser?.id) {
+      const dbUser = await prisma.user.findUnique({
+        where: { id: sessionUser.id },
+        select: { mfaEnabled: true },
+      })
+      mfaEnabled = dbUser?.mfaEnabled ?? false
+    }
+
+    if (!mfaEnabled && pathname !== '/security' && !pathname.startsWith('/security/')) {
+      const securityUrl = new URL('/security', req.url)
+      securityUrl.searchParams.set('reason', 'mfa_required')
+      securityUrl.searchParams.set('callbackUrl', req.nextUrl.pathname)
+      return NextResponse.redirect(securityUrl)
+    }
+  }
+
+  // Redirect to unauthorized page if user is not a regular member attempting user dashboard
   if (session && isUserRoute) {
     if (userRole !== 'USER') {
       return NextResponse.redirect(new URL('/unauthorized', req.url))
