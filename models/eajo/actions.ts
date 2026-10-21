@@ -13,22 +13,17 @@ import {
 import { EAjoMember, Transaction } from '@/generated/prisma/client'
 import { revalidatePath } from 'next/cache'
 import { uploadReceipt } from '@/lib/upload'
+import { bindStoredFileToRecord } from '@/lib/storage/cloudinary'
 import {
-  bindStoredFileToRecord,
-  StorageConfigError,
-  StorageUploadError,
-} from '@/lib/storage/cloudinary'
-import {
-  FileValidationError,
   isStoredFilePurpose,
   StoredFilePurpose,
 } from '@/lib/storage/file-validation'
 import {
   assertTargetUserIsMember,
-  AuthzError,
   requireAuthenticatedSession,
   requireMemberOrStaffWithPermission,
 } from '@/lib/authz/guards'
+import { toActionErrorResult } from '@/lib/errors/to-action-result'
 
 const serializeMember = (m: EAjoMember) => ({
   ...m,
@@ -158,14 +153,17 @@ export const applyToEAjoGroupAction = async (
       data: serializeMember(newMember),
     }
   } catch (error) {
-    if (error instanceof AuthzError) {
-      return { success: false, error: error.message }
-    }
-    console.error('Error applying to eAjo group:', error)
+    const err = toActionErrorResult(error, {
+      actionName: 'applyToEAjoGroupAction',
+      fallbackMessage: 'Failed to apply to group.',
+      context: { userId, groupId },
+    })
     return {
       success: false,
-      error:
-        error instanceof Error ? error.message : 'Failed to apply to group.',
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
   }
 }
@@ -237,16 +235,17 @@ export const submitEAjoContributionAction = async (
       data: serializeTransaction(newTransaction),
     }
   } catch (error) {
-    if (error instanceof AuthzError) {
-      return { success: false, error: error.message }
-    }
-    console.error('Error submitting contribution receipt:', error)
+    const err = toActionErrorResult(error, {
+      actionName: 'submitEAjoContributionAction',
+      fallbackMessage: 'Failed to submit contribution receipt.',
+      context: { userId, eAjoMemberId, amount },
+    })
     return {
       success: false,
-      error:
-        error instanceof Error
-          ? error.message
-          : 'Failed to submit contribution receipt.',
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
   }
 }
@@ -262,6 +261,7 @@ export const uploadReceiptAction = async (formData: FormData) => {
     if (formData.has('folder')) {
       return {
         success: false,
+        code: 'VALIDATION_ERROR',
         error: 'Client-specified storage folders are not permitted.',
       }
     }
@@ -272,6 +272,7 @@ export const uploadReceiptAction = async (formData: FormData) => {
       if (!isStoredFilePurpose(rawPurpose)) {
         return {
           success: false,
+          code: 'VALIDATION_ERROR',
           error: 'Invalid file storage purpose.',
         }
       }
@@ -280,7 +281,11 @@ export const uploadReceiptAction = async (formData: FormData) => {
 
     const file = formData.get('file') as File | null
     if (!file || typeof file.arrayBuffer !== 'function') {
-      return { success: false, error: 'No file uploaded' }
+      return {
+        success: false,
+        code: 'VALIDATION_ERROR',
+        error: 'No file uploaded',
+      }
     }
 
     const buffer = Buffer.from(await file.arrayBuffer())
@@ -298,25 +303,16 @@ export const uploadReceiptAction = async (formData: FormData) => {
       publicId: uploadResult.publicId,
     }
   } catch (error) {
-    if (
-      error instanceof AuthzError ||
-      error instanceof FileValidationError
-    ) {
-      return { success: false, error: error.message }
-    }
-    if (
-      error instanceof StorageConfigError ||
-      error instanceof StorageUploadError
-    ) {
-      return {
-        success: false,
-        error: 'Unable to upload file right now. Please try again later.',
-      }
-    }
-    console.error('File upload action error:', error)
+    const err = toActionErrorResult(error, {
+      actionName: 'uploadReceiptAction',
+      fallbackMessage: 'Unable to upload receipt file.',
+    })
     return {
       success: false,
-      error: 'Unable to upload receipt file.',
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
   }
 }

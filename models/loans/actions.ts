@@ -12,11 +12,11 @@ import { revalidatePath } from 'next/cache'
 import { serializeLoan, serializeTransaction } from '@/lib/loans'
 import { Prisma } from '@/generated/prisma/client'
 import {
-  AuthzError,
   requireAuthenticatedSession,
   requireMemberSession,
 } from '@/lib/authz/guards'
 import { bindStoredFileToRecord } from '@/lib/storage/cloudinary'
+import { toActionErrorResult } from '@/lib/errors/to-action-result'
 
 /**
  * Searches for an active cooperative member by email to nominate as a guarantor.
@@ -56,16 +56,16 @@ export const searchMemberByEmailAction = async (email: string) => {
       },
     }
   } catch (error) {
-    if (error instanceof AuthzError) {
-      return { success: false, error: error.message }
-    }
-    console.error('Error searching member:', error)
+    const err = toActionErrorResult(error, {
+      actionName: 'searchMemberByEmailAction',
+      fallbackMessage: 'An error occurred during search.',
+    })
     return {
       success: false,
-      error:
-        error instanceof Error
-          ? error.message
-          : 'An error occurred during search.',
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
   }
 }
@@ -167,14 +167,17 @@ export const applyForLoanAction = async (
 
     return { success: true, data: serializeLoan(newLoan) }
   } catch (error) {
-    if (error instanceof AuthzError) {
-      return { success: false, error: error.message }
-    }
-    console.error('Error applying for loan:', error)
+    const err = toActionErrorResult(error, {
+      actionName: 'applyForLoanAction',
+      fallbackMessage: 'Failed to apply for loan.',
+      context: { userId },
+    })
     return {
       success: false,
-      error:
-        error instanceof Error ? error.message : 'Failed to apply for loan.',
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
   }
 }
@@ -246,16 +249,17 @@ export const submitLoanRepaymentAction = async (
 
     return { success: true, data: serializeTransaction(newTransaction) }
   } catch (error) {
-    if (error instanceof AuthzError) {
-      return { success: false, error: error.message }
-    }
-    console.error('Error submitting loan repayment:', error)
+    const err = toActionErrorResult(error, {
+      actionName: 'submitLoanRepaymentAction',
+      fallbackMessage: 'Failed to submit loan repayment.',
+      context: { userId, loanId: data.loanId },
+    })
     return {
       success: false,
-      error:
-        error instanceof Error
-          ? error.message
-          : 'Failed to submit loan repayment.',
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
   }
 }
@@ -285,13 +289,17 @@ export const acceptLoanOfferAction = async (userId: string, loanId: string) => {
     } catch {}
     return { success: true }
   } catch (error: unknown) {
-    if (error instanceof AuthzError) {
-      return { success: false, error: error.message }
-    }
-    console.error('Failed to accept loan:', error)
+    const err = toActionErrorResult(error, {
+      actionName: 'acceptLoanOfferAction',
+      fallbackMessage: 'Failed to accept loan',
+      context: { userId, loanId },
+    })
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Failed to accept loan',
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
   }
 }
@@ -329,13 +337,17 @@ export const declineLoanOfferAction = async (
     } catch {}
     return { success: true }
   } catch (error: unknown) {
-    if (error instanceof AuthzError) {
-      return { success: false, error: error.message }
-    }
-    console.error('Failed to decline loan:', error)
+    const err = toActionErrorResult(error, {
+      actionName: 'declineLoanOfferAction',
+      fallbackMessage: 'Failed to decline loan',
+      context: { userId, loanId },
+    })
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Failed to decline loan',
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
   }
 }

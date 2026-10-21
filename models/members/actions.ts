@@ -7,10 +7,10 @@ import { revalidatePath } from 'next/cache'
 import { AdminPermission, Relationship } from '@/generated/prisma/enums'
 import {
   assertTargetUserIsMember,
-  AuthzError,
   requireAuthenticatedSession,
   requireMemberOrStaffWithPermission,
 } from '@/lib/authz/guards'
+import { toActionErrorResult } from '@/lib/errors/to-action-result'
 
 interface NextOfKinInput {
   name: string
@@ -91,14 +91,17 @@ export const updateNextOfKinAction = async (
 
     return { success: true, data: result }
   } catch (error) {
-    if (error instanceof AuthzError) {
-      return { success: false, error: error.message }
-    }
-    console.error('Error updating next of kin:', error)
+    const err = toActionErrorResult(error, {
+      actionName: 'updateNextOfKinAction',
+      fallbackMessage: 'Failed to update next of kin',
+      context: { userId },
+    })
     return {
       success: false,
-      error:
-        error instanceof Error ? error.message : 'Failed to update next of kin',
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
   }
 }
@@ -109,7 +112,10 @@ interface BankAccountInput {
   accountName: string
 }
 
-export const addBankAccountAction = async (userId: string, data: BankAccountInput) => {
+export const addBankAccountAction = async (
+  userId: string,
+  data: BankAccountInput,
+) => {
   try {
     await requireMemberOrStaffWithPermission(userId, [
       AdminPermission.PROFILE_CHANGES_REVIEW,
@@ -146,18 +152,25 @@ export const addBankAccountAction = async (userId: string, data: BankAccountInpu
 
     return { success: true, data: result }
   } catch (error) {
-    if (error instanceof AuthzError) {
-      return { success: false, error: error.message }
-    }
-    console.error('Error adding bank account:', error)
+    const err = toActionErrorResult(error, {
+      actionName: 'addBankAccountAction',
+      fallbackMessage: 'Failed to add bank account',
+      context: { userId },
+    })
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Failed to add bank account',
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
   }
 }
 
-export const setPrimaryBankAccountAction = async (userId: string, bankAccountId: string) => {
+export const setPrimaryBankAccountAction = async (
+  userId: string,
+  bankAccountId: string,
+) => {
   try {
     await requireMemberOrStaffWithPermission(userId, [
       AdminPermission.PROFILE_CHANGES_REVIEW,
@@ -188,18 +201,25 @@ export const setPrimaryBankAccountAction = async (userId: string, bankAccountId:
 
     return { success: true, data: result }
   } catch (error) {
-    if (error instanceof AuthzError) {
-      return { success: false, error: error.message }
-    }
-    console.error('Error setting primary bank account:', error)
+    const err = toActionErrorResult(error, {
+      actionName: 'setPrimaryBankAccountAction',
+      fallbackMessage: 'Failed to set primary bank account',
+      context: { userId, bankAccountId },
+    })
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Failed to set primary bank account',
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
   }
 }
 
-export const deleteBankAccountAction = async (userId: string, bankAccountId: string) => {
+export const deleteBankAccountAction = async (
+  userId: string,
+  bankAccountId: string,
+) => {
   try {
     await requireMemberOrStaffWithPermission(userId, [
       AdminPermission.PROFILE_CHANGES_REVIEW,
@@ -222,7 +242,8 @@ export const deleteBankAccountAction = async (userId: string, bankAccountId: str
       if (totalAccounts > 1) {
         return {
           success: false,
-          error: 'Cannot delete primary bank account. Please set another account as primary first.',
+          error:
+            'Cannot delete primary bank account. Please set another account as primary first.',
         }
       }
     }
@@ -238,18 +259,25 @@ export const deleteBankAccountAction = async (userId: string, bankAccountId: str
 
     return { success: true, data: result }
   } catch (error) {
-    if (error instanceof AuthzError) {
-      return { success: false, error: error.message }
-    }
-    console.error('Error deleting bank account:', error)
+    const err = toActionErrorResult(error, {
+      actionName: 'deleteBankAccountAction',
+      fallbackMessage: 'Failed to delete bank account',
+      context: { userId, bankAccountId },
+    })
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Failed to delete bank account',
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
   }
 }
 
-export const resolveAccountNameAction = async (_bankName: string, accountNumber: string) => {
+export const resolveAccountNameAction = async (
+  _bankName: string,
+  accountNumber: string,
+) => {
   try {
     void _bankName
     await requireAuthenticatedSession()
@@ -274,13 +302,16 @@ export const resolveAccountNameAction = async (_bankName: string, accountNumber:
 
     return { success: true, accountName: resolvedName }
   } catch (error) {
-    if (error instanceof AuthzError) {
-      return { success: false, error: error.message }
-    }
-    console.error('Error resolving bank account name:', error)
+    const err = toActionErrorResult(error, {
+      actionName: 'resolveAccountNameAction',
+      fallbackMessage: 'Failed to resolve account name',
+    })
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Failed to resolve account name',
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
   }
 }

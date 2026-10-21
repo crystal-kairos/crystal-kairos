@@ -15,9 +15,9 @@ import {
 import { Prisma } from '@/generated/prisma/client'
 import {
   assertTargetUserIsMember,
-  AuthzError,
   requirePermission,
 } from '@/lib/authz/guards'
+import { toActionErrorResult } from '@/lib/errors/to-action-result'
 
 export interface CreateSavingsProductPayload {
   type: 'FIXED' | 'REGULAR' | 'STAGGERED'
@@ -71,15 +71,16 @@ export const createSavingsProductAction = async (
     } catch {}
     return { success: true, data: newProduct }
   } catch (error: unknown) {
-    if (error instanceof AuthzError) {
-      return { error: error.message }
-    }
-    console.error('Error creating savings product:', error)
+    const err = toActionErrorResult(error, {
+      actionName: 'createSavingsProductAction',
+      fallbackMessage: 'Failed to create savings product',
+    })
     return {
-      error:
-        error instanceof Error
-          ? error.message
-          : 'Failed to create savings product',
+      success: false,
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
   }
 }
@@ -101,15 +102,17 @@ export const toggleSavingsProductStatusAction = async (
     } catch {}
     return { success: true, data: updated }
   } catch (error: unknown) {
-    if (error instanceof AuthzError) {
-      return { error: error.message }
-    }
-    console.error('Error updating savings product status:', error)
+    const err = toActionErrorResult(error, {
+      actionName: 'toggleSavingsProductStatusAction',
+      fallbackMessage: 'Failed to update savings product',
+      context: { id, isActive },
+    })
     return {
-      error:
-        error instanceof Error
-          ? error.message
-          : 'Failed to update savings product',
+      success: false,
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
   }
 }
@@ -152,15 +155,17 @@ export const updateSavingsProductAction = async (
     } catch {}
     return { success: true, data: updated }
   } catch (error: unknown) {
-    if (error instanceof AuthzError) {
-      return { error: error.message }
-    }
-    console.error('Error updating savings product:', error)
+    const err = toActionErrorResult(error, {
+      actionName: 'updateSavingsProductAction',
+      fallbackMessage: 'Failed to update savings product',
+      context: { id },
+    })
     return {
-      error:
-        error instanceof Error
-          ? error.message
-          : 'Failed to update savings product',
+      success: false,
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
   }
 }
@@ -181,12 +186,19 @@ export const reviewSavingsTransactionAction = async (
       include: { savings: true },
     })
 
-    if (!transaction) return { error: 'Transaction not found' }
+    if (!transaction)
+      return { success: false, error: 'Transaction not found' }
     if (transaction.status !== 'PENDING') {
-      return { error: 'Only pending transactions can be reviewed' }
+      return {
+        success: false,
+        error: 'Only pending transactions can be reviewed',
+      }
     }
     if (!transaction.savings) {
-      return { error: 'Transaction is not linked to a savings plan' }
+      return {
+        success: false,
+        error: 'Transaction is not linked to a savings plan',
+      }
     }
 
     // Start a Prisma transaction to update both the transaction and the savings balance atomically
@@ -235,13 +247,17 @@ export const reviewSavingsTransactionAction = async (
 
     return { success: true }
   } catch (error: unknown) {
-    if (error instanceof AuthzError) {
-      return { error: error.message }
-    }
-    console.error('Error reviewing savings transaction:', error)
+    const err = toActionErrorResult(error, {
+      actionName: 'reviewSavingsTransactionAction',
+      fallbackMessage: 'Failed to review transaction',
+      context: { transactionId, status },
+    })
     return {
-      error:
-        error instanceof Error ? error.message : 'Failed to review transaction',
+      success: false,
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
   }
 }
@@ -390,16 +406,17 @@ export const createSavingsForMemberAction = async (data: {
     } catch {}
     return { success: true, data: result }
   } catch (error: unknown) {
-    if (error instanceof AuthzError) {
-      return { success: false, error: error.message }
-    }
-    console.error('Error creating savings for member:', error)
+    const err = toActionErrorResult(error, {
+      actionName: 'createSavingsForMemberAction',
+      fallbackMessage: 'Failed to create savings plan.',
+      context: { userId: data.userId, productId: data.productId },
+    })
     return {
       success: false,
-      error:
-        error instanceof Error
-          ? error.message
-          : 'Failed to create savings plan.',
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
   }
 }

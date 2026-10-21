@@ -12,10 +12,10 @@ import {
 import { Prisma } from '@/generated/prisma/client'
 import {
   assertTargetUserIsMember,
-  AuthzError,
   enforceDualControl,
   requirePermission,
 } from '@/lib/authz/guards'
+import { toActionErrorResult } from '@/lib/errors/to-action-result'
 
 /**
  * Admin approves a loan and sets the final approved amount.
@@ -50,13 +50,17 @@ export const approveLoanAction = async (
 
     return { success: true, data: updated }
   } catch (error) {
-    if (error instanceof AuthzError) {
-      return { success: false, error: error.message }
-    }
-    console.error('Error approving loan:', error)
+    const err = toActionErrorResult(error, {
+      actionName: 'approveLoanAction',
+      fallbackMessage: 'Failed to approve loan.',
+      context: { loanId },
+    })
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Failed to approve loan.',
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
   }
 }
@@ -94,13 +98,17 @@ export const rejectLoanAction = async (
 
     return { success: true, data: updated }
   } catch (error) {
-    if (error instanceof AuthzError) {
-      return { success: false, error: error.message }
-    }
-    console.error('Error rejecting loan:', error)
+    const err = toActionErrorResult(error, {
+      actionName: 'rejectLoanAction',
+      fallbackMessage: 'Failed to reject loan.',
+      context: { loanId },
+    })
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Failed to reject loan.',
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
   }
 }
@@ -183,14 +191,17 @@ export const disburseLoanAction = async (
 
     return { success: true, data: result }
   } catch (error) {
-    if (error instanceof AuthzError) {
-      return { success: false, error: error.message }
-    }
-    console.error('Error disbursing loan:', error)
+    const err = toActionErrorResult(error, {
+      actionName: 'disburseLoanAction',
+      fallbackMessage: 'Failed to disburse loan.',
+      context: { loanId },
+    })
     return {
       success: false,
-      error:
-        error instanceof Error ? error.message : 'Failed to disburse loan.',
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
   }
 }
@@ -263,16 +274,17 @@ export const reviewLoanRepaymentAction = async (
     } catch {}
     return { success: true }
   } catch (error: unknown) {
-    if (error instanceof AuthzError) {
-      return { success: false, error: error.message }
-    }
-    console.error('Failed to review loan repayment:', error)
+    const err = toActionErrorResult(error, {
+      actionName: 'reviewLoanRepaymentAction',
+      fallbackMessage: 'Failed to review loan repayment.',
+      context: { transactionId, status },
+    })
     return {
       success: false,
-      error:
-        error instanceof Error
-          ? error.message
-          : 'Failed to review loan repayment.',
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
   }
 }
@@ -382,16 +394,17 @@ export const createLoanForMemberAction = async (data: {
     } catch {}
     return { success: true, data: newLoan }
   } catch (error: unknown) {
-    if (error instanceof AuthzError) {
-      return { success: false, error: error.message }
-    }
-    console.error('Error creating loan for member:', error)
+    const err = toActionErrorResult(error, {
+      actionName: 'createLoanForMemberAction',
+      fallbackMessage: 'Failed to create loan record.',
+      context: { userId: data.userId },
+    })
     return {
       success: false,
-      error:
-        error instanceof Error
-          ? error.message
-          : 'Failed to create loan record.',
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
   }
 }

@@ -14,10 +14,11 @@ import { Prisma } from '@/generated/prisma/client'
 import { revalidatePath } from 'next/cache'
 import {
   assertTargetUserIsMember,
-  AuthzError,
   requireAnyPermission,
   requireMemberOrStaffWithPermission,
 } from '@/lib/authz/guards'
+import { AppError } from '@/lib/errors/app-error'
+import { toActionErrorResult } from '@/lib/errors/to-action-result'
 
 interface CreateTransactionInput {
   userId: string
@@ -175,14 +176,17 @@ export const createTransaction = async (input: CreateTransactionInput) => {
 
     return { success: true, data: transaction }
   } catch (error) {
-    if (error instanceof AuthzError) {
-      return { success: false, error: error.message }
-    }
-    console.error('Error creating transaction:', error)
+    const err = toActionErrorResult(error, {
+      actionName: 'createTransaction',
+      fallbackMessage: 'Failed to create transaction',
+      context: { userId: input.userId, category: input.category },
+    })
     return {
       success: false,
-      error:
-        error instanceof Error ? error.message : 'Failed to create transaction',
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
   }
 }
@@ -233,11 +237,12 @@ export const transitionTransaction = async (
       })
 
       if (!transaction) {
-        throw new Error('Transaction not found')
+        throw new AppError('NOT_FOUND', 'Transaction not found')
       }
 
       if (transaction.status !== TransactionStatus.PENDING) {
-        throw new Error(
+        throw new AppError(
+          'CONFLICT',
           `Transaction is already processed. Status: ${transaction.status}`,
         )
       }
@@ -408,13 +413,17 @@ export const transitionTransaction = async (
 
     return { success: true, data: result }
   } catch (error) {
-    if (error instanceof AuthzError) {
-      return { success: false, error: error.message }
-    }
-    console.error('Error transitioning transaction:', error)
+    const err = toActionErrorResult(error, {
+      actionName: 'transitionTransaction',
+      fallbackMessage: 'Transition failed',
+      context: { transactionId, action },
+    })
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Transition failed',
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
   }
 }
@@ -495,16 +504,17 @@ export const getUserLedgerBalances = async (userId: string) => {
       },
     }
   } catch (error) {
-    if (error instanceof AuthzError) {
-      return { success: false, error: error.message }
-    }
-    console.error('Error fetching user ledger balances:', error)
+    const err = toActionErrorResult(error, {
+      actionName: 'getUserLedgerBalances',
+      fallbackMessage: 'Failed to retrieve ledger balances',
+      context: { userId },
+    })
     return {
       success: false,
-      error:
-        error instanceof Error
-          ? error.message
-          : 'Failed to retrieve ledger balances',
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
   }
 }
@@ -524,16 +534,17 @@ export const getUserTransactions = async (userId: string) => {
 
     return { success: true, data: transactions }
   } catch (error) {
-    if (error instanceof AuthzError) {
-      return { success: false, error: error.message }
-    }
-    console.error('Error fetching user transactions:', error)
+    const err = toActionErrorResult(error, {
+      actionName: 'getUserTransactions',
+      fallbackMessage: 'Failed to retrieve transactions',
+      context: { userId },
+    })
     return {
       success: false,
-      error:
-        error instanceof Error
-          ? error.message
-          : 'Failed to retrieve transactions',
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
   }
 }
