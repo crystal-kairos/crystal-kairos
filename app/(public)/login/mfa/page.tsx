@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { ShieldCheck, KeyRound, ArrowRight } from 'lucide-react'
 import { toast } from 'sonner'
@@ -8,7 +8,7 @@ import { verifyMfaChallengeAction } from '@/models/auth/mfaActions'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 
-export default function MfaChallengePage() {
+function MfaChallengeContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const userId = searchParams.get('userId') ?? ''
@@ -118,3 +118,18 @@ export default function MfaChallengePage() {
     </div>
   )
 }
+
+export default function MfaChallengePage() {
+  return (
+    <Suspense
+      fallback={
+        <div className='min-h-screen flex items-center justify-center p-6 bg-surface-container-lowest'>
+          <Spinner />
+        </div>
+      }
+    >
+      <MfaChallengeContent />
+    </Suspense>
+  )
+}
+
