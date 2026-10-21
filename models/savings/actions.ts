@@ -19,6 +19,7 @@ import {
   getPeriodsCount,
 } from '@/lib/savings'
 import { AuthzError, requireMemberSession } from '@/lib/authz/guards'
+import { bindStoredFileToRecord } from '@/lib/storage/cloudinary'
 
 /**
  * Creates a new savings plan in PENDING status.
@@ -155,6 +156,13 @@ export const submitSavingsDepositAction = async (
         notes: data.notes || null,
         recordedBy: actor.id,
       },
+    })
+
+    await bindStoredFileToRecord({
+      fileUrl: data.receiptUrl,
+      ownerUserId: actor.id,
+      associatedType: 'TRANSACTION',
+      associatedId: newTransaction.id,
     })
 
     try {

@@ -1,59 +1,59 @@
-import { auth } from '@/auth'
 import { NextRequest, NextResponse } from 'next/server'
-import fs from 'fs'
-import path from 'path'
+import { AuthzError } from '@/lib/authz/guards'
+import { authorizeAndResolveStoredFile } from '@/lib/storage/cloudinary'
 
+const NO_STORE_HEADERS = {
+  'Cache-Control': 'private, no-store, max-age=0',
+  Pragma: 'no-cache',
+}
+
+/**
+ * Legacy receipt route replaced with Cloudinary-only authenticated delivery.
+ * Never reads from local filesystem or returns public cache headers.
+ */
 export async function GET(
   request: NextRequest,
-  { params }: { params: Promise<{ filename: string }> }
+  { params }: { params: Promise<{ filename: string }> },
 ) {
   try {
-    // 1. Authenticate user session
-    const session = await auth()
-    if (!session || !session.user) {
-      return new NextResponse('Unauthorized', { status: 401 })
-    }
-
     const { filename } = await params
     if (!filename) {
-      return new NextResponse('Filename is required', { status: 400 })
+      return new NextResponse('Filename is required', {
+        status: 400,
+        headers: NO_STORE_HEADERS,
+      })
     }
 
-    // 2. Prevent path traversal vulnerability by resolving path and verifying bounds
-    const uploadsDir = path.join(process.cwd(), 'uploads')
-    const safeFilePath = path.resolve(uploadsDir, filename)
+    const { signedUrl } = await authorizeAndResolveStoredFile(filename)
 
-    if (!safeFilePath.startsWith(uploadsDir)) {
-      return new NextResponse('Access Denied', { status: 403 })
+    if (request.nextUrl.searchParams.get('format') === 'json') {
+      return NextResponse.json(
+        { success: true, url: signedUrl },
+        { status: 200, headers: NO_STORE_HEADERS },
+      )
     }
 
-    // 3. Check if file exists
-    if (!fs.existsSync(safeFilePath)) {
-      return new NextResponse('File Not Found', { status: 404 })
-    }
-
-    // 4. Resolve Content-Type
-    let contentType = 'application/octet-stream'
-    const ext = path.extname(filename).toLowerCase()
-    if (ext === '.pdf') {
-      contentType = 'application/pdf'
-    } else if (ext === '.png') {
-      contentType = 'image/png'
-    } else if (ext === '.jpg' || ext === '.jpeg') {
-      contentType = 'image/jpeg'
-    }
-
-    // 5. Read file and return as response stream
-    const fileBuffer = fs.readFileSync(safeFilePath)
-
-    return new NextResponse(fileBuffer, {
-      headers: {
-        'Content-Type': contentType,
-        'Cache-Control': 'public, max-age=31536000, immutable',
-      },
+    return NextResponse.redirect(signedUrl, {
+      status: 302,
+      headers: NO_STORE_HEADERS,
     })
   } catch (error) {
-    console.error('Secure receipts API error:', error)
-    return new NextResponse('Internal Server Error', { status: 500 })
+    if (error instanceof AuthzError) {
+      const status =
+        error.code === 'UNAUTHENTICATED'
+          ? 401
+          : error.code === 'NOT_FOUND'
+            ? 404
+            : 403
+      return new NextResponse(error.message, {
+        status,
+        headers: NO_STORE_HEADERS,
+      })
+    }
+
+    return new NextResponse('Unable to retrieve receipt.', {
+      status: 500,
+      headers: NO_STORE_HEADERS,
+    })
   }
 }

@@ -243,24 +243,26 @@ model User {
   triggeredNotifications Notification[] @relation("TriggeredNotifications")
 
   // Relations
-  accounts               Account[]
-  sessions               Session[]
-  passwordSetupTokens    PasswordSetupToken[]
-  adminPermissionGrants  AdminPermissionGrant[] @relation("AdminPermissionGrants")
+  accounts                Account[]
+  sessions                Session[]
+  passwordSetupTokens     PasswordSetupToken[]
+  adminPermissionGrants   AdminPermissionGrant[] @relation("AdminPermissionGrants")
   createdPermissionGrants AdminPermissionGrant[] @relation("PermissionGrantCreator")
-  userInfo               UserInfo?
-  bankAccounts           BankAccount[]
-  nextOfKin              NextOfKin?
-  membership             Membership?
-  eAjo                   EAjo[]
-  eAjoGroups             EAjoGroup[]      @relation("EAjoGroupCreator")
-  eAjoMembers            EAjoMember[]
-  savings                Savings[]
-  loans                  Loan[]
-  transactions           Transaction[]    @relation("TransactionOwner")
-  transactionsRecorded   Transaction[]    @relation("TransactionRecorder")
-  transactionsProcessed  Transaction[]    @relation("TransactionProcessor")
-  createdSavingsProducts SavingsProduct[] @relation("SavingsProductCreator")
+  uploadedFiles           StoredFile[]           @relation("UploadedFiles")
+  ownedFiles              StoredFile[]           @relation("OwnedFiles")
+  userInfo                UserInfo?
+  bankAccounts            BankAccount[]
+  nextOfKin               NextOfKin?
+  membership              Membership?
+  eAjo                    EAjo[]
+  eAjoGroups              EAjoGroup[]            @relation("EAjoGroupCreator")
+  eAjoMembers             EAjoMember[]
+  savings                 Savings[]
+  loans                   Loan[]
+  transactions            Transaction[]          @relation("TransactionOwner")
+  transactionsRecorded    Transaction[]          @relation("TransactionRecorder")
+  transactionsProcessed   Transaction[]          @relation("TransactionProcessor")
+  createdSavingsProducts  SavingsProduct[]       @relation("SavingsProductCreator")
 
   @@map("users")
 }
@@ -329,6 +331,32 @@ model AdminPermissionGrant {
   @@unique([adminUserId, permission])
   @@index([grantedById])
   @@map("admin_permission_grants")
+}
+
+model StoredFile {
+  id               String   @id @default(uuid())
+  publicId         String   @unique
+  secureUrl        String
+  purpose          String
+  resourceType     String   @default("image")
+  deliveryType     String   @default("authenticated")
+  format           String
+  contentType      String
+  sizeBytes        Int
+  originalFilename String?
+  uploadedById     String
+  ownerUserId      String?
+  associatedType   String?
+  associatedId     String?
+  createdAt        DateTime @default(now())
+
+  uploadedBy       User     @relation("UploadedFiles", fields: [uploadedById], references: [id], onDelete: Restrict)
+  ownerUser        User?    @relation("OwnedFiles", fields: [ownerUserId], references: [id], onDelete: SetNull)
+
+  @@index([ownerUserId])
+  @@index([uploadedById])
+  @@index([associatedType, associatedId])
+  @@map("stored_files")
 }
 
 model UserInfo {

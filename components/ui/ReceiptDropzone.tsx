@@ -14,6 +14,8 @@ interface ReceiptDropzoneProps {
   maxSizeMb?: number
 }
 
+const ALLOWED_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'pdf'])
+
 export const ReceiptDropzone = ({
   onFileSelected,
   value = null,
@@ -22,6 +24,7 @@ export const ReceiptDropzone = ({
   accept = ['image/jpeg', 'image/png', 'image/jpg', 'application/pdf'],
   maxSizeMb = 5,
 }: ReceiptDropzoneProps) => {
+  const effectiveMaxSizeMb = Math.min(maxSizeMb, 5)
   const [isDragActive, setIsDragActive] = useState(false)
   const [fileError, setFileError] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -39,16 +42,22 @@ export const ReceiptDropzone = ({
   const validateFile = (file: File): boolean => {
     setFileError(null)
 
-    // Validate type
-    if (!accept.includes(file.type)) {
+    if (file.size <= 0) {
+      setFileError('Uploaded file is empty.')
+      return false
+    }
+
+    // Validate MIME type and extension
+    const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
+    if (!accept.includes(file.type) || !ALLOWED_EXTENSIONS.has(ext)) {
       setFileError('Invalid file type. Only JPG, PNG, and PDF are supported.')
       return false
     }
 
-    // Validate size
-    const maxSizeBytes = maxSizeMb * 1024 * 1024
+    // Validate size (enforced max 5 MB)
+    const maxSizeBytes = effectiveMaxSizeMb * 1024 * 1024
     if (file.size > maxSizeBytes) {
-      setFileError(`File size exceeds the ${maxSizeMb}MB limit.`)
+      setFileError(`File size exceeds the ${effectiveMaxSizeMb}MB limit.`)
       return false
     }
 
@@ -153,7 +162,7 @@ export const ReceiptDropzone = ({
               <span className='text-secondary hover:underline'>browse</span>
             </p>
             <p className='text-xs text-muted-foreground'>
-              Supports JPG, PNG, and PDF (Max {maxSizeMb}MB)
+              Supports JPG, PNG, and PDF (Max {effectiveMaxSizeMb}MB)
             </p>
           </div>
         )}

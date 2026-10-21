@@ -14,6 +14,16 @@ import { EAjoMember, Transaction } from '@/generated/prisma/client'
 import { revalidatePath } from 'next/cache'
 import { uploadReceipt } from '@/lib/upload'
 import {
+  bindStoredFileToRecord,
+  StorageConfigError,
+  StorageUploadError,
+} from '@/lib/storage/cloudinary'
+import {
+  FileValidationError,
+  isStoredFilePurpose,
+  StoredFilePurpose,
+} from '@/lib/storage/file-validation'
+import {
   assertTargetUserIsMember,
   AuthzError,
   requireAuthenticatedSession,
@@ -210,6 +220,13 @@ export const submitEAjoContributionAction = async (
       },
     })
 
+    await bindStoredFileToRecord({
+      fileUrl: receiptUrl,
+      ownerUserId: targetUserId,
+      associatedType: 'TRANSACTION',
+      associatedId: newTransaction.id,
+    })
+
     try {
       revalidatePath(`/dashboard/${targetUserId}/eajo`)
       revalidatePath(`/dashboard/${targetUserId}`)
@@ -235,30 +252,71 @@ export const submitEAjoContributionAction = async (
 }
 
 /**
- * Uploads a receipt file to cloud storage and returns the URL.
- * Requires an authenticated session.
+ * Uploads a receipt or verification file strictly to Cloudinary and returns its controlled access URL.
+ * Requires an authenticated session and validates size (<= 5 MB), format, and magic-byte signature.
  */
 export const uploadReceiptAction = async (formData: FormData) => {
   try {
-    await requireAuthenticatedSession()
+    const actor = await requireAuthenticatedSession()
+
+    if (formData.has('folder')) {
+      return {
+        success: false,
+        error: 'Client-specified storage folders are not permitted.',
+      }
+    }
+
+    const rawPurpose = formData.get('purpose')
+    let purpose: StoredFilePurpose = 'receipts'
+    if (rawPurpose !== null && rawPurpose !== '') {
+      if (!isStoredFilePurpose(rawPurpose)) {
+        return {
+          success: false,
+          error: 'Invalid file storage purpose.',
+        }
+      }
+      purpose = rawPurpose
+    }
 
     const file = formData.get('file') as File | null
-    if (!file) return { success: false, error: 'No file uploaded' }
+    if (!file || typeof file.arrayBuffer !== 'function') {
+      return { success: false, error: 'No file uploaded' }
+    }
 
     const buffer = Buffer.from(await file.arrayBuffer())
-    const uploadResult = await uploadReceipt(buffer, file.name)
-    return { success: true, url: uploadResult.url }
+    const uploadResult = await uploadReceipt(buffer, file.name, {
+      purpose,
+      declaredMimeType: file.type,
+      uploadedById: actor.id,
+      ownerUserId: actor.id,
+    })
+
+    return {
+      success: true,
+      url: uploadResult.url,
+      fileId: uploadResult.fileId,
+      publicId: uploadResult.publicId,
+    }
   } catch (error) {
-    if (error instanceof AuthzError) {
+    if (
+      error instanceof AuthzError ||
+      error instanceof FileValidationError
+    ) {
       return { success: false, error: error.message }
+    }
+    if (
+      error instanceof StorageConfigError ||
+      error instanceof StorageUploadError
+    ) {
+      return {
+        success: false,
+        error: 'Unable to upload file right now. Please try again later.',
+      }
     }
     console.error('File upload action error:', error)
     return {
       success: false,
-      error:
-        error instanceof Error
-          ? error.message
-          : 'Failed to upload receipt file.',
+      error: 'Unable to upload receipt file.',
     }
   }
 }
