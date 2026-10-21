@@ -30,6 +30,7 @@ import {
   PasswordSetupTokenPurpose,
 } from '@/generated/prisma/enums'
 import { AuthzError, requireAnyPermission } from '@/lib/authz/guards'
+import { toActionErrorResult } from '@/lib/errors/to-action-result'
 
 export const register = async (
   personalInfo: Step1State['data'],
@@ -128,9 +129,16 @@ export const register = async (
 
     return { success: true, message: 'Registration successful', user }
   } catch (error) {
+    const err = toActionErrorResult(error, {
+      actionName: 'register',
+      fallbackMessage: 'Unable to complete registration. Please try again.',
+    })
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Invalid data',
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
   }
 }
@@ -173,15 +181,20 @@ export const signUser = async (userId: string, userEmail: string) => {
     if (error instanceof AuthzError) {
       return {
         success: false,
+        code: error.code,
         error: 'Unauthorized to issue setup tokens.',
       }
     }
+    const err = toActionErrorResult(error, {
+      actionName: 'signUser',
+      fallbackMessage: 'Unable to issue setup token.',
+      context: { userId },
+    })
     return {
       success: false,
-      error:
-        error instanceof TokenError
-          ? error.message
-          : 'Unable to issue setup token.',
+      error: err.error,
+      code: err.code,
+      correlationId: err.correlationId,
     }
   }
 }
@@ -267,13 +280,25 @@ export const setPassword = async (
       },
     }
   } catch (error) {
+    if (error instanceof TokenError) {
+      return {
+        success: false,
+        data: null,
+        code: error.code,
+        error: error.message,
+      }
+    }
+    const err = toActionErrorResult(error, {
+      actionName: 'setPassword',
+      fallbackMessage: 'This setup link is no longer valid.',
+    })
     return {
       success: false,
       data: null,
-      error:
-        error instanceof TokenError
-          ? error.message
-          : 'This setup link is no longer valid.',
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
   }
 }

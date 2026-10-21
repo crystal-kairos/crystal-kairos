@@ -12,9 +12,9 @@ import {
 import { Prisma } from '@/generated/prisma/client'
 import {
   assertTargetUserIsMember,
-  AuthzError,
   requirePermission,
 } from '@/lib/authz/guards'
+import { toActionErrorResult } from '@/lib/errors/to-action-result'
 
 export const addMemberToEAjoGroupAction = async (data: {
   userId: string
@@ -134,16 +134,17 @@ export const addMemberToEAjoGroupAction = async (data: {
 
     return { success: true, data: result }
   } catch (error: unknown) {
-    if (error instanceof AuthzError) {
-      return { success: false, error: error.message }
-    }
-    console.error('Error adding member to eAjo group:', error)
+    const err = toActionErrorResult(error, {
+      actionName: 'addMemberToEAjoGroupAction',
+      fallbackMessage: 'Failed to add member to eAjo group.',
+      context: { userId: data.userId, groupId: data.groupId },
+    })
     return {
       success: false,
-      error:
-        error instanceof Error
-          ? error.message
-          : 'Failed to add member to eAjo group.',
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
   }
 }

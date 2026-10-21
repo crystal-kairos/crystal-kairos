@@ -321,10 +321,12 @@ describe('Cloudinary storage & authenticated receipt access integration (PR P1-0
     )
     const folderRes = await uploadReceiptAction(spoofedFolderForm)
     expect(folderRes.success).toBe(false)
-    expect(folderRes.error).toMatch(/folders are not permitted/i)
+    if (!folderRes.success) {
+      expect(folderRes.error).toMatch(/folders are not permitted/i)
+    }
     expect(storedFiles.size).toBe(0)
 
-    // Missing Cloudinary credentials -> safe error, no StoredFile created
+    // Missing Cloudinary credentials -> safe error with correlation ID, no StoredFile created
     delete process.env.CLOUDINARY_API_SECRET
     const validForm = new FormData()
     validForm.append(
@@ -333,9 +335,12 @@ describe('Cloudinary storage & authenticated receipt access integration (PR P1-0
     )
     const missingCredsRes = await uploadReceiptAction(validForm)
     expect(missingCredsRes.success).toBe(false)
-    expect(missingCredsRes.error).toBe(
-      'Unable to upload file right now. Please try again later.',
-    )
+    if (!missingCredsRes.success) {
+      expect(missingCredsRes.error).toMatch(
+        /Unable to upload file right now\. Please try again later\./,
+      )
+      expect(missingCredsRes.correlationId).toMatch(/^CK-[0-9A-F]{8}$/)
+    }
     expect(storedFiles.size).toBe(0)
 
     // Simulate Cloudinary stream timeout/error -> safe error, no StoredFile created

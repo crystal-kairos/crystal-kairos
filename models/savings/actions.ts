@@ -18,8 +18,9 @@ import {
   getInterestRate,
   getPeriodsCount,
 } from '@/lib/savings'
-import { AuthzError, requireMemberSession } from '@/lib/authz/guards'
+import { requireMemberSession } from '@/lib/authz/guards'
 import { bindStoredFileToRecord } from '@/lib/storage/cloudinary'
+import { toActionErrorResult } from '@/lib/errors/to-action-result'
 
 /**
  * Creates a new savings plan in PENDING status.
@@ -105,16 +106,17 @@ export const createSavingsPlanAction = async (
 
     return { success: true, data: serializeSavings(newSavings) }
   } catch (error) {
-    if (error instanceof AuthzError) {
-      return { success: false, error: error.message }
-    }
-    console.error('Error creating savings plan:', error)
+    const err = toActionErrorResult(error, {
+      actionName: 'createSavingsPlanAction',
+      fallbackMessage: 'Failed to create savings plan',
+      context: { userId },
+    })
     return {
       success: false,
-      error:
-        error instanceof Error
-          ? error.message
-          : 'Failed to create savings plan',
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
   }
 }
@@ -174,16 +176,17 @@ export const submitSavingsDepositAction = async (
 
     return { success: true, data: serializeTransaction(newTransaction) }
   } catch (error) {
-    if (error instanceof AuthzError) {
-      return { success: false, error: error.message }
-    }
-    console.error('Error submitting savings deposit:', error)
+    const err = toActionErrorResult(error, {
+      actionName: 'submitSavingsDepositAction',
+      fallbackMessage: 'Failed to submit savings deposit',
+      context: { userId, savingsId: data.savingsId },
+    })
     return {
       success: false,
-      error:
-        error instanceof Error
-          ? error.message
-          : 'Failed to submit savings deposit',
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
   }
 }
@@ -272,16 +275,17 @@ export const requestSavingsWithdrawalAction = async (
       },
     }
   } catch (error) {
-    if (error instanceof AuthzError) {
-      return { success: false, error: error.message }
-    }
-    console.error('Error requesting savings withdrawal:', error)
+    const err = toActionErrorResult(error, {
+      actionName: 'requestSavingsWithdrawalAction',
+      fallbackMessage: 'Failed to request savings withdrawal',
+      context: { userId, savingsId },
+    })
     return {
       success: false,
-      error:
-        error instanceof Error
-          ? error.message
-          : 'Failed to request savings withdrawal',
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
   }
 }

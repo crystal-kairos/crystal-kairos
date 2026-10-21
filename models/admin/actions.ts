@@ -19,11 +19,11 @@ import { generateMembershipNumber } from '@/lib/membership-number'
 import { issuePasswordSetupToken } from '@/lib/authz/tokens'
 import {
   assertUserHasNoMemberRecords,
-  AuthzError,
   requireOwner,
   requirePermission,
 } from '@/lib/authz/guards'
 import { ALL_ADMIN_PERMISSIONS } from '@/lib/authz/permissions'
+import { toActionErrorResult } from '@/lib/errors/to-action-result'
 
 const validPermissionSet = new Set<string>(ALL_ADMIN_PERMISSIONS)
 
@@ -128,16 +128,17 @@ export const createAdminStaffAction = async (formData: {
     } catch {}
     return { success: true, data: user }
   } catch (error) {
-    if (error instanceof AuthzError) {
-      return { success: false, error: error.message }
-    }
-    console.error('Error creating admin staff member:', error)
+    const err = toActionErrorResult(error, {
+      actionName: 'createAdminStaffAction',
+      fallbackMessage: 'Failed to create staff member.',
+      context: { email: formData.email, role: formData.role },
+    })
     return {
       success: false,
-      error:
-        error instanceof Error
-          ? error.message
-          : 'Failed to create staff member.',
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
   }
 }
@@ -212,16 +213,17 @@ export const setAdminPermissionsAction = async (
       },
     }
   } catch (error) {
-    if (error instanceof AuthzError) {
-      return { success: false, error: error.message }
-    }
-    console.error('Error updating admin permissions:', error)
+    const err = toActionErrorResult(error, {
+      actionName: 'setAdminPermissionsAction',
+      fallbackMessage: 'Failed to update admin permissions.',
+      context: { adminUserId },
+    })
     return {
       success: false,
-      error:
-        error instanceof Error
-          ? error.message
-          : 'Failed to update admin permissions.',
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
   }
 }
@@ -275,16 +277,16 @@ export const createEAjoGroupAction = async (formData: {
       data: { ...group, contributionAmount: Number(group.contributionAmount) },
     }
   } catch (error) {
-    if (error instanceof AuthzError) {
-      return { success: false, error: error.message }
-    }
-    console.error('Error creating eAjo group:', error)
+    const err = toActionErrorResult(error, {
+      actionName: 'createEAjoGroupAction',
+      fallbackMessage: 'Failed to create eAjo group.',
+    })
     return {
       success: false,
-      error:
-        error instanceof Error
-          ? error.message
-          : 'Failed to create eAjo group.',
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
   }
 }
@@ -340,16 +342,17 @@ export const updateEAjoGroupAction = async (
       },
     }
   } catch (error) {
-    if (error instanceof AuthzError) {
-      return { success: false, error: error.message }
-    }
-    console.error('Error updating eAjo group:', error)
+    const err = toActionErrorResult(error, {
+      actionName: 'updateEAjoGroupAction',
+      fallbackMessage: 'Failed to update eAjo group.',
+      context: { groupId },
+    })
     return {
       success: false,
-      error:
-        error instanceof Error
-          ? error.message
-          : 'Failed to update eAjo group.',
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
   }
 }
@@ -383,16 +386,17 @@ export const activateEAjoGroupAction = async (groupId: string) => {
     } catch {}
     return { success: true, data: updated }
   } catch (error) {
-    if (error instanceof AuthzError) {
-      return { success: false, error: error.message }
-    }
-    console.error('Error activating eAjo group:', error)
+    const err = toActionErrorResult(error, {
+      actionName: 'activateEAjoGroupAction',
+      fallbackMessage: 'Failed to activate eAjo group.',
+      context: { groupId },
+    })
     return {
       success: false,
-      error:
-        error instanceof Error
-          ? error.message
-          : 'Failed to activate eAjo group.',
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
   }
 }
@@ -431,14 +435,17 @@ export const approveEAjoMemberAction = async (memberId: string) => {
     } catch {}
     return { success: true, data: updated }
   } catch (error) {
-    if (error instanceof AuthzError) {
-      return { success: false, error: error.message }
-    }
-    console.error('Error approving eAjo member:', error)
+    const err = toActionErrorResult(error, {
+      actionName: 'approveEAjoMemberAction',
+      fallbackMessage: 'Failed to approve member.',
+      context: { memberId },
+    })
     return {
       success: false,
-      error:
-        error instanceof Error ? error.message : 'Failed to approve member.',
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
   }
 }
@@ -474,16 +481,17 @@ export const rejectEAjoMemberAction = async (
     } catch {}
     return { success: true, data: updated }
   } catch (error) {
-    if (error instanceof AuthzError) {
-      return { success: false, error: error.message }
-    }
-    console.error('Error rejecting eAjo member:', error)
+    const err = toActionErrorResult(error, {
+      actionName: 'rejectEAjoMemberAction',
+      fallbackMessage: 'Failed to reject member application.',
+      context: { memberId },
+    })
     return {
       success: false,
-      error:
-        error instanceof Error
-          ? error.message
-          : 'Failed to reject member application.',
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
   }
 }
@@ -556,14 +564,17 @@ export const createMemberAction = async (formData: {
     } catch {}
     return { success: true, data: user }
   } catch (error: unknown) {
-    if (error instanceof AuthzError) {
-      return { success: false, error: error.message }
-    }
-    console.error('Error creating member:', error)
+    const err = toActionErrorResult(error, {
+      actionName: 'createMemberAction',
+      fallbackMessage: 'Failed to create member.',
+      context: { email: formData.email },
+    })
     return {
       success: false,
-      error:
-        error instanceof Error ? error.message : 'Failed to create member.',
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
   }
 }

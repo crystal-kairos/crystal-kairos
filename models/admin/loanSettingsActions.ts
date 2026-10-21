@@ -4,10 +4,10 @@ import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
 import { AdminPermission } from '@/generated/prisma/enums'
 import {
-  AuthzError,
   requireAuthenticatedSession,
   requirePermission,
 } from '@/lib/authz/guards'
+import { toActionErrorResult } from '@/lib/errors/to-action-result'
 
 export const getLoanSettingsAction = async () => {
   try {
@@ -29,11 +29,17 @@ export const getLoanSettingsAction = async () => {
       },
     }
   } catch (error: unknown) {
-    if (error instanceof AuthzError) {
-      return { success: false, error: error.message }
+    const err = toActionErrorResult(error, {
+      actionName: 'getLoanSettingsAction',
+      fallbackMessage: 'Failed to fetch loan settings',
+    })
+    return {
+      success: false,
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
-    console.error('Failed to fetch loan settings:', error)
-    return { success: false, error: 'Failed to fetch loan settings' }
   }
 }
 
@@ -69,10 +75,16 @@ export const updateLoanSettingsAction = async (interestRate: number) => {
       data: { interestRate: Number(updated.interestRate) },
     }
   } catch (error: unknown) {
-    if (error instanceof AuthzError) {
-      return { success: false, error: error.message }
+    const err = toActionErrorResult(error, {
+      actionName: 'updateLoanSettingsAction',
+      fallbackMessage: 'Failed to update loan settings',
+    })
+    return {
+      success: false,
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
-    console.error('Failed to update loan settings:', error)
-    return { success: false, error: 'Failed to update loan settings' }
   }
 }
