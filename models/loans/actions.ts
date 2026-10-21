@@ -16,6 +16,7 @@ import {
   requireAuthenticatedSession,
   requireMemberSession,
 } from '@/lib/authz/guards'
+import { bindStoredFileToRecord } from '@/lib/storage/cloudinary'
 
 /**
  * Searches for an active cooperative member by email to nominate as a guarantor.
@@ -227,6 +228,13 @@ export const submitLoanRepaymentAction = async (
         notes: data.notes || null,
         recordedBy: actor.id,
       },
+    })
+
+    await bindStoredFileToRecord({
+      fileUrl: data.receiptUrl,
+      ownerUserId: actor.id,
+      associatedType: 'TRANSACTION',
+      associatedId: newTransaction.id,
     })
 
     try {
