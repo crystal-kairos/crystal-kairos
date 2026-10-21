@@ -25,8 +25,11 @@ import {
   TokenError,
   verifyPasswordSetupToken,
 } from '@/lib/authz/tokens'
-import { PasswordSetupTokenPurpose, UserRole } from '@/generated/prisma/enums'
-import { getSessionHelper } from '@/models/members/actions'
+import {
+  AdminPermission,
+  PasswordSetupTokenPurpose,
+} from '@/generated/prisma/enums'
+import { AuthzError, requireAnyPermission } from '@/lib/authz/guards'
 
 export const register = async (
   personalInfo: Step1State['data'],
@@ -134,21 +137,15 @@ export const register = async (
 
 /**
  * Issues a single-use password setup token.
- * Requires an authenticated ADMIN or OWNER session; callers cannot issue tokens
- * for arbitrary user IDs without staff authorization.
+ * Requires an authenticated staff user with member approval/creation or staff management permissions.
  */
 export const signUser = async (userId: string, userEmail: string) => {
   try {
-    const session = await getSessionHelper()
-    const actorRole = session?.user?.role as UserRole | undefined
-    const isStaff = actorRole === UserRole.ADMIN || actorRole === UserRole.OWNER
-
-    if (!session?.user?.id || !isStaff) {
-      return {
-        success: false,
-        error: 'Unauthorized to issue setup tokens.',
-      }
-    }
+    const actor = await requireAnyPermission([
+      AdminPermission.MEMBERS_APPROVE,
+      AdminPermission.MEMBERS_CREATE,
+      AdminPermission.STAFF_MANAGE,
+    ])
 
     const targetUser = await prisma.user.findUnique({
       where: { id: userId },
@@ -168,11 +165,17 @@ export const signUser = async (userId: string, userEmail: string) => {
     const issued = await issuePasswordSetupToken({
       userId: targetUser.id,
       purpose: PasswordSetupTokenPurpose.SET_PASSWORD,
-      createdById: session.user.id,
+      createdById: actor.id,
     })
 
     return { success: true, token: issued.rawToken }
   } catch (error) {
+    if (error instanceof AuthzError) {
+      return {
+        success: false,
+        error: 'Unauthorized to issue setup tokens.',
+      }
+    }
     return {
       success: false,
       error:

@@ -1,11 +1,17 @@
 import { prisma } from '@/lib/prisma'
-import { EAjoStatus } from '@/generated/prisma/enums'
+import { AdminPermission, EAjoStatus } from '@/generated/prisma/enums'
+import {
+  requireAuthenticatedSession,
+  requireMemberOrStaffWithPermission,
+} from '@/lib/authz/guards'
 
 /**
  * Fetches all open eAjo groups (PENDING status with available slots) for member browsing
  */
 export const getOpenEAjoGroups = async () => {
   try {
+    await requireAuthenticatedSession()
+
     const groups = await prisma.eAjoGroup.findMany({
       where: { status: { in: [EAjoStatus.PENDING, EAjoStatus.ACTIVE] } },
       orderBy: { createdAt: 'desc' },
@@ -32,6 +38,14 @@ export const getOpenEAjoGroups = async () => {
  */
 export const getUserEAjoMemberships = async (userId: string) => {
   try {
+    await requireMemberOrStaffWithPermission(userId, [
+      AdminPermission.EAJO_READ,
+      AdminPermission.EAJO_MANAGE,
+      AdminPermission.EAJO_PAYMENTS_REVIEW,
+      AdminPermission.EAJO_PAYOUTS_MANAGE,
+      AdminPermission.MEMBERS_READ,
+    ])
+
     const memberships = await prisma.eAjoMember.findMany({
       where: { userId },
       orderBy: { createdAt: 'desc' },
@@ -83,10 +97,12 @@ export const getUserEAjoMemberships = async (userId: string) => {
 }
 
 /**
- * Fetches a single eAjo group (public view — for the join flow)
+ * Fetches a single eAjo group (authenticated view — for the join flow)
  */
 export const getEAjoGroupForJoin = async (groupId: string) => {
   try {
+    await requireAuthenticatedSession()
+
     const group = await prisma.eAjoGroup.findUnique({
       where: { id: groupId },
       include: {
@@ -96,7 +112,9 @@ export const getEAjoGroupForJoin = async (groupId: string) => {
       },
     })
 
-    if (!group) return { success: false, data: null, error: new Error('Group not found') }
+    if (!group) {
+      return { success: false, data: null, error: new Error('Group not found') }
+    }
 
     return {
       success: true,

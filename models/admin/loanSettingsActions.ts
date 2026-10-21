@@ -3,10 +3,16 @@
 import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
 import { AdminPermission } from '@/generated/prisma/enums'
-import { AuthzError, requirePermission } from '@/lib/authz/guards'
+import {
+  AuthzError,
+  requireAuthenticatedSession,
+  requirePermission,
+} from '@/lib/authz/guards'
 
 export const getLoanSettingsAction = async () => {
   try {
+    await requireAuthenticatedSession()
+
     const settings = await prisma.loanSettings.findUnique({
       where: { id: 'global' },
     })
@@ -16,13 +22,16 @@ export const getLoanSettingsAction = async () => {
       return { success: true, data: { interestRate: 5.0 } }
     }
 
-    return { 
-      success: true, 
+    return {
+      success: true,
       data: {
         interestRate: Number(settings.interestRate),
-      } 
+      },
     }
   } catch (error: unknown) {
+    if (error instanceof AuthzError) {
+      return { success: false, error: error.message }
+    }
     console.error('Failed to fetch loan settings:', error)
     return { success: false, error: 'Failed to fetch loan settings' }
   }
@@ -33,7 +42,10 @@ export const updateLoanSettingsAction = async (interestRate: number) => {
     const actor = await requirePermission(AdminPermission.LOAN_SETTINGS_MANAGE)
 
     if (interestRate < 0 || interestRate > 100) {
-      return { success: false, error: 'Interest rate must be between 0 and 100' }
+      return {
+        success: false,
+        error: 'Interest rate must be between 0 and 100',
+      }
     }
 
     const updated = await prisma.loanSettings.upsert({
@@ -49,8 +61,13 @@ export const updateLoanSettingsAction = async (interestRate: number) => {
       },
     })
 
-    try { revalidatePath('/admin/loans') } catch {}
-    return { success: true, data: { interestRate: Number(updated.interestRate) } }
+    try {
+      revalidatePath('/admin/loans')
+    } catch {}
+    return {
+      success: true,
+      data: { interestRate: Number(updated.interestRate) },
+    }
   } catch (error: unknown) {
     if (error instanceof AuthzError) {
       return { success: false, error: error.message }

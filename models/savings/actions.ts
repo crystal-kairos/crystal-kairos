@@ -10,7 +10,6 @@ import {
   TransactionType,
   TransactionStatus,
 } from '@/generated/prisma/enums'
-import { getSessionHelper } from '../members/actions'
 import { revalidatePath } from 'next/cache'
 import { Prisma } from '@/generated/prisma/client'
 import {
@@ -19,6 +18,7 @@ import {
   getInterestRate,
   getPeriodsCount,
 } from '@/lib/savings'
+import { AuthzError, requireMemberSession } from '@/lib/authz/guards'
 
 /**
  * Creates a new savings plan in PENDING status.
@@ -34,32 +34,37 @@ export const createSavingsPlanAction = async (
     accountNumber: string
     accountName: string
     productId?: string
-  }
+  },
 ) => {
   try {
-    const session = await getSessionHelper()
-    const currentUser = session?.user
-
-    if (!currentUser) {
-      return { success: false, error: 'Unauthorized' }
-    }
+    const actor = await requireMemberSession(userId)
 
     let interestRate = 0
     if (data.productId) {
-      const product = await prisma.savingsProduct.findUnique({ where: { id: data.productId } })
+      const product = await prisma.savingsProduct.findUnique({
+        where: { id: data.productId },
+      })
       if (product) {
         switch (data.maturity) {
-          case SavingsMaturity.ONE_MONTH: interestRate = Number(product.interestRate1Month || 0); break;
-          case SavingsMaturity.THREE_MONTHS: interestRate = Number(product.interestRate3Months || 0); break;
-          case SavingsMaturity.SIX_MONTHS: interestRate = Number(product.interestRate6Months || 0); break;
-          case SavingsMaturity.TWELVE_MONTHS: interestRate = Number(product.interestRate12Months || 0); break;
+          case SavingsMaturity.ONE_MONTH:
+            interestRate = Number(product.interestRate1Month || 0)
+            break
+          case SavingsMaturity.THREE_MONTHS:
+            interestRate = Number(product.interestRate3Months || 0)
+            break
+          case SavingsMaturity.SIX_MONTHS:
+            interestRate = Number(product.interestRate6Months || 0)
+            break
+          case SavingsMaturity.TWELVE_MONTHS:
+            interestRate = Number(product.interestRate12Months || 0)
+            break
         }
       }
     } else {
       // Fallback for older creations
       interestRate = getInterestRate(data.savingsType, data.maturity)
     }
-    
+
     // Calculate expected maturity amount
     let totalContribution = data.targetAmount
     if (data.savingsType === SavingsType.REGULAR) {
@@ -72,7 +77,7 @@ export const createSavingsPlanAction = async (
 
     const newSavings = await prisma.savings.create({
       data: {
-        userId,
+        userId: actor.id,
         savingsType: data.savingsType,
         targetAmount: data.targetAmount,
         frequency: data.frequency,
@@ -81,7 +86,9 @@ export const createSavingsPlanAction = async (
         bankName: data.bankName,
         accountNumber: data.accountNumber,
         accountName: data.accountName,
-        expectedMaturityAmount: new Prisma.Decimal(expectedMaturityAmount.toString()),
+        expectedMaturityAmount: new Prisma.Decimal(
+          expectedMaturityAmount.toString(),
+        ),
         isAnonymousRequest: false,
         status: SavingsStatus.PENDING,
         productId: data.productId || null,
@@ -89,18 +96,24 @@ export const createSavingsPlanAction = async (
     })
 
     try {
-      revalidatePath(`/dashboard/${userId}/savings`)
-      revalidatePath(`/dashboard/${userId}`)
-    } catch (e) {
+      revalidatePath(`/dashboard/${actor.id}/savings`)
+      revalidatePath(`/dashboard/${actor.id}`)
+    } catch {
       // Ignored outside Next.js context
     }
 
     return { success: true, data: serializeSavings(newSavings) }
   } catch (error) {
+    if (error instanceof AuthzError) {
+      return { success: false, error: error.message }
+    }
     console.error('Error creating savings plan:', error)
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Failed to create savings plan',
+      error:
+        error instanceof Error
+          ? error.message
+          : 'Failed to create savings plan',
     }
   }
 }
@@ -116,18 +129,13 @@ export const submitSavingsDepositAction = async (
     receiptUrl: string
     referenceNumber?: string
     notes?: string
-  }
+  },
 ) => {
   try {
-    const session = await getSessionHelper()
-    const currentUser = session?.user
+    const actor = await requireMemberSession(userId)
 
-    if (!currentUser) {
-      return { success: false, error: 'Unauthorized' }
-    }
-
-    const savings = await prisma.savings.findUnique({
-      where: { id: data.savingsId },
+    const savings = await prisma.savings.findFirst({
+      where: { id: data.savingsId, userId: actor.id },
     })
 
     if (!savings) {
@@ -136,7 +144,7 @@ export const submitSavingsDepositAction = async (
 
     const newTransaction = await prisma.transaction.create({
       data: {
-        userId,
+        userId: actor.id,
         amount: new Prisma.Decimal(data.amount.toString()),
         category: TransactionCategory.SAVINGS_DEPOSIT,
         type: TransactionType.DEPOSIT,
@@ -145,23 +153,29 @@ export const submitSavingsDepositAction = async (
         receiptUrl: data.receiptUrl,
         referenceNumber: data.referenceNumber || null,
         notes: data.notes || null,
-        recordedBy: userId,
+        recordedBy: actor.id,
       },
     })
 
     try {
-      revalidatePath(`/dashboard/${userId}/savings`)
-      revalidatePath(`/dashboard/${userId}`)
-    } catch (e) {
+      revalidatePath(`/dashboard/${actor.id}/savings`)
+      revalidatePath(`/dashboard/${actor.id}`)
+    } catch {
       // Ignored outside Next.js context
     }
 
     return { success: true, data: serializeTransaction(newTransaction) }
   } catch (error) {
+    if (error instanceof AuthzError) {
+      return { success: false, error: error.message }
+    }
     console.error('Error submitting savings deposit:', error)
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Failed to submit savings deposit',
+      error:
+        error instanceof Error
+          ? error.message
+          : 'Failed to submit savings deposit',
     }
   }
 }
@@ -173,18 +187,13 @@ export const submitSavingsDepositAction = async (
 export const requestSavingsWithdrawalAction = async (
   userId: string,
   savingsId: string,
-  notes?: string
+  notes?: string,
 ) => {
   try {
-    const session = await getSessionHelper()
-    const currentUser = session?.user
+    const actor = await requireMemberSession(userId)
 
-    if (!currentUser) {
-      return { success: false, error: 'Unauthorized' }
-    }
-
-    const savings = await prisma.savings.findUnique({
-      where: { id: savingsId },
+    const savings = await prisma.savings.findFirst({
+      where: { id: savingsId, userId: actor.id },
     })
 
     if (!savings) {
@@ -192,23 +201,30 @@ export const requestSavingsWithdrawalAction = async (
     }
 
     if (savings.status !== SavingsStatus.ACTIVE) {
-      return { success: false, error: 'Only active savings plans can be withdrawn' }
+      return {
+        success: false,
+        error: 'Only active savings plans can be withdrawn',
+      }
     }
 
     const now = new Date()
     const isEarly = savings.maturityDate ? now < savings.maturityDate : true
-    
+
     // Principal balance
     const currentBalance = Number(savings.currentBalance)
     const accruedInterest = Number(savings.accruedInterest)
 
     // If early withdrawal, interest is 100% forfeited
-    const withdrawAmount = isEarly ? currentBalance : currentBalance + accruedInterest
+    const withdrawAmount = isEarly
+      ? currentBalance
+      : currentBalance + accruedInterest
 
     const updatedSavings = await prisma.savings.update({
       where: { id: savingsId },
       data: {
-        status: isEarly ? SavingsStatus.EARLY_WITHDRAWAL : SavingsStatus.WITHDRAWN,
+        status: isEarly
+          ? SavingsStatus.EARLY_WITHDRAWAL
+          : SavingsStatus.WITHDRAWN,
         earlyWithdrawal: isEarly,
         accruedInterest: isEarly ? 0 : savings.accruedInterest, // Forfeit interest if early
       },
@@ -217,37 +233,47 @@ export const requestSavingsWithdrawalAction = async (
     // Create a pending withdrawal transaction (to enter the admin disbursement queue)
     const newTransaction = await prisma.transaction.create({
       data: {
-        userId,
+        userId: actor.id,
         amount: new Prisma.Decimal(withdrawAmount.toString()),
         category: TransactionCategory.SAVINGS_WITHDRAWAL,
         type: TransactionType.WITHDRAWAL,
         status: TransactionStatus.PENDING,
         savingsId: savingsId,
-        notes: notes || (isEarly ? 'Early withdrawal request - interest forfeited' : 'Matured savings withdrawal request'),
-        recordedBy: userId,
+        notes:
+          notes ||
+          (isEarly
+            ? 'Early withdrawal request - interest forfeited'
+            : 'Matured savings withdrawal request'),
+        recordedBy: actor.id,
         bankAccountId: null, // Admin will disburse to the saved details on the Savings record
       },
     })
 
     try {
-      revalidatePath(`/dashboard/${userId}/savings`)
-      revalidatePath(`/dashboard/${userId}`)
-    } catch (e) {
+      revalidatePath(`/dashboard/${actor.id}/savings`)
+      revalidatePath(`/dashboard/${actor.id}`)
+    } catch {
       // Ignored outside Next.js context
     }
 
-    return { 
-      success: true, 
+    return {
+      success: true,
       data: {
         savings: serializeSavings(updatedSavings),
-        transaction: serializeTransaction(newTransaction)
-      }
+        transaction: serializeTransaction(newTransaction),
+      },
     }
   } catch (error) {
+    if (error instanceof AuthzError) {
+      return { success: false, error: error.message }
+    }
     console.error('Error requesting savings withdrawal:', error)
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Failed to request savings withdrawal',
+      error:
+        error instanceof Error
+          ? error.message
+          : 'Failed to request savings withdrawal',
     }
   }
 }

@@ -4,8 +4,13 @@ import { auth } from '@/auth'
 import { prisma } from '@/lib/prisma'
 import { nextOfKinSchema } from '@/schema/auth.schema'
 import { revalidatePath } from 'next/cache'
-
-import { Relationship } from '@/generated/prisma/enums'
+import { AdminPermission, Relationship } from '@/generated/prisma/enums'
+import {
+  assertTargetUserIsMember,
+  AuthzError,
+  requireAuthenticatedSession,
+  requireMemberOrStaffWithPermission,
+} from '@/lib/authz/guards'
 
 interface NextOfKinInput {
   name: string
@@ -19,10 +24,19 @@ interface NextOfKinInput {
 }
 
 export const getSessionHelper = async () => {
+  if (
+    process.env.MOCK_SESSION_USER &&
+    process.env.NODE_ENV !== 'test'
+  ) {
+    throw new Error(
+      'MOCK_SESSION_USER is forbidden outside NODE_ENV=test.',
+    )
+  }
+
   try {
     return await auth()
   } catch (e) {
-    if (process.env.MOCK_SESSION_USER) {
+    if (process.env.NODE_ENV === 'test' && process.env.MOCK_SESSION_USER) {
       return JSON.parse(process.env.MOCK_SESSION_USER)
     }
     throw e
@@ -34,19 +48,12 @@ export const updateNextOfKinAction = async (
   data: NextOfKinInput,
 ) => {
   try {
-    // 1. Authenticate and check permissions
-    const session = await getSessionHelper()
-    if (!session || !session.user) {
-      return { success: false, error: 'Unauthorized' }
-    }
-
-    const isSelf = session.user.id === userId
-    const isAdmin =
-      session.user.role === 'ADMIN' || session.user.role === 'OWNER'
-
-    if (!isSelf && !isAdmin) {
-      return { success: false, error: 'Permission Denied' }
-    }
+    // 1. Authenticate and check permissions + ownership
+    await requireMemberOrStaffWithPermission(userId, [
+      AdminPermission.PROFILE_CHANGES_REVIEW,
+      AdminPermission.MEMBERS_APPROVE,
+    ])
+    await assertTargetUserIsMember(userId)
 
     // 2. Validate input schema
     const parsedData = nextOfKinSchema.parse(data)
@@ -84,6 +91,9 @@ export const updateNextOfKinAction = async (
 
     return { success: true, data: result }
   } catch (error) {
+    if (error instanceof AuthzError) {
+      return { success: false, error: error.message }
+    }
     console.error('Error updating next of kin:', error)
     return {
       success: false,
@@ -101,17 +111,11 @@ interface BankAccountInput {
 
 export const addBankAccountAction = async (userId: string, data: BankAccountInput) => {
   try {
-    const session = await getSessionHelper()
-    if (!session || !session.user) {
-      return { success: false, error: 'Unauthorized' }
-    }
-
-    const isSelf = session.user.id === userId
-    const isAdmin = session.user.role === 'ADMIN' || session.user.role === 'OWNER'
-
-    if (!isSelf && !isAdmin) {
-      return { success: false, error: 'Permission Denied' }
-    }
+    await requireMemberOrStaffWithPermission(userId, [
+      AdminPermission.PROFILE_CHANGES_REVIEW,
+      AdminPermission.MEMBERS_APPROVE,
+    ])
+    await assertTargetUserIsMember(userId)
 
     if (data.accountNumber.length !== 10) {
       return { success: false, error: 'Account number must be 10 digits' }
@@ -142,6 +146,9 @@ export const addBankAccountAction = async (userId: string, data: BankAccountInpu
 
     return { success: true, data: result }
   } catch (error) {
+    if (error instanceof AuthzError) {
+      return { success: false, error: error.message }
+    }
     console.error('Error adding bank account:', error)
     return {
       success: false,
@@ -152,17 +159,11 @@ export const addBankAccountAction = async (userId: string, data: BankAccountInpu
 
 export const setPrimaryBankAccountAction = async (userId: string, bankAccountId: string) => {
   try {
-    const session = await getSessionHelper()
-    if (!session || !session.user) {
-      return { success: false, error: 'Unauthorized' }
-    }
-
-    const isSelf = session.user.id === userId
-    const isAdmin = session.user.role === 'ADMIN' || session.user.role === 'OWNER'
-
-    if (!isSelf && !isAdmin) {
-      return { success: false, error: 'Permission Denied' }
-    }
+    await requireMemberOrStaffWithPermission(userId, [
+      AdminPermission.PROFILE_CHANGES_REVIEW,
+      AdminPermission.MEMBERS_APPROVE,
+    ])
+    await assertTargetUserIsMember(userId)
 
     const result = await prisma.$transaction(async (tx) => {
       // Unset all other primary accounts
@@ -187,6 +188,9 @@ export const setPrimaryBankAccountAction = async (userId: string, bankAccountId:
 
     return { success: true, data: result }
   } catch (error) {
+    if (error instanceof AuthzError) {
+      return { success: false, error: error.message }
+    }
     console.error('Error setting primary bank account:', error)
     return {
       success: false,
@@ -197,17 +201,11 @@ export const setPrimaryBankAccountAction = async (userId: string, bankAccountId:
 
 export const deleteBankAccountAction = async (userId: string, bankAccountId: string) => {
   try {
-    const session = await getSessionHelper()
-    if (!session || !session.user) {
-      return { success: false, error: 'Unauthorized' }
-    }
-
-    const isSelf = session.user.id === userId
-    const isAdmin = session.user.role === 'ADMIN' || session.user.role === 'OWNER'
-
-    if (!isSelf && !isAdmin) {
-      return { success: false, error: 'Permission Denied' }
-    }
+    await requireMemberOrStaffWithPermission(userId, [
+      AdminPermission.PROFILE_CHANGES_REVIEW,
+      AdminPermission.MEMBERS_APPROVE,
+    ])
+    await assertTargetUserIsMember(userId)
 
     const targetAccount = await prisma.bankAccount.findUnique({
       where: { id: bankAccountId, userId },
@@ -240,6 +238,9 @@ export const deleteBankAccountAction = async (userId: string, bankAccountId: str
 
     return { success: true, data: result }
   } catch (error) {
+    if (error instanceof AuthzError) {
+      return { success: false, error: error.message }
+    }
     console.error('Error deleting bank account:', error)
     return {
       success: false,
@@ -248,8 +249,11 @@ export const deleteBankAccountAction = async (userId: string, bankAccountId: str
   }
 }
 
-export const resolveAccountNameAction = async (bankName: string, accountNumber: string) => {
+export const resolveAccountNameAction = async (_bankName: string, accountNumber: string) => {
   try {
+    void _bankName
+    await requireAuthenticatedSession()
+
     if (accountNumber.length !== 10) {
       return { success: false, error: 'Account number must be 10 digits' }
     }
@@ -270,6 +274,9 @@ export const resolveAccountNameAction = async (bankName: string, accountNumber: 
 
     return { success: true, accountName: resolvedName }
   } catch (error) {
+    if (error instanceof AuthzError) {
+      return { success: false, error: error.message }
+    }
     console.error('Error resolving bank account name:', error)
     return {
       success: false,

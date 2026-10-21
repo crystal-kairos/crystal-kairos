@@ -9,6 +9,7 @@ import {
   TransactionStatus,
   TransactionType,
   TransactionCategory,
+  UserRole,
 } from '@/generated/prisma/enums'
 import {
   AuthzError,
@@ -68,7 +69,11 @@ export const getAdminDashboardStats = async () => {
     const recentTransactions = await prisma.transaction.findMany({
       where: {
         status: {
-          in: [TransactionStatus.CONFIRMED, TransactionStatus.DISBURSED, TransactionStatus.REJECTED],
+          in: [
+            TransactionStatus.CONFIRMED,
+            TransactionStatus.DISBURSED,
+            TransactionStatus.REJECTED,
+          ],
         },
       },
       orderBy: {
@@ -97,11 +102,20 @@ export const getAdminDashboardStats = async () => {
       }
 
       let targetLabel = 'Transaction'
-      if (tx.category === TransactionCategory.SAVINGS_DEPOSIT || tx.category === TransactionCategory.SAVINGS_WITHDRAWAL) {
+      if (
+        tx.category === TransactionCategory.SAVINGS_DEPOSIT ||
+        tx.category === TransactionCategory.SAVINGS_WITHDRAWAL
+      ) {
         targetLabel = `Savings: ${tx.savingsId ? tx.savingsId.substring(0, 8).toUpperCase() : 'Plan'}`
-      } else if (tx.category === TransactionCategory.LOAN_DISBURSEMENT || tx.category === TransactionCategory.LOAN_REPAYMENT) {
+      } else if (
+        tx.category === TransactionCategory.LOAN_DISBURSEMENT ||
+        tx.category === TransactionCategory.LOAN_REPAYMENT
+      ) {
         targetLabel = `Loan: ${tx.loanId ? tx.loanId.substring(0, 8).toUpperCase() : 'Record'}`
-      } else if (tx.category === TransactionCategory.AJO_CONTRIBUTION || tx.category === TransactionCategory.AJO_PAYOUT) {
+      } else if (
+        tx.category === TransactionCategory.AJO_CONTRIBUTION ||
+        tx.category === TransactionCategory.AJO_PAYOUT
+      ) {
         targetLabel = `Ajo: ${tx.eAjoId ? tx.eAjoId.substring(0, 8).toUpperCase() : 'Group'}`
       }
 
@@ -130,7 +144,8 @@ export const getAdminDashboardStats = async () => {
     console.error('Error fetching admin dashboard stats:', error)
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Failed to fetch admin stats.',
+      error:
+        error instanceof Error ? error.message : 'Failed to fetch admin stats.',
     }
   }
 }
@@ -188,7 +203,8 @@ export const getAdminStaffMembers = async () => {
     console.error('Error fetching admin staff:', error)
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Failed to fetch admin staff.',
+      error:
+        error instanceof Error ? error.message : 'Failed to fetch admin staff.',
     }
   }
 }
@@ -255,7 +271,10 @@ export const getPendingReceipts = async () => {
     console.error('Error fetching pending receipts:', error)
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Failed to fetch pending receipts.',
+      error:
+        error instanceof Error
+          ? error.message
+          : 'Failed to fetch pending receipts.',
     }
   }
 }
@@ -331,7 +350,10 @@ export const getPendingDisbursements = async () => {
     console.error('Error fetching pending disbursements:', error)
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Failed to fetch pending disbursements.',
+      error:
+        error instanceof Error
+          ? error.message
+          : 'Failed to fetch pending disbursements.',
     }
   }
 }
@@ -370,7 +392,8 @@ export const getAllEAjoGroups = async () => {
     console.error('Error fetching eAjo groups:', error)
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Failed to fetch eAjo groups.',
+      error:
+        error instanceof Error ? error.message : 'Failed to fetch eAjo groups.',
     }
   }
 }
@@ -429,7 +452,8 @@ export const getEAjoGroupById = async (groupId: string) => {
     console.error('Error fetching eAjo group:', error)
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Failed to fetch eAjo group.',
+      error:
+        error instanceof Error ? error.message : 'Failed to fetch eAjo group.',
     }
   }
 }
@@ -449,7 +473,14 @@ export const getPendingEAjoApplications = async () => {
       orderBy: { createdAt: 'asc' },
       include: {
         user: { select: { id: true, name: true, email: true } },
-        group: { select: { id: true, title: true, contributionAmount: true, duration: true } },
+        group: {
+          select: {
+            id: true,
+            title: true,
+            contributionAmount: true,
+            duration: true,
+          },
+        },
       },
     })
 
@@ -461,7 +492,10 @@ export const getPendingEAjoApplications = async () => {
       netPayoutAmount: Number(a.netPayoutAmount),
       currentBalance: Number(a.currentBalance),
       totalContributed: Number(a.totalContributed),
-      group: { ...a.group, contributionAmount: Number(a.group.contributionAmount) },
+      group: {
+        ...a.group,
+        contributionAmount: Number(a.group.contributionAmount),
+      },
     }))
 
     return { success: true, data: serialized }
@@ -469,7 +503,10 @@ export const getPendingEAjoApplications = async () => {
     console.error('Error fetching pending eAjo applications:', error)
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Failed to fetch pending applications.',
+      error:
+        error instanceof Error
+          ? error.message
+          : 'Failed to fetch pending applications.',
     }
   }
 }
@@ -491,11 +528,11 @@ export const getAllLoansQuery = async (filters?: { status?: LoanStatus }) => {
       where: filters?.status ? { status: filters.status } : undefined,
       orderBy: { createdAt: 'desc' },
       include: {
-        user: { select: { id: true, name: true, email: true, photoUrl: true } }
-      }
+        user: { select: { id: true, name: true, email: true, photoUrl: true } },
+      },
     })
 
-    const serialized = loans.map(loan => ({
+    const serialized = loans.map((loan) => ({
       ...loan,
       requestedAmount: Number(loan.requestedAmount),
       approvedAmount: loan.approvedAmount ? Number(loan.approvedAmount) : null,
@@ -509,7 +546,10 @@ export const getAllLoansQuery = async (filters?: { status?: LoanStatus }) => {
     return { success: true, data: serialized }
   } catch (error) {
     console.error('Error fetching admin loans:', error)
-    return { success: false, error: error instanceof Error ? error.message : 'Failed to fetch loans.' }
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to fetch loans.',
+    }
   }
 }
 
@@ -526,16 +566,23 @@ export const getLoanByIdQuery = async (loanId: string) => {
       where: { id: loanId },
       include: {
         user: {
-          include: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            username: true,
+            role: true,
+            photoUrl: true,
+            createdAt: true,
             userInfo: true,
             bankAccounts: true,
             membership: true,
-          }
+          },
         },
         transactions: {
-          orderBy: { createdAt: 'desc' }
-        }
-      }
+          orderBy: { createdAt: 'desc' },
+        },
+      },
     })
 
     if (!loan) return { success: false, error: 'Loan not found.' }
@@ -549,16 +596,20 @@ export const getLoanByIdQuery = async (loanId: string) => {
       outstandingBalance: Number(loan.outstandingBalance),
       totalRepaid: Number(loan.totalRepaid),
       defaultPenalty: Number(loan.defaultPenalty),
-      transactions: loan.transactions.map(tx => ({
+      transactions: loan.transactions.map((tx) => ({
         ...tx,
-        amount: Number(tx.amount)
-      }))
+        amount: Number(tx.amount),
+      })),
     }
 
     return { success: true, data: serialized }
   } catch (error) {
     console.error('Error fetching admin loan details:', error)
-    return { success: false, error: 'Failed to fetch loan details', data: null }
+    return {
+      success: false,
+      error: 'Failed to fetch loan details',
+      data: null,
+    }
   }
 }
 
@@ -567,6 +618,11 @@ export const getLoanByIdQuery = async (loanId: string) => {
  */
 export const getAllSavingsProducts = async () => {
   try {
+    await requireAnyPermission([
+      AdminPermission.SAVINGS_READ,
+      AdminPermission.SAVINGS_MANAGE,
+      AdminPermission.SAVINGS_PAYMENTS_REVIEW,
+    ])
     const products = await prisma.savingsProduct.findMany({
       orderBy: { createdAt: 'desc' },
       include: {
@@ -578,7 +634,11 @@ export const getAllSavingsProducts = async () => {
     return { success: true, data: products }
   } catch (error) {
     console.error('Error fetching admin savings products:', error)
-    return { success: false, error: 'Failed to fetch savings products', data: [] }
+    return {
+      success: false,
+      error: 'Failed to fetch savings products',
+      data: [],
+    }
   }
 }
 
@@ -608,7 +668,9 @@ export const getAllUserSavings = async () => {
       currentBalance: Number(s.currentBalance),
       accruedInterest: Number(s.accruedInterest),
       totalDeposited: Number(s.totalDeposited),
-      expectedMaturityAmount: s.expectedMaturityAmount ? Number(s.expectedMaturityAmount) : null,
+      expectedMaturityAmount: s.expectedMaturityAmount
+        ? Number(s.expectedMaturityAmount)
+        : null,
     }))
 
     return { success: true, data: serialized }
@@ -629,12 +691,13 @@ export const getAllMembers = async () => {
       AdminPermission.EAJO_MANAGE,
     ])
     const members = await prisma.user.findMany({
+      where: { role: UserRole.USER },
       orderBy: { createdAt: 'desc' },
       select: {
         id: true,
         name: true,
         email: true,
-      }
+      },
     })
     return { success: true, data: members }
   } catch (error) {
