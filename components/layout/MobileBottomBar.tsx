@@ -10,14 +10,21 @@ import { Button } from '../ui/button'
 import { LucideIcon, Plus } from 'lucide-react'
 import { useMemo } from 'react'
 import { useSession } from 'next-auth/react'
-import { UserRole } from '@/generated/prisma/enums'
+import { AdminPermission, UserRole } from '@/generated/prisma/enums'
+import { canAccessAdminNavSection } from '@/lib/authz/permissions'
 
-const MobileBottomBar = () => {
+interface MobileBottomBarProps {
+  role?: UserRole
+  permissions?: readonly AdminPermission[]
+}
+
+const MobileBottomBar = ({ role, permissions = [] }: MobileBottomBarProps) => {
   const pathname = usePathname()
   const { t } = useTranslation('admin')
   const session = useSession()
 
   const values = useMemo(() => {
+    const effectiveRole = role ?? (session.data?.user?.role as UserRole | undefined)
     let dashboardLink = ''
     let navItems: {
       id: string
@@ -26,29 +33,29 @@ const MobileBottomBar = () => {
       icon: LucideIcon
     }[] = userNavItems
 
-    if (session.data) {
-      if (session.data.user.role === UserRole.USER) {
-        dashboardLink = `/dashboard/${session.data?.user.id}`
-        navItems = userNavItems
-      } else {
-        dashboardLink = '/admin'
-        navItems = adminNavItems
-      }
+    if (effectiveRole === UserRole.USER) {
+      dashboardLink = `/dashboard/${session.data?.user?.id ?? ''}`
+      navItems = userNavItems
+    } else if (effectiveRole === UserRole.ADMIN || effectiveRole === UserRole.OWNER) {
+      dashboardLink = '/admin'
+      navItems = adminNavItems.filter((item) =>
+        canAccessAdminNavSection(effectiveRole, permissions, item.id),
+      )
     }
 
     return {
       dashboardLink,
       navItems,
-      isAdmin: session.data?.user.role !== UserRole.USER,
+      isAdmin: effectiveRole === UserRole.ADMIN || effectiveRole === UserRole.OWNER,
     }
-  }, [session])
+  }, [session, role, permissions])
 
   return (
     <div className='md:hidden bg-sidebar fixed w-full bottom-0 dark:border-t-2'>
       <div
         className='grid'
         style={{
-          gridTemplateColumns: `repeat(${values.navItems.length}, ${100 / values.navItems.length}%)`,
+          gridTemplateColumns: `repeat(${Math.max(1, values.navItems.length)}, ${100 / Math.max(1, values.navItems.length)}%)`,
         }}
       >
         {values.navItems.map((item) => {

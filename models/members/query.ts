@@ -11,8 +11,8 @@ import {
   onMembershipRejected,
 } from '@/features/notification/triggers/member.triggers'
 import { issuePasswordSetupToken } from '@/lib/authz/tokens'
-import { PasswordSetupTokenPurpose } from '@/generated/prisma/enums'
-import { getSessionHelper } from './actions'
+import { AdminPermission, PasswordSetupTokenPurpose } from '@/generated/prisma/enums'
+import { requirePermission } from '@/lib/authz/guards'
 import { MembersLoansQueryParams } from '@/types/loans.interface'
 
 export const getAllMembers = async (filters: AllMembersQueryParams) => {
@@ -195,13 +195,14 @@ export const getMemberById = async (memberId: string) => {
 
 export const approveMember = async (
   userId: string,
-  adminId: string,
+  _adminId: string,
   userEmail?: string,
 ) => {
   try {
     void userEmail
-    const session = await getSessionHelper()
-    const actorId = session?.user?.id ?? adminId
+    void _adminId
+    const actor = await requirePermission(AdminPermission.MEMBERS_APPROVE)
+    const actorId = actor.id
     const membershipNumber = generateMembershipNumber()
     const member = await prisma.membership.update({
       where: { userId },
@@ -254,10 +255,12 @@ export const approveMember = async (
 
 export const rejectMember = async (
   userId: string,
-  adminId: string,
+  _adminId: string,
   reason: string,
 ) => {
   try {
+    void _adminId
+    await requirePermission(AdminPermission.MEMBERS_APPROVE)
     const member = await prisma.membership.update({
       where: { userId },
       data: {

@@ -1,26 +1,28 @@
 'use server'
 
 import { prisma } from '@/lib/prisma'
-import { getSessionHelper } from '../members/actions'
 import {
+  AdminPermission,
   MembershipStatus,
-  SavingsStatus,
   LoanStatus,
   EAjoStatus,
   TransactionStatus,
   TransactionType,
   TransactionCategory,
 } from '@/generated/prisma/enums'
+import {
+  AuthzError,
+  requireAnyPermission,
+  requirePermission,
+  requireStaffSession,
+} from '@/lib/authz/guards'
 
 /**
  * Fetches comprehensive aggregate statistics and activity feeds for the Admin Dashboard
  */
 export const getAdminDashboardStats = async () => {
   try {
-    const session = await getSessionHelper()
-    if (!session?.user || (session.user.role !== 'ADMIN' && session.user.role !== 'OWNER')) {
-      return { success: false, error: 'Unauthorized admin access.' }
-    }
+    await requireStaffSession()
 
     // 1. Pending Receipts (awaiting review - deposits that are PENDING)
     const pendingReceiptsCount = await prisma.transaction.count({
@@ -138,10 +140,7 @@ export const getAdminDashboardStats = async () => {
  */
 export const getAdminStaffMembers = async () => {
   try {
-    const session = await getSessionHelper()
-    if (!session?.user || (session.user.role !== 'ADMIN' && session.user.role !== 'OWNER')) {
-      return { success: false, error: 'Unauthorized admin access.' }
-    }
+    const actor = await requirePermission(AdminPermission.STAFF_MANAGE)
 
     const staff = await prisma.user.findMany({
       where: {
@@ -156,14 +155,36 @@ export const getAdminStaffMembers = async () => {
         role: true,
         lastLoginAt: true,
         createdAt: true,
+        adminPermissionGrants: {
+          select: {
+            permission: true,
+          },
+        },
       },
       orderBy: {
         createdAt: 'asc',
       },
     })
 
-    return { success: true, data: staff }
+    const formatted = staff.map((s) => ({
+      id: s.id,
+      name: s.name,
+      email: s.email,
+      role: s.role,
+      lastLoginAt: s.lastLoginAt,
+      createdAt: s.createdAt,
+      permissions: s.adminPermissionGrants.map((g) => g.permission),
+    }))
+
+    return {
+      success: true,
+      data: formatted,
+      actorRole: actor.role,
+    }
   } catch (error) {
+    if (error instanceof AuthzError) {
+      return { success: false, error: error.message }
+    }
     console.error('Error fetching admin staff:', error)
     return {
       success: false,
@@ -177,10 +198,13 @@ export const getAdminStaffMembers = async () => {
  */
 export const getPendingReceipts = async () => {
   try {
-    const session = await getSessionHelper()
-    if (!session?.user || (session.user.role !== 'ADMIN' && session.user.role !== 'OWNER')) {
-      return { success: false, error: 'Unauthorized admin access.' }
-    }
+    await requireAnyPermission([
+      AdminPermission.TRANSACTIONS_READ,
+      AdminPermission.TRANSACTIONS_REVIEW,
+      AdminPermission.SAVINGS_PAYMENTS_REVIEW,
+      AdminPermission.LOANS_REVIEW,
+      AdminPermission.EAJO_PAYMENTS_REVIEW,
+    ])
 
     const receipts = await prisma.transaction.findMany({
       where: {
@@ -241,10 +265,13 @@ export const getPendingReceipts = async () => {
  */
 export const getPendingDisbursements = async () => {
   try {
-    const session = await getSessionHelper()
-    if (!session?.user || (session.user.role !== 'ADMIN' && session.user.role !== 'OWNER')) {
-      return { success: false, error: 'Unauthorized admin access.' }
-    }
+    await requireAnyPermission([
+      AdminPermission.TRANSACTIONS_READ,
+      AdminPermission.TRANSACTIONS_REVIEW,
+      AdminPermission.LOANS_DISBURSE,
+      AdminPermission.EAJO_PAYOUTS_MANAGE,
+      AdminPermission.WALLET_WITHDRAWALS_REVIEW,
+    ])
 
     const disbursements = await prisma.transaction.findMany({
       where: {
@@ -318,10 +345,12 @@ export const getPendingDisbursements = async () => {
  */
 export const getAllEAjoGroups = async () => {
   try {
-    const session = await getSessionHelper()
-    if (!session?.user || (session.user.role !== 'ADMIN' && session.user.role !== 'OWNER')) {
-      return { success: false, error: 'Unauthorized admin access.' }
-    }
+    await requireAnyPermission([
+      AdminPermission.EAJO_READ,
+      AdminPermission.EAJO_MANAGE,
+      AdminPermission.EAJO_PAYMENTS_REVIEW,
+      AdminPermission.EAJO_PAYOUTS_MANAGE,
+    ])
 
     const groups = await prisma.eAjoGroup.findMany({
       orderBy: { createdAt: 'desc' },
@@ -351,10 +380,12 @@ export const getAllEAjoGroups = async () => {
  */
 export const getEAjoGroupById = async (groupId: string) => {
   try {
-    const session = await getSessionHelper()
-    if (!session?.user || (session.user.role !== 'ADMIN' && session.user.role !== 'OWNER')) {
-      return { success: false, error: 'Unauthorized admin access.' }
-    }
+    await requireAnyPermission([
+      AdminPermission.EAJO_READ,
+      AdminPermission.EAJO_MANAGE,
+      AdminPermission.EAJO_PAYMENTS_REVIEW,
+      AdminPermission.EAJO_PAYOUTS_MANAGE,
+    ])
 
     const group = await prisma.eAjoGroup.findUnique({
       where: { id: groupId },
@@ -408,10 +439,10 @@ export const getEAjoGroupById = async (groupId: string) => {
  */
 export const getPendingEAjoApplications = async () => {
   try {
-    const session = await getSessionHelper()
-    if (!session?.user || (session.user.role !== 'ADMIN' && session.user.role !== 'OWNER')) {
-      return { success: false, error: 'Unauthorized admin access.' }
-    }
+    await requireAnyPermission([
+      AdminPermission.EAJO_READ,
+      AdminPermission.EAJO_MANAGE,
+    ])
 
     const applications = await prisma.eAjoMember.findMany({
       where: { status: 'PENDING' },
@@ -449,10 +480,12 @@ export const getPendingEAjoApplications = async () => {
 
 export const getAllLoansQuery = async (filters?: { status?: LoanStatus }) => {
   try {
-    const session = await getSessionHelper()
-    if (!session?.user || (session.user.role !== 'ADMIN' && session.user.role !== 'OWNER')) {
-      return { success: false, error: 'Unauthorized admin access.' }
-    }
+    await requireAnyPermission([
+      AdminPermission.LOANS_READ,
+      AdminPermission.LOANS_REVIEW,
+      AdminPermission.LOANS_DISBURSE,
+      AdminPermission.LOAN_SETTINGS_MANAGE,
+    ])
 
     const loans = await prisma.loan.findMany({
       where: filters?.status ? { status: filters.status } : undefined,
@@ -482,10 +515,12 @@ export const getAllLoansQuery = async (filters?: { status?: LoanStatus }) => {
 
 export const getLoanByIdQuery = async (loanId: string) => {
   try {
-    const session = await getSessionHelper()
-    if (!session?.user || (session.user.role !== 'ADMIN' && session.user.role !== 'OWNER')) {
-      return { success: false, error: 'Unauthorized admin access.' }
-    }
+    await requireAnyPermission([
+      AdminPermission.LOANS_READ,
+      AdminPermission.LOANS_REVIEW,
+      AdminPermission.LOANS_DISBURSE,
+      AdminPermission.LOAN_SETTINGS_MANAGE,
+    ])
 
     const loan = await prisma.loan.findUnique({
       where: { id: loanId },
@@ -552,6 +587,11 @@ export const getAllSavingsProducts = async () => {
  */
 export const getAllUserSavings = async () => {
   try {
+    await requireAnyPermission([
+      AdminPermission.SAVINGS_READ,
+      AdminPermission.SAVINGS_MANAGE,
+      AdminPermission.SAVINGS_PAYMENTS_REVIEW,
+    ])
     const savings = await prisma.savings.findMany({
       orderBy: { createdAt: 'desc' },
       include: {
@@ -580,6 +620,14 @@ export const getAllUserSavings = async () => {
 
 export const getAllMembers = async () => {
   try {
+    await requireAnyPermission([
+      AdminPermission.MEMBERS_READ,
+      AdminPermission.MEMBERS_CREATE,
+      AdminPermission.MEMBERS_APPROVE,
+      AdminPermission.LOANS_REVIEW,
+      AdminPermission.SAVINGS_MANAGE,
+      AdminPermission.EAJO_MANAGE,
+    ])
     const members = await prisma.user.findMany({
       orderBy: { createdAt: 'desc' },
       select: {

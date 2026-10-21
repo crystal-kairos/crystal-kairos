@@ -15,6 +15,7 @@
     "db:seed": "prisma db seed",
     "db:clear": "prisma migrate reset",
     "db:view": "prisma studio",
+    "owner:create": "tsx scripts/create-owner.ts",
     "email:dev": "email dev"
   },
   "dependencies": {

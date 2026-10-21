@@ -1,10 +1,10 @@
 'use server'
 
-import { auth } from '@/auth'
 import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
-import { SavingsStatus, TransactionCategory, TransactionStatus, TransactionType, SavingsType, SavingsFrequency, SavingsMaturity } from '@/generated/prisma/enums'
+import { AdminPermission, SavingsStatus, TransactionCategory, TransactionStatus, TransactionType, SavingsType, SavingsFrequency, SavingsMaturity } from '@/generated/prisma/enums'
 import { Prisma } from '@/generated/prisma/client'
+import { AuthzError, requirePermission } from '@/lib/authz/guards'
 export interface CreateSavingsProductPayload {
   type: 'FIXED' | 'REGULAR' | 'STAGGERED'
   title: string
@@ -20,10 +20,7 @@ export interface CreateSavingsProductPayload {
 
 export const createSavingsProductAction = async (data: CreateSavingsProductPayload) => {
   try {
-    const session = await auth()
-    if (!session || (session.user.role !== 'ADMIN' && session.user.role !== 'OWNER')) {
-      return { error: 'Unauthorized' }
-    }
+    const actor = await requirePermission(AdminPermission.SAVINGS_MANAGE)
 
     const ratesParts: string[] = []
     if (data.interestRate1Month) ratesParts.push(`${data.interestRate1Month}% (1M)`)
@@ -44,44 +41,44 @@ export const createSavingsProductAction = async (data: CreateSavingsProductPaylo
         interestRate3Months: data.interestRate3Months ?? null,
         interestRate6Months: data.interestRate6Months ?? null,
         interestRate12Months: data.interestRate12Months ?? null,
-        createdBy: session.user.id,
+        createdBy: actor.id,
       },
     })
 
-    revalidatePath('/admin/savings')
+    try { revalidatePath('/admin/savings') } catch {}
     return { success: true, data: newProduct }
-  } catch (error: any) {
+  } catch (error: unknown) {
+    if (error instanceof AuthzError) {
+      return { error: error.message }
+    }
     console.error('Error creating savings product:', error)
-    return { error: error.message || 'Failed to create savings product' }
+    return { error: error instanceof Error ? error.message : 'Failed to create savings product' }
   }
 }
 
 export const toggleSavingsProductStatusAction = async (id: string, isActive: boolean) => {
   try {
-    const session = await auth()
-    if (!session || (session.user.role !== 'ADMIN' && session.user.role !== 'OWNER')) {
-      return { error: 'Unauthorized' }
-    }
+    await requirePermission(AdminPermission.SAVINGS_MANAGE)
 
     const updated = await prisma.savingsProduct.update({
       where: { id },
       data: { isActive },
     })
 
-    revalidatePath('/admin/savings')
+    try { revalidatePath('/admin/savings') } catch {}
     return { success: true, data: updated }
-  } catch (error: any) {
+  } catch (error: unknown) {
+    if (error instanceof AuthzError) {
+      return { error: error.message }
+    }
     console.error('Error updating savings product status:', error)
-    return { error: error.message || 'Failed to update savings product' }
+    return { error: error instanceof Error ? error.message : 'Failed to update savings product' }
   }
 }
 
 export const updateSavingsProductAction = async (id: string, data: Partial<CreateSavingsProductPayload>) => {
   try {
-    const session = await auth()
-    if (!session || (session.user.role !== 'ADMIN' && session.user.role !== 'OWNER')) {
-      return { error: 'Unauthorized' }
-    }
+    await requirePermission(AdminPermission.SAVINGS_MANAGE)
 
     const ratesParts: string[] = []
     if (data.interestRate1Month) ratesParts.push(`${data.interestRate1Month}% (1M)`)
@@ -100,20 +97,20 @@ export const updateSavingsProductAction = async (id: string, data: Partial<Creat
       data,
     })
 
-    revalidatePath('/admin/savings')
+    try { revalidatePath('/admin/savings') } catch {}
     return { success: true, data: updated }
-  } catch (error: any) {
+  } catch (error: unknown) {
+    if (error instanceof AuthzError) {
+      return { error: error.message }
+    }
     console.error('Error updating savings product:', error)
-    return { error: error.message || 'Failed to update savings product' }
+    return { error: error instanceof Error ? error.message : 'Failed to update savings product' }
   }
 }
 
 export const reviewSavingsTransactionAction = async (transactionId: string, status: 'CONFIRMED' | 'REJECTED', notes?: string, rejectionReason?: string) => {
   try {
-    const session = await auth()
-    if (!session || (session.user.role !== 'ADMIN' && session.user.role !== 'OWNER')) {
-      return { error: 'Unauthorized' }
-    }
+    const actor = await requirePermission(AdminPermission.SAVINGS_PAYMENTS_REVIEW)
 
     const transaction = await prisma.transaction.findUnique({
       where: { id: transactionId },
@@ -133,7 +130,7 @@ export const reviewSavingsTransactionAction = async (transactionId: string, stat
           status,
           notes: notes || transaction.notes,
           rejectionReason: status === 'REJECTED' ? rejectionReason : undefined,
-          processedBy: session.user.id,
+          processedBy: actor.id,
           processedAt: new Date(),
         },
       })
@@ -155,16 +152,21 @@ export const reviewSavingsTransactionAction = async (transactionId: string, stat
       }
     })
 
-    revalidatePath('/admin/savings')
-    if (transaction.savingsId) {
-      revalidatePath(`/admin/savings/accounts/${transaction.savingsId}`)
-      revalidatePath(`/dashboard/${transaction.userId}/savings/${transaction.savingsId}`)
-    }
+    try {
+      revalidatePath('/admin/savings')
+      if (transaction.savingsId) {
+        revalidatePath(`/admin/savings/accounts/${transaction.savingsId}`)
+        revalidatePath(`/dashboard/${transaction.userId}/savings/${transaction.savingsId}`)
+      }
+    } catch {}
 
     return { success: true }
-  } catch (error: any) {
+  } catch (error: unknown) {
+    if (error instanceof AuthzError) {
+      return { error: error.message }
+    }
     console.error('Error reviewing savings transaction:', error)
-    return { error: error.message || 'Failed to review transaction' }
+    return { error: error instanceof Error ? error.message : 'Failed to review transaction' }
   }
 }
 
@@ -177,10 +179,7 @@ export const createSavingsForMemberAction = async (data: {
   receiptUrl?: string
 }) => {
   try {
-    const session = await auth()
-    if (!session || (session.user.role !== 'ADMIN' && session.user.role !== 'OWNER')) {
-      return { success: false, error: 'Unauthorized.' }
-    }
+    const actor = await requirePermission(AdminPermission.SAVINGS_MANAGE)
 
     const { userId, productId, targetAmount, frequency, maturity, receiptUrl } = data
 
@@ -249,8 +248,8 @@ export const createSavingsForMemberAction = async (data: {
             savingsId: savings.id,
             receiptUrl,
             notes: 'Initial deposit by Admin',
-            recordedBy: session.user.id,
-            processedBy: session.user.id,
+            recordedBy: actor.id,
+            processedBy: actor.id,
             processedAt: new Date(),
           }
         })
@@ -266,11 +265,16 @@ export const createSavingsForMemberAction = async (data: {
       return savings
     })
 
-    revalidatePath('/admin/savings')
-    revalidatePath(`/dashboard/${userId}/savings`)
+    try {
+      revalidatePath('/admin/savings')
+      revalidatePath(`/dashboard/${userId}/savings`)
+    } catch {}
     return { success: true, data: result }
-  } catch (error: any) {
+  } catch (error: unknown) {
+    if (error instanceof AuthzError) {
+      return { success: false, error: error.message }
+    }
     console.error('Error creating savings for member:', error)
-    return { success: false, error: error.message || 'Failed to create savings plan.' }
+    return { success: false, error: error instanceof Error ? error.message : 'Failed to create savings plan.' }
   }
 }

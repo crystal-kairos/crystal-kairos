@@ -191,6 +191,40 @@ enum PasswordSetupTokenPurpose {
   RESET_PASSWORD
 }
 
+enum AdminPermission {
+  MEMBERS_READ
+  MEMBERS_CREATE
+  MEMBERS_APPROVE
+  PROFILE_CHANGES_REVIEW
+  SOCIETY_SETTINGS_MANAGE
+  SAVINGS_READ
+  SAVINGS_MANAGE
+  SAVINGS_PAYMENTS_REVIEW
+  LOANS_READ
+  LOANS_REVIEW
+  LOANS_DISBURSE
+  LOAN_SETTINGS_MANAGE
+  GUARANTEES_REVIEW
+  EAJO_READ
+  EAJO_MANAGE
+  EAJO_PAYMENTS_REVIEW
+  EAJO_PAYOUTS_MANAGE
+  TRANSACTIONS_READ
+  TRANSACTIONS_REVIEW
+  PAYMENTS_REVERSE
+  WALLET_MANAGE
+  WALLET_WITHDRAWALS_REVIEW
+  RECOVERY_MANAGE
+  RECOVERY_EXECUTE
+  PENALTY_WAIVE
+  RECONCILIATION_MANAGE
+  SETTLEMENTS_MANAGE
+  POLICY_NOTICES_MANAGE
+  NOTIFICATIONS_MANAGE
+  AUDIT_READ
+  STAFF_MANAGE
+}
+
 model User {
   id                     String         @id @default(uuid())
   email                  String         @unique
@@ -201,6 +235,7 @@ model User {
   role                   UserRole       @default(USER)
   emailVerified          DateTime? // For email verification
   hasSetPassword         Boolean        @default(false) // Track if user has activated account
+  sessionVersion         Int            @default(0)
   lastLoginAt            DateTime?
   createdAt              DateTime       @default(now())
   updatedAt              DateTime       @updatedAt
@@ -211,6 +246,8 @@ model User {
   accounts               Account[]
   sessions               Session[]
   passwordSetupTokens    PasswordSetupToken[]
+  adminPermissionGrants  AdminPermissionGrant[] @relation("AdminPermissionGrants")
+  createdPermissionGrants AdminPermissionGrant[] @relation("PermissionGrantCreator")
   userInfo               UserInfo?
   bankAccounts           BankAccount[]
   nextOfKin              NextOfKin?
@@ -278,6 +315,20 @@ model PasswordSetupToken {
   @@index([requestedIp, createdAt])
   @@index([expiresAt])
   @@map("password_setup_tokens")
+}
+
+model AdminPermissionGrant {
+  id          String          @id @default(uuid())
+  adminUserId String
+  permission  AdminPermission
+  grantedById String
+  createdAt   DateTime        @default(now())
+  admin       User            @relation("AdminPermissionGrants", fields: [adminUserId], references: [id], onDelete: Restrict)
+  grantedBy   User            @relation("PermissionGrantCreator", fields: [grantedById], references: [id], onDelete: Restrict)
+
+  @@unique([adminUserId, permission])
+  @@index([grantedById])
+  @@map("admin_permission_grants")
 }
 
 model UserInfo {

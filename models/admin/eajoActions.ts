@@ -1,10 +1,10 @@
 'use server'
 
 import { prisma } from '@/lib/prisma'
-import { auth } from '@/auth'
 import { revalidatePath } from 'next/cache'
-import { EAjoMemberStatus, TransactionCategory, TransactionStatus, TransactionType, EAjoStatus } from '@/generated/prisma/enums'
+import { AdminPermission, EAjoMemberStatus, TransactionCategory, TransactionStatus, TransactionType } from '@/generated/prisma/enums'
 import { Prisma } from '@/generated/prisma/client'
+import { AuthzError, requirePermission } from '@/lib/authz/guards'
 
 export const addMemberToEAjoGroupAction = async (data: {
   userId: string
@@ -16,10 +16,7 @@ export const addMemberToEAjoGroupAction = async (data: {
   receiptUrl?: string
 }) => {
   try {
-    const session = await auth()
-    if (!session || (session.user.role !== 'ADMIN' && session.user.role !== 'OWNER')) {
-      return { success: false, error: 'Unauthorized.' }
-    }
+    const actor = await requirePermission(AdminPermission.EAJO_MANAGE)
 
     const { userId, groupId, payoutPosition, guarantorName, guarantorPhoneNumber, status, receiptUrl } = data
 
@@ -79,12 +76,11 @@ export const addMemberToEAjoGroupAction = async (data: {
             type: TransactionType.DEPOSIT,
             category: TransactionCategory.AJO_CONTRIBUTION,
             status: TransactionStatus.CONFIRMED,
-            eAjoId: groupId,
             eAjoMemberId: eajoMember.id,
             receiptUrl,
             notes: 'Initial eAjo contribution recorded by Admin',
-            recordedBy: session.user.id,
-            processedBy: session.user.id,
+            recordedBy: actor.id,
+            processedBy: actor.id,
             processedAt: new Date(),
           }
         })
@@ -93,13 +89,18 @@ export const addMemberToEAjoGroupAction = async (data: {
       return eajoMember
     })
 
-    revalidatePath('/admin/eajo')
-    revalidatePath(`/admin/eajo/${groupId}`)
-    revalidatePath(`/dashboard/${userId}/eajo`)
+    try {
+      revalidatePath('/admin/eajo')
+      revalidatePath(`/admin/eajo/${groupId}`)
+      revalidatePath(`/dashboard/${userId}/eajo`)
+    } catch {}
     
     return { success: true, data: result }
-  } catch (error: any) {
+  } catch (error: unknown) {
+    if (error instanceof AuthzError) {
+      return { success: false, error: error.message }
+    }
     console.error('Error adding member to eAjo group:', error)
-    return { success: false, error: error.message || 'Failed to add member to eAjo group.' }
+    return { success: false, error: error instanceof Error ? error.message : 'Failed to add member to eAjo group.' }
   }
 }
