@@ -2,9 +2,19 @@
 
 import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
-import { AdminPermission, EAjoMemberStatus, TransactionCategory, TransactionStatus, TransactionType } from '@/generated/prisma/enums'
+import {
+  AdminPermission,
+  EAjoMemberStatus,
+  TransactionCategory,
+  TransactionStatus,
+  TransactionType,
+} from '@/generated/prisma/enums'
 import { Prisma } from '@/generated/prisma/client'
-import { AuthzError, requirePermission } from '@/lib/authz/guards'
+import {
+  assertTargetUserIsMember,
+  AuthzError,
+  requirePermission,
+} from '@/lib/authz/guards'
 
 export const addMemberToEAjoGroupAction = async (data: {
   userId: string
@@ -18,17 +28,30 @@ export const addMemberToEAjoGroupAction = async (data: {
   try {
     const actor = await requirePermission(AdminPermission.EAJO_MANAGE)
 
-    const { userId, groupId, payoutPosition, guarantorName, guarantorPhoneNumber, status, receiptUrl } = data
+    const {
+      userId,
+      groupId,
+      payoutPosition,
+      guarantorName,
+      guarantorPhoneNumber,
+      status,
+      receiptUrl,
+    } = data
+
+    await assertTargetUserIsMember(userId)
 
     // 1. Verify Member
     const user = await prisma.user.findUnique({
       where: { id: userId },
-      include: { bankAccounts: true }
+      include: { bankAccounts: true },
     })
-    
+
     if (!user) return { success: false, error: 'Member not found.' }
     if (!user.bankAccounts || user.bankAccounts.length === 0) {
-      return { success: false, error: 'Member must have a bank account set up first.' }
+      return {
+        success: false,
+        error: 'Member must have a bank account set up first.',
+      }
     }
     const defaultBank = user.bankAccounts[0]
 
@@ -36,19 +59,31 @@ export const addMemberToEAjoGroupAction = async (data: {
     const group = await prisma.eAjoGroup.findUnique({
       where: { id: groupId },
       include: {
-        members: true
-      }
+        members: true,
+      },
     })
 
     if (!group) return { success: false, error: 'eAjo group not found.' }
-    
+
     // Check if user already in group
-    const alreadyMember = group.members.find(m => m.userId === userId)
-    if (alreadyMember) return { success: false, error: 'Member is already in this eAjo group.' }
+    const alreadyMember = group.members.find((m) => m.userId === userId)
+    if (alreadyMember) {
+      return {
+        success: false,
+        error: 'Member is already in this eAjo group.',
+      }
+    }
 
     // Check if position is taken
-    const positionTaken = group.members.find(m => m.payoutPosition === payoutPosition)
-    if (positionTaken) return { success: false, error: `Payout position ${payoutPosition} is already taken.` }
+    const positionTaken = group.members.find(
+      (m) => m.payoutPosition === payoutPosition,
+    )
+    if (positionTaken) {
+      return {
+        success: false,
+        error: `Payout position ${payoutPosition} is already taken.`,
+      }
+    }
 
     // 3. Create Member Record
     const result = await prisma.$transaction(async (tx) => {
@@ -63,8 +98,10 @@ export const addMemberToEAjoGroupAction = async (data: {
           bankName: defaultBank.bankName,
           accountNumber: defaultBank.accountNumber,
           accountName: defaultBank.accountName,
-          totalContributed: new Prisma.Decimal(receiptUrl ? Number(group.contributionAmount) : 0),
-        }
+          totalContributed: new Prisma.Decimal(
+            receiptUrl ? Number(group.contributionAmount) : 0,
+          ),
+        },
       })
 
       // 4. Optionally create initial contribution transaction
@@ -82,7 +119,7 @@ export const addMemberToEAjoGroupAction = async (data: {
             recordedBy: actor.id,
             processedBy: actor.id,
             processedAt: new Date(),
-          }
+          },
         })
       }
 
@@ -94,13 +131,19 @@ export const addMemberToEAjoGroupAction = async (data: {
       revalidatePath(`/admin/eajo/${groupId}`)
       revalidatePath(`/dashboard/${userId}/eajo`)
     } catch {}
-    
+
     return { success: true, data: result }
   } catch (error: unknown) {
     if (error instanceof AuthzError) {
       return { success: false, error: error.message }
     }
     console.error('Error adding member to eAjo group:', error)
-    return { success: false, error: error instanceof Error ? error.message : 'Failed to add member to eAjo group.' }
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : 'Failed to add member to eAjo group.',
+    }
   }
 }

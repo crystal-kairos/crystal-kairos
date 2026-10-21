@@ -1,7 +1,6 @@
 'use server'
 
 import { prisma } from '@/lib/prisma'
-import { auth } from '@/auth'
 import {
   LoanStatus,
   TransactionCategory,
@@ -9,20 +8,22 @@ import {
   TransactionStatus,
   UserRole,
 } from '@/generated/prisma/enums'
-import { getSessionHelper } from '../members/actions'
 import { revalidatePath } from 'next/cache'
 import { serializeLoan, serializeTransaction } from '@/lib/loans'
 import { Prisma } from '@/generated/prisma/client'
+import {
+  AuthzError,
+  requireAuthenticatedSession,
+  requireMemberSession,
+} from '@/lib/authz/guards'
 
 /**
  * Searches for an active cooperative member by email to nominate as a guarantor.
+ * Staff accounts (OWNER / ADMIN) are never eligible to be members or guarantors (D-15).
  */
 export const searchMemberByEmailAction = async (email: string) => {
   try {
-    const session = await getSessionHelper()
-    if (!session?.user) {
-      return { success: false, error: 'Unauthorized' }
-    }
+    await requireAuthenticatedSession()
 
     const member = await prisma.user.findUnique({
       where: { email: email.trim().toLowerCase() },
@@ -38,8 +39,11 @@ export const searchMemberByEmailAction = async (email: string) => {
       },
     })
 
-    if (!member) {
-      return { success: false, error: 'No cooperative member found with this email.' }
+    if (!member || member.role !== UserRole.USER) {
+      return {
+        success: false,
+        error: 'No cooperative member found with this email.',
+      }
     }
 
     return {
@@ -51,10 +55,16 @@ export const searchMemberByEmailAction = async (email: string) => {
       },
     }
   } catch (error) {
+    if (error instanceof AuthzError) {
+      return { success: false, error: error.message }
+    }
     console.error('Error searching member:', error)
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'An error occurred during search.',
+      error:
+        error instanceof Error
+          ? error.message
+          : 'An error occurred during search.',
     }
   }
 }
@@ -70,37 +80,42 @@ export const applyForLoanAction = async (
     purpose: string
     guarantorEmail?: string
     collateralDetails?: string
-  }
+  },
 ) => {
   try {
-    const session = await getSessionHelper()
-    if (!session?.user) {
-      return { success: false, error: 'Unauthorized' }
-    }
+    const actor = await requireMemberSession(userId)
 
     // 1. Fetch user's savings balance to calculate eligibility and tiers
     const savings = await prisma.savings.findMany({
-      where: { userId, status: 'ACTIVE' },
+      where: { userId: actor.id, status: 'ACTIVE' },
       select: { currentBalance: true },
     })
 
-    const totalSavings = savings.reduce((sum, s) => sum + Number(s.currentBalance), 0)
+    const totalSavings = savings.reduce(
+      (sum, s) => sum + Number(s.currentBalance),
+      0,
+    )
     const borrowLimit = totalSavings * 2
 
     // 2. Validate borrowing limit if member has savings
     if (totalSavings > 0 && data.requestedAmount > borrowLimit) {
       return {
         success: false,
-        error: `Requested amount exceeds borrowing limit of ${new Intl.NumberFormat('en-NG', {
-          style: 'currency',
-          currency: 'NGN',
-        }).format(borrowLimit)} (double your savings).`,
+        error: `Requested amount exceeds borrowing limit of ${new Intl.NumberFormat(
+          'en-NG',
+          {
+            style: 'currency',
+            currency: 'NGN',
+          },
+        ).format(borrowLimit)} (double your savings).`,
       }
     }
 
     // 3. Fetch global loan interest rate
     let interestRate = 5 // Fallback
-    const settings = await prisma.loanSettings.findUnique({ where: { id: 'global' } })
+    const settings = await prisma.loanSettings.findUnique({
+      where: { id: 'global' },
+    })
     if (settings) {
       interestRate = Number(settings.interestRate)
     }
@@ -115,7 +130,10 @@ export const applyForLoanAction = async (
     if (data.guarantorEmail) {
       const searchRes = await searchMemberByEmailAction(data.guarantorEmail)
       if (!searchRes.success || !searchRes.member) {
-        return { success: false, error: searchRes.error || 'Guarantor verification failed.' }
+        return {
+          success: false,
+          error: searchRes.error || 'Guarantor verification failed.',
+        }
       }
       guarantorId = searchRes.member.id
       guarantorName = searchRes.member.name
@@ -125,7 +143,7 @@ export const applyForLoanAction = async (
     // 5. Create PENDING Loan record
     const newLoan = await prisma.loan.create({
       data: {
-        userId,
+        userId: actor.id,
         requestedAmount: new Prisma.Decimal(data.requestedAmount.toString()),
         interestRate: new Prisma.Decimal(interestRate.toString()),
         duration: data.duration,
@@ -140,18 +158,22 @@ export const applyForLoanAction = async (
     })
 
     try {
-      revalidatePath(`/dashboard/${userId}/loans`)
-      revalidatePath(`/dashboard/${userId}`)
-    } catch (e) {
+      revalidatePath(`/dashboard/${actor.id}/loans`)
+      revalidatePath(`/dashboard/${actor.id}`)
+    } catch {
       // Ignored outside Next.js context
     }
 
     return { success: true, data: serializeLoan(newLoan) }
   } catch (error) {
+    if (error instanceof AuthzError) {
+      return { success: false, error: error.message }
+    }
     console.error('Error applying for loan:', error)
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Failed to apply for loan.',
+      error:
+        error instanceof Error ? error.message : 'Failed to apply for loan.',
     }
   }
 }
@@ -167,29 +189,34 @@ export const submitLoanRepaymentAction = async (
     receiptUrl: string
     referenceNumber?: string
     notes?: string
-  }
+  },
 ) => {
   try {
-    const session = await getSessionHelper()
-    if (!session?.user) {
-      return { success: false, error: 'Unauthorized' }
-    }
+    const actor = await requireMemberSession(userId)
 
-    const loan = await prisma.loan.findUnique({
-      where: { id: data.loanId },
+    const loan = await prisma.loan.findFirst({
+      where: { id: data.loanId, userId: actor.id },
     })
 
     if (!loan) {
       return { success: false, error: 'Loan not found.' }
     }
 
-    if (loan.status !== LoanStatus.ACTIVE && loan.status !== LoanStatus.OVERDUE && loan.status !== LoanStatus.DEFAULTED) {
-      return { success: false, error: 'Repayment is only allowed on active, overdue, or defaulted loans.' }
+    if (
+      loan.status !== LoanStatus.ACTIVE &&
+      loan.status !== LoanStatus.OVERDUE &&
+      loan.status !== LoanStatus.DEFAULTED
+    ) {
+      return {
+        success: false,
+        error:
+          'Repayment is only allowed on active, overdue, or defaulted loans.',
+      }
     }
 
     const newTransaction = await prisma.transaction.create({
       data: {
-        userId,
+        userId: actor.id,
         amount: new Prisma.Decimal(data.amount.toString()),
         category: TransactionCategory.LOAN_REPAYMENT,
         type: TransactionType.DEPOSIT,
@@ -198,35 +225,45 @@ export const submitLoanRepaymentAction = async (
         receiptUrl: data.receiptUrl,
         referenceNumber: data.referenceNumber || null,
         notes: data.notes || null,
-        recordedBy: userId,
+        recordedBy: actor.id,
       },
     })
 
     try {
-      revalidatePath(`/dashboard/${userId}/loans`)
-      revalidatePath(`/dashboard/${userId}`)
-    } catch (e) {
+      revalidatePath(`/dashboard/${actor.id}/loans`)
+      revalidatePath(`/dashboard/${actor.id}`)
+    } catch {
       // Ignored outside Next.js context
     }
 
     return { success: true, data: serializeTransaction(newTransaction) }
   } catch (error) {
+    if (error instanceof AuthzError) {
+      return { success: false, error: error.message }
+    }
     console.error('Error submitting loan repayment:', error)
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Failed to submit loan repayment.',
+      error:
+        error instanceof Error
+          ? error.message
+          : 'Failed to submit loan repayment.',
     }
   }
 }
 
 export const acceptLoanOfferAction = async (userId: string, loanId: string) => {
   try {
+    const actor = await requireMemberSession(userId)
+
     const loan = await prisma.loan.findFirst({
-      where: { id: loanId, userId },
+      where: { id: loanId, userId: actor.id },
     })
 
     if (!loan) return { success: false, error: 'Loan not found' }
-    if (loan.status !== 'APPROVED') return { success: false, error: 'Only approved loans can be accepted' }
+    if (loan.status !== 'APPROVED') {
+      return { success: false, error: 'Only approved loans can be accepted' }
+    }
 
     await prisma.loan.update({
       where: { id: loanId },
@@ -235,23 +272,41 @@ export const acceptLoanOfferAction = async (userId: string, loanId: string) => {
       },
     })
 
-    revalidatePath(`/dashboard/${userId}/loans`)
+    try {
+      revalidatePath(`/dashboard/${actor.id}/loans`)
+    } catch {}
     return { success: true }
-  } catch (error: any) {
+  } catch (error: unknown) {
+    if (error instanceof AuthzError) {
+      return { success: false, error: error.message }
+    }
     console.error('Failed to accept loan:', error)
-    return { success: false, error: error.message || 'Failed to accept loan' }
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to accept loan',
+    }
   }
 }
 
-export const declineLoanOfferAction = async (userId: string, loanId: string, reason: string) => {
+export const declineLoanOfferAction = async (
+  userId: string,
+  loanId: string,
+  reason: string,
+) => {
   try {
+    const actor = await requireMemberSession(userId)
+
     const loan = await prisma.loan.findFirst({
-      where: { id: loanId, userId },
+      where: { id: loanId, userId: actor.id },
     })
 
     if (!loan) return { success: false, error: 'Loan not found' }
-    if (loan.status !== 'APPROVED') return { success: false, error: 'Only approved loans can be declined' }
-    if (!reason || !reason.trim()) return { success: false, error: 'Decline reason is required' }
+    if (loan.status !== 'APPROVED') {
+      return { success: false, error: 'Only approved loans can be declined' }
+    }
+    if (!reason || !reason.trim()) {
+      return { success: false, error: 'Decline reason is required' }
+    }
 
     await prisma.loan.update({
       where: { id: loanId },
@@ -261,10 +316,18 @@ export const declineLoanOfferAction = async (userId: string, loanId: string, rea
       },
     })
 
-    revalidatePath(`/dashboard/${userId}/loans`)
+    try {
+      revalidatePath(`/dashboard/${actor.id}/loans`)
+    } catch {}
     return { success: true }
-  } catch (error: any) {
+  } catch (error: unknown) {
+    if (error instanceof AuthzError) {
+      return { success: false, error: error.message }
+    }
     console.error('Failed to decline loan:', error)
-    return { success: false, error: error.message || 'Failed to decline loan' }
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to decline loan',
+    }
   }
 }

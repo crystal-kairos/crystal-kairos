@@ -2,7 +2,12 @@
 
 import { revalidatePath } from 'next/cache'
 import { Prisma } from '@/generated/prisma/client'
-import { MembershipStatus, UserRole } from '@/generated/prisma/enums'
+import {
+  AdminPermission,
+  MembershipStatus,
+  PasswordSetupTokenPurpose,
+  UserRole,
+} from '@/generated/prisma/enums'
 import { prisma } from '@/lib/prisma'
 import { AllMembersQueryParams } from '@/types/members.interface'
 import { generateMembershipNumber } from '@/lib/membership-number'
@@ -11,12 +16,22 @@ import {
   onMembershipRejected,
 } from '@/features/notification/triggers/member.triggers'
 import { issuePasswordSetupToken } from '@/lib/authz/tokens'
-import { AdminPermission, PasswordSetupTokenPurpose } from '@/generated/prisma/enums'
-import { requirePermission } from '@/lib/authz/guards'
+import {
+  assertTargetUserIsMember,
+  requireAnyPermission,
+  requireMemberOrStaffWithPermission,
+  requirePermission,
+} from '@/lib/authz/guards'
 import { MembersLoansQueryParams } from '@/types/loans.interface'
 
 export const getAllMembers = async (filters: AllMembersQueryParams) => {
   try {
+    await requireAnyPermission([
+      AdminPermission.MEMBERS_READ,
+      AdminPermission.MEMBERS_APPROVE,
+      AdminPermission.MEMBERS_CREATE,
+    ])
+
     const {
       page = 1,
       pageSize = 5,
@@ -107,6 +122,11 @@ export const getAllMembers = async (filters: AllMembersQueryParams) => {
 
 export const getMembersCount = async () => {
   try {
+    await requireAnyPermission([
+      AdminPermission.MEMBERS_READ,
+      AdminPermission.MEMBERS_APPROVE,
+      AdminPermission.MEMBERS_CREATE,
+    ])
     const membersCount = await prisma.user.count({
       where: {
         role: UserRole.USER,
@@ -120,12 +140,24 @@ export const getMembersCount = async () => {
 
 export const getMembersLastMonth = async () => {
   try {
+    await requireAnyPermission([
+      AdminPermission.MEMBERS_READ,
+      AdminPermission.MEMBERS_APPROVE,
+      AdminPermission.MEMBERS_CREATE,
+    ])
     const members = await prisma.user.findMany({
       where: {
         role: UserRole.USER,
         createdAt: {
           lte: new Date(new Date().setMonth(new Date().getMonth() - 1)),
         },
+      },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        role: true,
+        createdAt: true,
       },
     })
     return { success: true, data: members }
@@ -136,6 +168,11 @@ export const getMembersLastMonth = async () => {
 
 export const getLastMonthMembersCount = async () => {
   try {
+    await requireAnyPermission([
+      AdminPermission.MEMBERS_READ,
+      AdminPermission.MEMBERS_APPROVE,
+      AdminPermission.MEMBERS_CREATE,
+    ])
     const membersCount = await prisma.user.count({
       where: {
         role: UserRole.USER,
@@ -152,6 +189,10 @@ export const getLastMonthMembersCount = async () => {
 
 export const getPendingApprovals = async () => {
   try {
+    await requireAnyPermission([
+      AdminPermission.MEMBERS_READ,
+      AdminPermission.MEMBERS_APPROVE,
+    ])
     const pendingApprovals = await prisma.membership.findMany({
       where: {
         status: MembershipStatus.PENDING,
@@ -165,6 +206,10 @@ export const getPendingApprovals = async () => {
 
 export const getPendingApprovalsCount = async () => {
   try {
+    await requireAnyPermission([
+      AdminPermission.MEMBERS_READ,
+      AdminPermission.MEMBERS_APPROVE,
+    ])
     const pendingApprovalsCount = await prisma.membership.count({
       where: {
         status: MembershipStatus.PENDING,
@@ -178,9 +223,27 @@ export const getPendingApprovalsCount = async () => {
 
 export const getMemberById = async (memberId: string) => {
   try {
+    await requireMemberOrStaffWithPermission(memberId, [
+      AdminPermission.MEMBERS_READ,
+      AdminPermission.MEMBERS_APPROVE,
+      AdminPermission.MEMBERS_CREATE,
+      AdminPermission.PROFILE_CHANGES_REVIEW,
+    ])
+
     const member = await prisma.user.findUnique({
       where: { id: memberId },
-      include: {
+      select: {
+        id: true,
+        email: true,
+        username: true,
+        name: true,
+        role: true,
+        hasSetPassword: true,
+        photoUrl: true,
+        lastLoginAt: true,
+        sessionVersion: true,
+        createdAt: true,
+        updatedAt: true,
         userInfo: true,
         membership: true,
         bankAccounts: true,
@@ -202,6 +265,7 @@ export const approveMember = async (
     void userEmail
     void _adminId
     const actor = await requirePermission(AdminPermission.MEMBERS_APPROVE)
+    await assertTargetUserIsMember(userId)
     const actorId = actor.id
     const membershipNumber = generateMembershipNumber()
     const member = await prisma.membership.update({
@@ -261,6 +325,7 @@ export const rejectMember = async (
   try {
     void _adminId
     await requirePermission(AdminPermission.MEMBERS_APPROVE)
+    await assertTargetUserIsMember(userId)
     const member = await prisma.membership.update({
       where: { userId },
       data: {
@@ -290,30 +355,36 @@ export const getLoanRecords = async (
   userId: string,
   filters: MembersLoansQueryParams,
 ) => {
-  const {
-    page = 1,
-    pageSize = 5,
-    sortField = 'createdAt',
-    sortDirection = 'asc',
-    search,
-    createdFrom,
-    createdTo,
-    status,
-  } = filters
-
-  const allowedSortFields = ['createdAt', 'approvedAmount', 'status']
-  const activeSortField = allowedSortFields.includes(sortField)
-    ? sortField
-    : 'createdAt'
-
-  const startOfCreatedFrom = createdFrom
-    ? new Date(new Date(createdFrom).setHours(0, 0, 0, 0))
-    : undefined
-  const endOfCreatedTo = createdTo
-    ? new Date(new Date(createdTo).setHours(23, 59, 59, 999))
-    : undefined
-
   try {
+    await requireMemberOrStaffWithPermission(userId, [
+      AdminPermission.LOANS_READ,
+      AdminPermission.LOANS_REVIEW,
+      AdminPermission.LOANS_DISBURSE,
+      AdminPermission.MEMBERS_READ,
+    ])
+
+    const {
+      page = 1,
+      pageSize = 5,
+      sortField = 'createdAt',
+      sortDirection = 'asc',
+      createdFrom,
+      createdTo,
+      status,
+    } = filters
+
+    const allowedSortFields = ['createdAt', 'approvedAmount', 'status']
+    const activeSortField = allowedSortFields.includes(sortField)
+      ? sortField
+      : 'createdAt'
+
+    const startOfCreatedFrom = createdFrom
+      ? new Date(new Date(createdFrom).setHours(0, 0, 0, 0))
+      : undefined
+    const endOfCreatedTo = createdTo
+      ? new Date(new Date(createdTo).setHours(23, 59, 59, 999))
+      : undefined
+
     const where: Prisma.LoanWhereInput = {
       ...(status && { status }),
       // Date range filter
@@ -357,6 +428,12 @@ export const getLoanRecords = async (
 
 export const getSavingsRecords = async (userId: string) => {
   try {
+    await requireMemberOrStaffWithPermission(userId, [
+      AdminPermission.SAVINGS_READ,
+      AdminPermission.SAVINGS_MANAGE,
+      AdminPermission.SAVINGS_PAYMENTS_REVIEW,
+      AdminPermission.MEMBERS_READ,
+    ])
     const savingsRecords = await prisma.savings.findMany({
       where: { userId },
     })
@@ -368,6 +445,12 @@ export const getSavingsRecords = async (userId: string) => {
 
 export const getEarningRecords = async (userId: string) => {
   try {
+    await requireMemberOrStaffWithPermission(userId, [
+      AdminPermission.EAJO_READ,
+      AdminPermission.EAJO_MANAGE,
+      AdminPermission.EAJO_PAYMENTS_REVIEW,
+      AdminPermission.MEMBERS_READ,
+    ])
     const earningRecords = await prisma.eAjo.findMany({
       where: { userId },
     })
@@ -379,6 +462,12 @@ export const getEarningRecords = async (userId: string) => {
 
 export const getEAjoRecordsCount = async (userId: string) => {
   try {
+    await requireMemberOrStaffWithPermission(userId, [
+      AdminPermission.EAJO_READ,
+      AdminPermission.EAJO_MANAGE,
+      AdminPermission.EAJO_PAYMENTS_REVIEW,
+      AdminPermission.MEMBERS_READ,
+    ])
     const eajoRecordsCount = await prisma.eAjo.count({
       where: { userId },
     })

@@ -2,14 +2,22 @@
 
 import { prisma } from '@/lib/prisma'
 import {
+  AdminPermission,
   TransactionStatus,
   TransactionCategory,
   TransactionType,
   SavingsStatus,
   LoanStatus,
+  UserRole,
 } from '@/generated/prisma/enums'
 import { Prisma } from '@/generated/prisma/client'
 import { revalidatePath } from 'next/cache'
+import {
+  assertTargetUserIsMember,
+  AuthzError,
+  requireAnyPermission,
+  requireMemberOrStaffWithPermission,
+} from '@/lib/authz/guards'
 
 interface CreateTransactionInput {
   userId: string
@@ -22,17 +30,130 @@ interface CreateTransactionInput {
   receiptUrl?: string
   notes?: string
   bankAccountId?: string
-  recordedBy: string
+  recordedBy?: string
+}
+
+function permissionsForTransactionTransition(
+  category: TransactionCategory,
+  action: 'CONFIRM' | 'REJECT' | 'DISBURSE' | 'FAIL',
+): AdminPermission[] {
+  switch (category) {
+    case TransactionCategory.SAVINGS_DEPOSIT:
+      return [
+        AdminPermission.TRANSACTIONS_REVIEW,
+        AdminPermission.SAVINGS_PAYMENTS_REVIEW,
+      ]
+    case TransactionCategory.SAVINGS_WITHDRAWAL:
+      return [
+        AdminPermission.TRANSACTIONS_REVIEW,
+        AdminPermission.SAVINGS_PAYMENTS_REVIEW,
+        AdminPermission.WALLET_WITHDRAWALS_REVIEW,
+      ]
+    case TransactionCategory.LOAN_REPAYMENT:
+    case TransactionCategory.FEE:
+      return [AdminPermission.TRANSACTIONS_REVIEW, AdminPermission.LOANS_REVIEW]
+    case TransactionCategory.LOAN_DISBURSEMENT:
+      return action === 'DISBURSE'
+        ? [AdminPermission.LOANS_DISBURSE, AdminPermission.TRANSACTIONS_REVIEW]
+        : [
+            AdminPermission.LOANS_DISBURSE,
+            AdminPermission.LOANS_REVIEW,
+            AdminPermission.TRANSACTIONS_REVIEW,
+          ]
+    case TransactionCategory.AJO_CONTRIBUTION:
+      return [
+        AdminPermission.TRANSACTIONS_REVIEW,
+        AdminPermission.EAJO_PAYMENTS_REVIEW,
+      ]
+    case TransactionCategory.AJO_PAYOUT:
+      return [
+        AdminPermission.TRANSACTIONS_REVIEW,
+        AdminPermission.EAJO_PAYOUTS_MANAGE,
+      ]
+    case TransactionCategory.WALLET_WITHDRAWAL:
+      return [
+        AdminPermission.TRANSACTIONS_REVIEW,
+        AdminPermission.WALLET_WITHDRAWALS_REVIEW,
+      ]
+    case TransactionCategory.WALLET_TOPUP:
+    default:
+      return [AdminPermission.TRANSACTIONS_REVIEW]
+  }
 }
 
 /**
- * Creates a pending or directly confirmed transaction in the database.
+ * Creates a pending transaction in the database.
+ * Enforces member session ownership or staff permission, and derives actor identity from the live session.
  */
 export const createTransaction = async (input: CreateTransactionInput) => {
   try {
+    const actor = await requireMemberOrStaffWithPermission(input.userId, [
+      AdminPermission.TRANSACTIONS_REVIEW,
+      AdminPermission.SAVINGS_MANAGE,
+      AdminPermission.LOANS_REVIEW,
+      AdminPermission.EAJO_MANAGE,
+    ])
+
+    const targetUserId =
+      actor.role === UserRole.USER ? actor.id : input.userId
+
+    await assertTargetUserIsMember(targetUserId)
+
+    if (input.savingsId) {
+      const savings = await prisma.savings.findFirst({
+        where: { id: input.savingsId, userId: targetUserId },
+        select: { id: true },
+      })
+      if (!savings) {
+        return {
+          success: false,
+          error: 'Savings plan not found for this member.',
+        }
+      }
+    }
+
+    if (input.loanId) {
+      const loan = await prisma.loan.findFirst({
+        where: { id: input.loanId, userId: targetUserId },
+        select: { id: true },
+      })
+      if (!loan) {
+        return {
+          success: false,
+          error: 'Loan record not found for this member.',
+        }
+      }
+    }
+
+    if (input.eAjoId) {
+      const eAjo = await prisma.eAjo.findFirst({
+        where: { id: input.eAjoId, userId: targetUserId },
+        select: { id: true },
+      })
+      if (!eAjo) {
+        return {
+          success: false,
+          error: 'eAjo record not found for this member.',
+        }
+      }
+    }
+
+    if (input.bankAccountId) {
+      const bankAccount = await prisma.bankAccount.findFirst({
+        where: { id: input.bankAccountId, userId: targetUserId },
+        select: { id: true },
+      })
+      if (!bankAccount) {
+        return {
+          success: false,
+          error: 'Bank account not found for this member.',
+        }
+      }
+    }
+
     const transaction = await prisma.transaction.create({
       data: {
-        userId: input.userId,
+        userId: targetUserId,
         amount: new Prisma.Decimal(input.amount.toString()),
         category: input.category,
         type: input.type,
@@ -43,21 +164,25 @@ export const createTransaction = async (input: CreateTransactionInput) => {
         receiptUrl: input.receiptUrl || null,
         notes: input.notes || null,
         bankAccountId: input.bankAccountId || null,
-        recordedBy: input.recordedBy,
+        recordedBy: actor.id,
       },
     })
 
     try {
       revalidatePath('/admin/transactions')
-      revalidatePath(`/dashboard/${input.userId}`)
+      revalidatePath(`/dashboard/${targetUserId}`)
     } catch {}
 
     return { success: true, data: transaction }
   } catch (error) {
+    if (error instanceof AuthzError) {
+      return { success: false, error: error.message }
+    }
     console.error('Error creating transaction:', error)
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Failed to create transaction',
+      error:
+        error instanceof Error ? error.message : 'Failed to create transaction',
     }
   }
 }
@@ -69,11 +194,33 @@ export const createTransaction = async (input: CreateTransactionInput) => {
 export const transitionTransaction = async (
   transactionId: string,
   action: 'CONFIRM' | 'REJECT' | 'DISBURSE' | 'FAIL',
-  adminId: string,
+  _adminId: string,
   rejectionReason?: string,
-  referenceNumber?: string
+  referenceNumber?: string,
 ) => {
   try {
+    void _adminId
+
+    // Load transaction category first so we can enforce category-appropriate permission
+    const existingTx = await prisma.transaction.findUnique({
+      where: { id: transactionId },
+      select: { id: true, category: true },
+    })
+
+    const allowedPerms = existingTx
+      ? permissionsForTransactionTransition(existingTx.category, action)
+      : [
+          AdminPermission.TRANSACTIONS_REVIEW,
+          AdminPermission.SAVINGS_PAYMENTS_REVIEW,
+          AdminPermission.LOANS_REVIEW,
+          AdminPermission.LOANS_DISBURSE,
+          AdminPermission.EAJO_PAYMENTS_REVIEW,
+          AdminPermission.EAJO_PAYOUTS_MANAGE,
+          AdminPermission.WALLET_WITHDRAWALS_REVIEW,
+        ]
+
+    const actor = await requireAnyPermission(allowedPerms)
+
     const result = await prisma.$transaction(async (tx) => {
       // 1. Fetch current transaction details
       const transaction = await tx.transaction.findUnique({
@@ -90,7 +237,9 @@ export const transitionTransaction = async (
       }
 
       if (transaction.status !== TransactionStatus.PENDING) {
-        throw new Error(`Transaction is already processed. Status: ${transaction.status}`)
+        throw new Error(
+          `Transaction is already processed. Status: ${transaction.status}`,
+        )
       }
 
       let newStatus: TransactionStatus = TransactionStatus.PENDING
@@ -109,7 +258,10 @@ export const transitionTransaction = async (
       // 2. Apply Ledger Invariants based on Category & Action
       if (newStatus === TransactionStatus.CONFIRMED) {
         // A. Ajo contributions
-        if (transaction.category === TransactionCategory.AJO_CONTRIBUTION && transaction.eAjoMemberId) {
+        if (
+          transaction.category === TransactionCategory.AJO_CONTRIBUTION &&
+          transaction.eAjoMemberId
+        ) {
           await tx.eAjoMember.update({
             where: { id: transaction.eAjoMemberId },
             data: {
@@ -120,7 +272,10 @@ export const transitionTransaction = async (
         }
 
         // B. Savings deposits
-        if (transaction.category === TransactionCategory.SAVINGS_DEPOSIT && transaction.savingsId) {
+        if (
+          transaction.category === TransactionCategory.SAVINGS_DEPOSIT &&
+          transaction.savingsId
+        ) {
           // If the savings was pending, activate it on first deposit
           const updateData: Prisma.SavingsUpdateInput = {
             currentBalance: { increment: transaction.amount },
@@ -129,10 +284,14 @@ export const transitionTransaction = async (
           if (transaction.savings?.status === SavingsStatus.PENDING) {
             updateData.status = SavingsStatus.ACTIVE
             updateData.startDate = new Date()
-            
+
             // Calculate maturity date from startDate for FIXED or REGULAR savings
-            if (transaction.savings.savingsType === 'FIXED' || transaction.savings.savingsType === 'REGULAR') {
-              const maturityMonths = transaction.savings.maturity === 'SIX_MONTHS' ? 6 : 12
+            if (
+              transaction.savings.savingsType === 'FIXED' ||
+              transaction.savings.savingsType === 'REGULAR'
+            ) {
+              const maturityMonths =
+                transaction.savings.maturity === 'SIX_MONTHS' ? 6 : 12
               const maturityDate = new Date()
               maturityDate.setMonth(maturityDate.getMonth() + maturityMonths)
               updateData.maturityDate = maturityDate
@@ -145,17 +304,27 @@ export const transitionTransaction = async (
         }
 
         // C. Loan Repayments
-        if (transaction.category === TransactionCategory.LOAN_REPAYMENT && transaction.loanId) {
-          const currentOutstanding = new Prisma.Decimal(transaction.loan?.outstandingBalance?.toString() || '0')
+        if (
+          transaction.category === TransactionCategory.LOAN_REPAYMENT &&
+          transaction.loanId
+        ) {
+          const currentOutstanding = new Prisma.Decimal(
+            transaction.loan?.outstandingBalance?.toString() || '0',
+          )
           const repaymentAmount = transaction.amount
-          const newOutstanding = Prisma.Decimal.max(0, currentOutstanding.minus(repaymentAmount))
+          const newOutstanding = Prisma.Decimal.max(
+            0,
+            currentOutstanding.minus(repaymentAmount),
+          )
 
           await tx.loan.update({
             where: { id: transaction.loanId },
             data: {
               outstandingBalance: newOutstanding,
               totalRepaid: { increment: repaymentAmount },
-              status: newOutstanding.equals(0) ? LoanStatus.COMPLETED : undefined,
+              status: newOutstanding.equals(0)
+                ? LoanStatus.COMPLETED
+                : undefined,
             },
           })
         }
@@ -163,7 +332,10 @@ export const transitionTransaction = async (
 
       if (newStatus === TransactionStatus.DISBURSED) {
         // A. Ajo Payouts (Money disbursed to member)
-        if (transaction.category === TransactionCategory.AJO_PAYOUT && transaction.eAjoMemberId) {
+        if (
+          transaction.category === TransactionCategory.AJO_PAYOUT &&
+          transaction.eAjoMemberId
+        ) {
           await tx.eAjoMember.update({
             where: { id: transaction.eAjoMemberId },
             data: {
@@ -174,7 +346,10 @@ export const transitionTransaction = async (
         }
 
         // B. Savings Withdrawals (Money paid back to saver)
-        if (transaction.category === TransactionCategory.SAVINGS_WITHDRAWAL && transaction.savingsId) {
+        if (
+          transaction.category === TransactionCategory.SAVINGS_WITHDRAWAL &&
+          transaction.savingsId
+        ) {
           await tx.savings.update({
             where: { id: transaction.savingsId },
             data: {
@@ -185,10 +360,16 @@ export const transitionTransaction = async (
         }
 
         // C. Loan Disbursements (Approved borrow amount paid to applicant)
-        if (transaction.category === TransactionCategory.LOAN_DISBURSEMENT && transaction.loanId && transaction.loan) {
+        if (
+          transaction.category === TransactionCategory.LOAN_DISBURSEMENT &&
+          transaction.loanId &&
+          transaction.loan
+        ) {
           const approvedAmountNum = Number(transaction.loan.approvedAmount || 0)
           const interestRateNum = Number(transaction.loan.interestRate || 0)
-          const totalInterest = (approvedAmountNum * interestRateNum * transaction.loan.duration) / 100
+          const totalInterest =
+            (approvedAmountNum * interestRateNum * transaction.loan.duration) /
+            100
           const initialDebt = approvedAmountNum + totalInterest
 
           await tx.loan.update({
@@ -202,12 +383,12 @@ export const transitionTransaction = async (
         }
       }
 
-      // 3. Save processed changes to transaction
+      // 3. Save processed changes to transaction using live actor.id
       const updatedTx = await tx.transaction.update({
         where: { id: transactionId },
         data: {
           status: newStatus,
-          processedBy: adminId,
+          processedBy: actor.id,
           processedAt: new Date(),
           rejectionReason: rejectionReason || null,
           referenceNumber: referenceNumber || null,
@@ -227,6 +408,9 @@ export const transitionTransaction = async (
 
     return { success: true, data: result }
   } catch (error) {
+    if (error instanceof AuthzError) {
+      return { success: false, error: error.message }
+    }
     console.error('Error transitioning transaction:', error)
     return {
       success: false,
@@ -240,11 +424,19 @@ export const transitionTransaction = async (
  */
 export const getUserLedgerBalances = async (userId: string) => {
   try {
+    await requireMemberOrStaffWithPermission(userId, [
+      AdminPermission.TRANSACTIONS_READ,
+      AdminPermission.TRANSACTIONS_REVIEW,
+      AdminPermission.MEMBERS_READ,
+    ])
+
     // 1. Fetch confirmed/disbursed transactions
     const txs = await prisma.transaction.findMany({
       where: {
         userId,
-        status: { in: [TransactionStatus.CONFIRMED, TransactionStatus.DISBURSED] },
+        status: {
+          in: [TransactionStatus.CONFIRMED, TransactionStatus.DISBURSED],
+        },
       },
     })
 
@@ -256,8 +448,6 @@ export const getUserLedgerBalances = async (userId: string) => {
     let totalLoansRepaid = new Prisma.Decimal(0)
 
     for (const tx of txs) {
-      const isDeposit = tx.type === TransactionType.DEPOSIT
-
       // Base ledger balance includes general WALLET transactions
       if (tx.category === TransactionCategory.WALLET_TOPUP) {
         ledgerBalance = ledgerBalance.plus(tx.amount)
@@ -290,27 +480,43 @@ export const getUserLedgerBalances = async (userId: string) => {
           savings: {
             totalDeposited: totalSavingsDeposited.toNumber(),
             totalWithdrawn: totalSavingsWithdrawn.toNumber(),
-            currentSavingsBalance: totalSavingsDeposited.minus(totalSavingsWithdrawn).toNumber(),
+            currentSavingsBalance: totalSavingsDeposited
+              .minus(totalSavingsWithdrawn)
+              .toNumber(),
           },
           loans: {
             totalBorrowed: totalLoansDisbursed.toNumber(),
             totalRepaid: totalLoansRepaid.toNumber(),
-            outstandingDebt: totalLoansDisbursed.minus(totalLoansRepaid).toNumber(),
+            outstandingDebt: totalLoansDisbursed
+              .minus(totalLoansRepaid)
+              .toNumber(),
           },
         },
       },
     }
   } catch (error) {
+    if (error instanceof AuthzError) {
+      return { success: false, error: error.message }
+    }
     console.error('Error fetching user ledger balances:', error)
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Failed to retrieve ledger balances',
+      error:
+        error instanceof Error
+          ? error.message
+          : 'Failed to retrieve ledger balances',
     }
   }
 }
 
 export const getUserTransactions = async (userId: string) => {
   try {
+    await requireMemberOrStaffWithPermission(userId, [
+      AdminPermission.TRANSACTIONS_READ,
+      AdminPermission.TRANSACTIONS_REVIEW,
+      AdminPermission.MEMBERS_READ,
+    ])
+
     const transactions = await prisma.transaction.findMany({
       where: { userId },
       orderBy: { createdAt: 'desc' },
@@ -318,11 +524,16 @@ export const getUserTransactions = async (userId: string) => {
 
     return { success: true, data: transactions }
   } catch (error) {
+    if (error instanceof AuthzError) {
+      return { success: false, error: error.message }
+    }
     console.error('Error fetching user transactions:', error)
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Failed to retrieve transactions',
+      error:
+        error instanceof Error
+          ? error.message
+          : 'Failed to retrieve transactions',
     }
   }
 }
-

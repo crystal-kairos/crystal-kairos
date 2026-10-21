@@ -9,6 +9,7 @@ import {
 export type AuthzErrorCode =
   | 'UNAUTHENTICATED'
   | 'FORBIDDEN'
+  | 'NOT_FOUND'
   | 'DUAL_CONTROL_REQUIRED'
   | 'STAFF_CANNOT_BE_MEMBER'
 
@@ -28,6 +29,11 @@ export interface AuthenticatedActor {
   name: string
   role: UserRole
   sessionVersion: number
+  isActive?: boolean
+}
+
+export interface MemberActor extends AuthenticatedActor {
+  role: typeof UserRole.USER
 }
 
 export interface StaffActor extends AuthenticatedActor {
@@ -52,7 +58,7 @@ async function loadLiveActor(
     throw new AuthzError('UNAUTHENTICATED', 'Please sign in.')
   }
 
-  const dbUser = await db.user.findUnique({
+  const dbUser = (await db.user.findUnique({
     where: { id: sessionUser.id },
     select: {
       id: true,
@@ -61,10 +67,17 @@ async function loadLiveActor(
       role: true,
       sessionVersion: true,
     },
-  })
+  })) as (AuthenticatedActor & { isActive?: boolean }) | null
 
   if (!dbUser) {
     throw new AuthzError('UNAUTHENTICATED', 'Please sign in.')
+  }
+
+  if (dbUser.isActive === false) {
+    throw new AuthzError(
+      'FORBIDDEN',
+      'This account has been deactivated.',
+    )
   }
 
   if (
@@ -77,7 +90,46 @@ async function loadLiveActor(
     )
   }
 
+  if (sessionUser.role && sessionUser.role !== dbUser.role) {
+    throw new AuthzError(
+      'UNAUTHENTICATED',
+      'Your session role has changed. Please sign in again.',
+    )
+  }
+
   return dbUser
+}
+
+export async function requireAuthenticatedSession(
+  db: typeof prisma = prisma,
+): Promise<AuthenticatedActor> {
+  return loadLiveActor(db)
+}
+
+export async function requireMemberSession(
+  expectedUserId?: string,
+  db: typeof prisma = prisma,
+): Promise<MemberActor> {
+  const actor = await loadLiveActor(db)
+
+  if (actor.role !== UserRole.USER) {
+    throw new AuthzError(
+      'FORBIDDEN',
+      'Staff accounts cannot perform member financial operations.',
+    )
+  }
+
+  if (expectedUserId && expectedUserId !== actor.id) {
+    throw new AuthzError(
+      'FORBIDDEN',
+      'You are not authorised to access or modify another member record.',
+    )
+  }
+
+  return {
+    ...actor,
+    role: UserRole.USER,
+  }
 }
 
 export async function requireStaffSession(
@@ -195,6 +247,58 @@ export async function requireAnyPermission(
   }
 
   return staffActor
+}
+
+export async function requireMemberOrStaffWithPermission(
+  targetUserId: string,
+  permissions: AdminPermission | readonly AdminPermission[],
+  db: typeof prisma = prisma,
+): Promise<AuthenticatedActor> {
+  const actor = await loadLiveActor(db)
+
+  if (actor.role === UserRole.USER) {
+    if (actor.id !== targetUserId) {
+      throw new AuthzError(
+        'FORBIDDEN',
+        'You are not authorised to access another member record.',
+      )
+    }
+    return actor
+  }
+
+  const requiredList = Array.isArray(permissions)
+    ? permissions
+    : [permissions as AdminPermission]
+
+  return requireAnyPermission(requiredList, db)
+}
+
+export async function assertTargetUserIsMember(
+  userId: string,
+  db: typeof prisma = prisma,
+): Promise<{ id: string; email: string; name: string; role: UserRole }> {
+  const user = await db.user.findUnique({
+    where: { id: userId },
+    select: {
+      id: true,
+      email: true,
+      name: true,
+      role: true,
+    },
+  })
+
+  if (!user) {
+    throw new AuthzError('NOT_FOUND', 'Member not found.')
+  }
+
+  if (user.role === UserRole.OWNER || user.role === UserRole.ADMIN) {
+    throw new AuthzError(
+      'STAFF_CANNOT_BE_MEMBER',
+      'Staff accounts (OWNER or ADMIN) cannot hold membership or financial records.',
+    )
+  }
+
+  return user
 }
 
 export async function assertUserHasNoMemberRecords(

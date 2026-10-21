@@ -2,9 +2,23 @@
 
 import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
-import { AdminPermission, SavingsStatus, TransactionCategory, TransactionStatus, TransactionType, SavingsType, SavingsFrequency, SavingsMaturity } from '@/generated/prisma/enums'
+import {
+  AdminPermission,
+  SavingsStatus,
+  TransactionCategory,
+  TransactionStatus,
+  TransactionType,
+  SavingsType,
+  SavingsFrequency,
+  SavingsMaturity,
+} from '@/generated/prisma/enums'
 import { Prisma } from '@/generated/prisma/client'
-import { AuthzError, requirePermission } from '@/lib/authz/guards'
+import {
+  assertTargetUserIsMember,
+  AuthzError,
+  requirePermission,
+} from '@/lib/authz/guards'
+
 export interface CreateSavingsProductPayload {
   type: 'FIXED' | 'REGULAR' | 'STAGGERED'
   title: string
@@ -18,16 +32,23 @@ export interface CreateSavingsProductPayload {
   interestRate12Months?: number
 }
 
-export const createSavingsProductAction = async (data: CreateSavingsProductPayload) => {
+export const createSavingsProductAction = async (
+  data: CreateSavingsProductPayload,
+) => {
   try {
     const actor = await requirePermission(AdminPermission.SAVINGS_MANAGE)
 
     const ratesParts: string[] = []
-    if (data.interestRate1Month) ratesParts.push(`${data.interestRate1Month}% (1M)`)
-    if (data.interestRate3Months) ratesParts.push(`${data.interestRate3Months}% (3M)`)
-    if (data.interestRate6Months) ratesParts.push(`${data.interestRate6Months}% (6M)`)
-    if (data.interestRate12Months) ratesParts.push(`${data.interestRate12Months}% (12M)`)
-    const constructedRates = ratesParts.length > 0 ? ratesParts.join(' / ') : 'Flexible Rates'
+    if (data.interestRate1Month)
+      ratesParts.push(`${data.interestRate1Month}% (1M)`)
+    if (data.interestRate3Months)
+      ratesParts.push(`${data.interestRate3Months}% (3M)`)
+    if (data.interestRate6Months)
+      ratesParts.push(`${data.interestRate6Months}% (6M)`)
+    if (data.interestRate12Months)
+      ratesParts.push(`${data.interestRate12Months}% (12M)`)
+    const constructedRates =
+      ratesParts.length > 0 ? ratesParts.join(' / ') : 'Flexible Rates'
 
     const newProduct = await prisma.savingsProduct.create({
       data: {
@@ -45,18 +66,28 @@ export const createSavingsProductAction = async (data: CreateSavingsProductPaylo
       },
     })
 
-    try { revalidatePath('/admin/savings') } catch {}
+    try {
+      revalidatePath('/admin/savings')
+    } catch {}
     return { success: true, data: newProduct }
   } catch (error: unknown) {
     if (error instanceof AuthzError) {
       return { error: error.message }
     }
     console.error('Error creating savings product:', error)
-    return { error: error instanceof Error ? error.message : 'Failed to create savings product' }
+    return {
+      error:
+        error instanceof Error
+          ? error.message
+          : 'Failed to create savings product',
+    }
   }
 }
 
-export const toggleSavingsProductStatusAction = async (id: string, isActive: boolean) => {
+export const toggleSavingsProductStatusAction = async (
+  id: string,
+  isActive: boolean,
+) => {
   try {
     await requirePermission(AdminPermission.SAVINGS_MANAGE)
 
@@ -65,30 +96,49 @@ export const toggleSavingsProductStatusAction = async (id: string, isActive: boo
       data: { isActive },
     })
 
-    try { revalidatePath('/admin/savings') } catch {}
+    try {
+      revalidatePath('/admin/savings')
+    } catch {}
     return { success: true, data: updated }
   } catch (error: unknown) {
     if (error instanceof AuthzError) {
       return { error: error.message }
     }
     console.error('Error updating savings product status:', error)
-    return { error: error instanceof Error ? error.message : 'Failed to update savings product' }
+    return {
+      error:
+        error instanceof Error
+          ? error.message
+          : 'Failed to update savings product',
+    }
   }
 }
 
-export const updateSavingsProductAction = async (id: string, data: Partial<CreateSavingsProductPayload>) => {
+export const updateSavingsProductAction = async (
+  id: string,
+  data: Partial<CreateSavingsProductPayload>,
+) => {
   try {
     await requirePermission(AdminPermission.SAVINGS_MANAGE)
 
     const ratesParts: string[] = []
-    if (data.interestRate1Month) ratesParts.push(`${data.interestRate1Month}% (1M)`)
-    if (data.interestRate3Months) ratesParts.push(`${data.interestRate3Months}% (3M)`)
-    if (data.interestRate6Months) ratesParts.push(`${data.interestRate6Months}% (6M)`)
-    if (data.interestRate12Months) ratesParts.push(`${data.interestRate12Months}% (12M)`)
-    
+    if (data.interestRate1Month)
+      ratesParts.push(`${data.interestRate1Month}% (1M)`)
+    if (data.interestRate3Months)
+      ratesParts.push(`${data.interestRate3Months}% (3M)`)
+    if (data.interestRate6Months)
+      ratesParts.push(`${data.interestRate6Months}% (6M)`)
+    if (data.interestRate12Months)
+      ratesParts.push(`${data.interestRate12Months}% (12M)`)
+
     if (ratesParts.length > 0) {
       data.rates = ratesParts.join(' / ')
-    } else if (data.interestRate1Month === 0 && data.interestRate3Months === 0 && data.interestRate6Months === 0 && data.interestRate12Months === 0) {
+    } else if (
+      data.interestRate1Month === 0 &&
+      data.interestRate3Months === 0 &&
+      data.interestRate6Months === 0 &&
+      data.interestRate12Months === 0
+    ) {
       data.rates = 'Flexible Rates'
     }
 
@@ -97,20 +147,34 @@ export const updateSavingsProductAction = async (id: string, data: Partial<Creat
       data,
     })
 
-    try { revalidatePath('/admin/savings') } catch {}
+    try {
+      revalidatePath('/admin/savings')
+    } catch {}
     return { success: true, data: updated }
   } catch (error: unknown) {
     if (error instanceof AuthzError) {
       return { error: error.message }
     }
     console.error('Error updating savings product:', error)
-    return { error: error instanceof Error ? error.message : 'Failed to update savings product' }
+    return {
+      error:
+        error instanceof Error
+          ? error.message
+          : 'Failed to update savings product',
+    }
   }
 }
 
-export const reviewSavingsTransactionAction = async (transactionId: string, status: 'CONFIRMED' | 'REJECTED', notes?: string, rejectionReason?: string) => {
+export const reviewSavingsTransactionAction = async (
+  transactionId: string,
+  status: 'CONFIRMED' | 'REJECTED',
+  notes?: string,
+  rejectionReason?: string,
+) => {
   try {
-    const actor = await requirePermission(AdminPermission.SAVINGS_PAYMENTS_REVIEW)
+    const actor = await requirePermission(
+      AdminPermission.SAVINGS_PAYMENTS_REVIEW,
+    )
 
     const transaction = await prisma.transaction.findUnique({
       where: { id: transactionId },
@@ -118,8 +182,12 @@ export const reviewSavingsTransactionAction = async (transactionId: string, stat
     })
 
     if (!transaction) return { error: 'Transaction not found' }
-    if (transaction.status !== 'PENDING') return { error: 'Only pending transactions can be reviewed' }
-    if (!transaction.savings) return { error: 'Transaction is not linked to a savings plan' }
+    if (transaction.status !== 'PENDING') {
+      return { error: 'Only pending transactions can be reviewed' }
+    }
+    if (!transaction.savings) {
+      return { error: 'Transaction is not linked to a savings plan' }
+    }
 
     // Start a Prisma transaction to update both the transaction and the savings balance atomically
     await prisma.$transaction(async (tx) => {
@@ -138,15 +206,18 @@ export const reviewSavingsTransactionAction = async (transactionId: string, stat
       // 2. If approved and it's a deposit, increment the balance
       if (status === 'CONFIRMED' && transaction.type === 'DEPOSIT') {
         const amount = transaction.amount.toNumber()
-        const newTotalDeposited = transaction.savings!.totalDeposited.toNumber() + amount
-        const newCurrentBalance = transaction.savings!.currentBalance.toNumber() + amount
+        const newTotalDeposited =
+          transaction.savings!.totalDeposited.toNumber() + amount
+        const newCurrentBalance =
+          transaction.savings!.currentBalance.toNumber() + amount
 
         await tx.savings.update({
           where: { id: transaction.savingsId! },
           data: {
             totalDeposited: newTotalDeposited,
             currentBalance: newCurrentBalance,
-            status: transaction.savings!.status === 'PENDING' ? 'ACTIVE' : undefined,
+            status:
+              transaction.savings!.status === 'PENDING' ? 'ACTIVE' : undefined,
           },
         })
       }
@@ -156,7 +227,9 @@ export const reviewSavingsTransactionAction = async (transactionId: string, stat
       revalidatePath('/admin/savings')
       if (transaction.savingsId) {
         revalidatePath(`/admin/savings/accounts/${transaction.savingsId}`)
-        revalidatePath(`/dashboard/${transaction.userId}/savings/${transaction.savingsId}`)
+        revalidatePath(
+          `/dashboard/${transaction.userId}/savings/${transaction.savingsId}`,
+        )
       }
     } catch {}
 
@@ -166,7 +239,10 @@ export const reviewSavingsTransactionAction = async (transactionId: string, stat
       return { error: error.message }
     }
     console.error('Error reviewing savings transaction:', error)
-    return { error: error instanceof Error ? error.message : 'Failed to review transaction' }
+    return {
+      error:
+        error instanceof Error ? error.message : 'Failed to review transaction',
+    }
   }
 }
 
@@ -181,38 +257,81 @@ export const createSavingsForMemberAction = async (data: {
   try {
     const actor = await requirePermission(AdminPermission.SAVINGS_MANAGE)
 
-    const { userId, productId, targetAmount, frequency, maturity, receiptUrl } = data
+    const { userId, productId, targetAmount, frequency, maturity, receiptUrl } =
+      data
+
+    await assertTargetUserIsMember(userId)
 
     // Verify member exists and has bank accounts
     const user = await prisma.user.findUnique({
       where: { id: userId },
-      include: { bankAccounts: true }
+      include: { bankAccounts: true },
     })
-    
+
     if (!user) return { success: false, error: 'Member not found.' }
     if (!user.bankAccounts || user.bankAccounts.length === 0) {
-      return { success: false, error: 'Member must have a bank account set up first.' }
+      return {
+        success: false,
+        error: 'Member must have a bank account set up first.',
+      }
     }
     const defaultBank = user.bankAccounts[0]
 
     // Verify product
-    const product = await prisma.savingsProduct.findUnique({ where: { id: productId } })
-    if (!product) return { success: false, error: 'Savings product not found.' }
+    const product = await prisma.savingsProduct.findUnique({
+      where: { id: productId },
+    })
+    if (!product) {
+      return { success: false, error: 'Savings product not found.' }
+    }
 
     let interestRate = 0
     switch (maturity) {
-      case SavingsMaturity.ONE_MONTH: interestRate = Number(product.interestRate1Month || 0); break;
-      case SavingsMaturity.THREE_MONTHS: interestRate = Number(product.interestRate3Months || 0); break;
-      case SavingsMaturity.SIX_MONTHS: interestRate = Number(product.interestRate6Months || 0); break;
-      case SavingsMaturity.TWELVE_MONTHS: interestRate = Number(product.interestRate12Months || 0); break;
+      case SavingsMaturity.ONE_MONTH:
+        interestRate = Number(product.interestRate1Month || 0)
+        break
+      case SavingsMaturity.THREE_MONTHS:
+        interestRate = Number(product.interestRate3Months || 0)
+        break
+      case SavingsMaturity.SIX_MONTHS:
+        interestRate = Number(product.interestRate6Months || 0)
+        break
+      case SavingsMaturity.TWELVE_MONTHS:
+        interestRate = Number(product.interestRate12Months || 0)
+        break
     }
 
     const savingsType = SavingsType.REGULAR
 
     let periods = 1
-    if (frequency === SavingsFrequency.DAILY) periods = maturity === 'ONE_MONTH' ? 30 : maturity === 'THREE_MONTHS' ? 90 : maturity === 'SIX_MONTHS' ? 180 : 365
-    else if (frequency === SavingsFrequency.WEEKLY) periods = maturity === 'ONE_MONTH' ? 4 : maturity === 'THREE_MONTHS' ? 12 : maturity === 'SIX_MONTHS' ? 26 : 52
-    else if (frequency === SavingsFrequency.MONTHLY) periods = maturity === 'ONE_MONTH' ? 1 : maturity === 'THREE_MONTHS' ? 3 : maturity === 'SIX_MONTHS' ? 6 : 12
+    if (frequency === SavingsFrequency.DAILY) {
+      periods =
+        maturity === 'ONE_MONTH'
+          ? 30
+          : maturity === 'THREE_MONTHS'
+            ? 90
+            : maturity === 'SIX_MONTHS'
+              ? 180
+              : 365
+    } else if (frequency === SavingsFrequency.WEEKLY) {
+      periods =
+        maturity === 'ONE_MONTH'
+          ? 4
+          : maturity === 'THREE_MONTHS'
+            ? 12
+            : maturity === 'SIX_MONTHS'
+              ? 26
+              : 52
+    } else if (frequency === SavingsFrequency.MONTHLY) {
+      periods =
+        maturity === 'ONE_MONTH'
+          ? 1
+          : maturity === 'THREE_MONTHS'
+            ? 3
+            : maturity === 'SIX_MONTHS'
+              ? 6
+              : 12
+    }
 
     const totalContribution = targetAmount * periods
     const interestAmount = (totalContribution * interestRate) / 100
@@ -234,7 +353,7 @@ export const createSavingsForMemberAction = async (data: {
           isAnonymousRequest: false,
           status: receiptUrl ? SavingsStatus.ACTIVE : SavingsStatus.PENDING,
           productId,
-        }
+        },
       })
 
       if (receiptUrl) {
@@ -251,14 +370,14 @@ export const createSavingsForMemberAction = async (data: {
             recordedBy: actor.id,
             processedBy: actor.id,
             processedAt: new Date(),
-          }
+          },
         })
 
         await tx.savings.update({
           where: { id: savings.id },
           data: {
-            currentBalance: new Prisma.Decimal(targetAmount)
-          }
+            currentBalance: new Prisma.Decimal(targetAmount),
+          },
         })
       }
 
@@ -275,6 +394,12 @@ export const createSavingsForMemberAction = async (data: {
       return { success: false, error: error.message }
     }
     console.error('Error creating savings for member:', error)
-    return { success: false, error: error instanceof Error ? error.message : 'Failed to create savings plan.' }
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : 'Failed to create savings plan.',
+    }
   }
 }
