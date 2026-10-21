@@ -65,10 +65,12 @@ export const { auth, signIn, signOut, handlers } = NextAuth({
           id?: string
           role?: UserRole
           hasSetPassword?: boolean
+          sessionVersion?: number
         }
         token.role = typedUser.role
         token.id = typedUser.id
         token.hasSetPassword = typedUser.hasSetPassword
+        token.sessionVersion = typedUser.sessionVersion ?? 0
       }
       return token
     },
@@ -78,10 +80,12 @@ export const { auth, signIn, signOut, handlers } = NextAuth({
           id?: string
           role?: unknown
           hasSetPassword?: unknown
+          sessionVersion?: unknown
         }
         sessionUser.role = token.role
         session.user.id = token.id as string
         sessionUser.hasSetPassword = token.hasSetPassword
+        sessionUser.sessionVersion = token.sessionVersion ?? 0
       }
       return session
     },

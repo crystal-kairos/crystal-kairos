@@ -1,21 +1,17 @@
 'use server'
 
 import { prisma } from '@/lib/prisma'
-import { getSessionHelper } from '../members/actions'
 import { revalidatePath } from 'next/cache'
-import { LoanStatus, TransactionCategory, TransactionStatus, TransactionType } from '@/generated/prisma/enums'
-import { auth } from '@/auth'
+import { AdminPermission, LoanStatus, TransactionCategory, TransactionStatus, TransactionType } from '@/generated/prisma/enums'
 import { Prisma } from '@/generated/prisma/client'
+import { AuthzError, enforceDualControl, requirePermission } from '@/lib/authz/guards'
 
 /**
  * Admin approves a loan and sets the final approved amount.
  */
 export const approveLoanAction = async (loanId: string, approvedAmount: number) => {
   try {
-    const session = await getSessionHelper()
-    if (!session?.user || (session.user.role !== 'ADMIN' && session.user.role !== 'OWNER')) {
-      return { success: false, error: 'Unauthorized admin access.' }
-    }
+    const actor = await requirePermission(AdminPermission.LOANS_REVIEW)
 
     const loan = await prisma.loan.findUnique({ where: { id: loanId } })
     if (!loan) return { success: false, error: 'Loan not found.' }
@@ -26,7 +22,7 @@ export const approveLoanAction = async (loanId: string, approvedAmount: number) 
       data: {
         status: LoanStatus.APPROVED,
         approvedAmount,
-        approvedBy: session.user.id,
+        approvedBy: actor.id,
         approvedAt: new Date(),
       },
     })
@@ -38,6 +34,9 @@ export const approveLoanAction = async (loanId: string, approvedAmount: number) 
 
     return { success: true, data: updated }
   } catch (error) {
+    if (error instanceof AuthzError) {
+      return { success: false, error: error.message }
+    }
     console.error('Error approving loan:', error)
     return { success: false, error: error instanceof Error ? error.message : 'Failed to approve loan.' }
   }
@@ -48,10 +47,7 @@ export const approveLoanAction = async (loanId: string, approvedAmount: number) 
  */
 export const rejectLoanAction = async (loanId: string, rejectionReason: string) => {
   try {
-    const session = await getSessionHelper()
-    if (!session?.user || (session.user.role !== 'ADMIN' && session.user.role !== 'OWNER')) {
-      return { success: false, error: 'Unauthorized admin access.' }
-    }
+    const actor = await requirePermission(AdminPermission.LOANS_REVIEW)
 
     const loan = await prisma.loan.findUnique({ where: { id: loanId } })
     if (!loan) return { success: false, error: 'Loan not found.' }
@@ -62,7 +58,7 @@ export const rejectLoanAction = async (loanId: string, rejectionReason: string) 
       data: {
         status: LoanStatus.REJECTED,
         rejectionReason,
-        approvedBy: session.user.id,
+        approvedBy: actor.id,
         approvedAt: new Date(),
       },
     })
@@ -74,6 +70,9 @@ export const rejectLoanAction = async (loanId: string, rejectionReason: string) 
 
     return { success: true, data: updated }
   } catch (error) {
+    if (error instanceof AuthzError) {
+      return { success: false, error: error.message }
+    }
     console.error('Error rejecting loan:', error)
     return { success: false, error: error instanceof Error ? error.message : 'Failed to reject loan.' }
   }
@@ -84,10 +83,7 @@ export const rejectLoanAction = async (loanId: string, rejectionReason: string) 
  */
 export const disburseLoanAction = async (loanId: string, receiptUrl: string) => {
   try {
-    const session = await getSessionHelper()
-    if (!session?.user || (session.user.role !== 'ADMIN' && session.user.role !== 'OWNER')) {
-      return { success: false, error: 'Unauthorized admin access.' }
-    }
+    const actor = await requirePermission(AdminPermission.LOANS_DISBURSE)
 
     const loan = await prisma.loan.findUnique({ where: { id: loanId } })
     if (!loan) return { success: false, error: 'Loan not found.' }
@@ -95,6 +91,12 @@ export const disburseLoanAction = async (loanId: string, receiptUrl: string) => 
       return { success: false, error: 'Only accepted loans can be disbursed' }
     }
     if (!loan.approvedAmount) return { success: false, error: 'Approved amount is missing.' }
+
+    await enforceDualControl({
+      actor,
+      previousActorId: loan.approvedBy,
+      requiredPermission: AdminPermission.LOANS_DISBURSE,
+    })
 
     const now = new Date()
     const repaymentEndDate = new Date(now)
@@ -108,7 +110,7 @@ export const disburseLoanAction = async (loanId: string, receiptUrl: string) => 
     // Run in a transaction: Create disbursement record + update loan
     const result = await prisma.$transaction(async (tx) => {
       // Create the disbursement transaction
-      const transaction = await tx.transaction.create({
+      await tx.transaction.create({
         data: {
           userId: loan.userId,
           amount: loan.approvedAmount!,
@@ -118,8 +120,8 @@ export const disburseLoanAction = async (loanId: string, receiptUrl: string) => 
           receiptUrl,
           loanId: loan.id,
           notes: `Disbursement for Loan ${loan.id.substring(0, 8)}`,
-          recordedBy: session.user.id,
-          processedBy: session.user.id,
+          recordedBy: actor.id,
+          processedBy: actor.id,
           processedAt: now,
         },
       })
@@ -148,6 +150,9 @@ export const disburseLoanAction = async (loanId: string, receiptUrl: string) => 
 
     return { success: true, data: result }
   } catch (error) {
+    if (error instanceof AuthzError) {
+      return { success: false, error: error.message }
+    }
     console.error('Error disbursing loan:', error)
     return { success: false, error: error instanceof Error ? error.message : 'Failed to disburse loan.' }
   }
@@ -155,10 +160,7 @@ export const disburseLoanAction = async (loanId: string, receiptUrl: string) => 
 
 export const reviewLoanRepaymentAction = async (transactionId: string, status: 'CONFIRMED' | 'REJECTED', rejectionReason?: string) => {
   try {
-    const session = await auth()
-    if (!session || (session.user.role !== 'ADMIN' && session.user.role !== 'OWNER')) {
-      return { success: false, error: 'Unauthorized.' }
-    }
+    const actor = await requirePermission(AdminPermission.LOANS_REVIEW)
 
     const tx = await prisma.transaction.findUnique({
       where: { id: transactionId },
@@ -181,7 +183,7 @@ export const reviewLoanRepaymentAction = async (transactionId: string, status: '
         data: {
           status,
           rejectionReason: status === 'REJECTED' ? rejectionReason : null,
-          processedBy: session.user.id,
+          processedBy: actor.id,
           processedAt: new Date(),
         },
       })
@@ -204,11 +206,14 @@ export const reviewLoanRepaymentAction = async (transactionId: string, status: '
       }
     })
 
-    revalidatePath(`/admin/loans/${tx.loanId}`)
+    try { revalidatePath(`/admin/loans/${tx.loanId}`) } catch {}
     return { success: true }
-  } catch (error: any) {
+  } catch (error: unknown) {
+    if (error instanceof AuthzError) {
+      return { success: false, error: error.message }
+    }
     console.error('Failed to review loan repayment:', error)
-    return { success: false, error: error.message || 'Failed to review loan repayment.' }
+    return { success: false, error: error instanceof Error ? error.message : 'Failed to review loan repayment.' }
   }
 }
 
@@ -221,10 +226,7 @@ export const createLoanForMemberAction = async (data: {
   approvedAmount?: number
 }) => {
   try {
-    const session = await auth()
-    if (!session || (session.user.role !== 'ADMIN' && session.user.role !== 'OWNER')) {
-      return { success: false, error: 'Unauthorized.' }
-    }
+    const actor = await requirePermission(AdminPermission.LOANS_REVIEW)
 
     const { userId, purpose, requestedAmount, duration, status, approvedAmount } = data
 
@@ -238,7 +240,6 @@ export const createLoanForMemberAction = async (data: {
     if (!user.bankAccounts || user.bankAccounts.length === 0) {
       return { success: false, error: 'Member must have a bank account set up first.' }
     }
-    const defaultBank = user.bankAccounts[0]
 
     // Fetch Global Loan Interest Rate
     const loanSettings = await prisma.loanSettings.findUnique({
@@ -283,18 +284,23 @@ export const createLoanForMemberAction = async (data: {
           status: TransactionStatus.CONFIRMED,
           loanId: newLoan.id,
           notes: 'Loan auto-disbursed by Admin during record creation',
-          recordedBy: session.user.id,
-          processedBy: session.user.id,
+          recordedBy: actor.id,
+          processedBy: actor.id,
           processedAt: new Date(),
         }
       })
     }
 
-    revalidatePath('/admin/loans')
-    revalidatePath(`/dashboard/${userId}/loans`)
+    try {
+      revalidatePath('/admin/loans')
+      revalidatePath(`/dashboard/${userId}/loans`)
+    } catch {}
     return { success: true, data: newLoan }
-  } catch (error: any) {
+  } catch (error: unknown) {
+    if (error instanceof AuthzError) {
+      return { success: false, error: error.message }
+    }
     console.error('Error creating loan for member:', error)
-    return { success: false, error: error.message || 'Failed to create loan record.' }
+    return { success: false, error: error instanceof Error ? error.message : 'Failed to create loan record.' }
   }
 }

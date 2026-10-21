@@ -5,15 +5,18 @@ import { loggedInRestrictedRoutes, publicRoutes } from './routes-def'
 export const proxy = auth((req) => {
   const pathname = req.nextUrl.pathname
   const session = req.auth
-  const userRole = session?.user.role
-  const userId = session?.user.id
+  const sessionUser = session?.user as
+    | { id?: string; role?: string; hasSetPassword?: boolean }
+    | undefined
+  const userRole = sessionUser?.role
+  const userId = sessionUser?.id
 
   const isPublicRoute = publicRoutes.includes(pathname)
   const isAdminRoute = pathname.startsWith('/admin')
-  const isUserRoute = pathname.startsWith(`/dashboard`)
+  const isUserRoute = pathname.startsWith('/dashboard')
   const isAdminUser = userRole === 'ADMIN' || userRole === 'OWNER'
 
-  // redirect to admin or user page if user is logged in
+  // Redirect to admin or user page if user is logged in
   if (loggedInRestrictedRoutes.includes(pathname) && session) {
     if (isAdminUser) {
       return NextResponse.redirect(new URL('/admin', req.url))
@@ -23,7 +26,7 @@ export const proxy = auth((req) => {
   }
 
   // If user is on /set-password but has already set their password, redirect them
-  if (pathname === '/set-password' && session && (session.user as any).hasSetPassword) {
+  if (pathname === '/set-password' && session && sessionUser?.hasSetPassword) {
     if (isAdminUser) {
       return NextResponse.redirect(new URL('/admin', req.url))
     } else {
@@ -31,20 +34,18 @@ export const proxy = auth((req) => {
     }
   }
 
-  // redirect to login page if user is not logged in and not a public route
+  // Redirect to login page if user is not logged in and not a public route
   if (!session && !isPublicRoute) {
     const newUrl = new URL('/login', req.url)
     return NextResponse.redirect(newUrl)
   }
 
-  // redirect to unauthorized page if user is not an admin
-  if (isAdminRoute) {
-    if (!isAdminUser) {
-      return NextResponse.redirect(new URL('/unauthorized', req.url))
-    }
+  // Redirect to unauthorized page if user is not an admin/owner
+  if (isAdminRoute && !isAdminUser) {
+    return NextResponse.redirect(new URL('/unauthorized', req.url))
   }
 
-  // redirect to unauthorized page if user is not a user
+  // Redirect to unauthorized page if user is not a regular member
   if (session && isUserRoute) {
     if (userRole !== 'USER') {
       return NextResponse.redirect(new URL('/unauthorized', req.url))
@@ -52,8 +53,8 @@ export const proxy = auth((req) => {
 
     // Check if user has set their password
     if (
-      session.user &&
-      !(session.user as any).hasSetPassword &&
+      sessionUser &&
+      !sessionUser.hasSetPassword &&
       pathname !== '/set-password'
     ) {
       return NextResponse.redirect(new URL('/set-password', req.url))

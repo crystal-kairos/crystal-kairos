@@ -1,8 +1,9 @@
 'use server'
 
-import { auth } from '@/auth'
 import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
+import { AdminPermission } from '@/generated/prisma/enums'
+import { AuthzError, requirePermission } from '@/lib/authz/guards'
 
 export const getLoanSettingsAction = async () => {
   try {
@@ -21,7 +22,7 @@ export const getLoanSettingsAction = async () => {
         interestRate: Number(settings.interestRate),
       } 
     }
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Failed to fetch loan settings:', error)
     return { success: false, error: 'Failed to fetch loan settings' }
   }
@@ -29,10 +30,7 @@ export const getLoanSettingsAction = async () => {
 
 export const updateLoanSettingsAction = async (interestRate: number) => {
   try {
-    const session = await auth()
-    if (!session || (session.user.role !== 'ADMIN' && session.user.role !== 'OWNER')) {
-      return { success: false, error: 'Unauthorized' }
-    }
+    const actor = await requirePermission(AdminPermission.LOAN_SETTINGS_MANAGE)
 
     if (interestRate < 0 || interestRate > 100) {
       return { success: false, error: 'Interest rate must be between 0 and 100' }
@@ -42,18 +40,21 @@ export const updateLoanSettingsAction = async (interestRate: number) => {
       where: { id: 'global' },
       update: {
         interestRate,
-        updatedBy: session.user.id,
+        updatedBy: actor.id,
       },
       create: {
         id: 'global',
         interestRate,
-        updatedBy: session.user.id,
+        updatedBy: actor.id,
       },
     })
 
-    revalidatePath('/admin/loans')
+    try { revalidatePath('/admin/loans') } catch {}
     return { success: true, data: { interestRate: Number(updated.interestRate) } }
-  } catch (error: any) {
+  } catch (error: unknown) {
+    if (error instanceof AuthzError) {
+      return { success: false, error: error.message }
+    }
     console.error('Failed to update loan settings:', error)
     return { success: false, error: 'Failed to update loan settings' }
   }

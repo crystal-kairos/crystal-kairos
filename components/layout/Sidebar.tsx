@@ -31,7 +31,15 @@ interface Data {
   icon: LucideIcon
 }
 
-const Sidebar = ({ role, data }: { role: UserRole; data: Data[] }) => {
+const Sidebar = ({
+  role,
+  data,
+  showSettings = true,
+}: {
+  role: UserRole
+  data: Data[]
+  showSettings?: boolean
+}) => {
   const session = useSession()
   const { t } = useTranslation('admin')
   const pathname = usePathname()
@@ -144,22 +152,24 @@ const Sidebar = ({ role, data }: { role: UserRole; data: Data[] }) => {
       <Separator className='bg-tertiary' />
 
       <div className='p-3 flex flex-col gap-2'>
-        <Button
-          asChild
-          variant='ghost'
-          className={cn(
-            'w-full py-2 text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground rounded-md',
-            sidebarIsCollapsed ? 'justify-center' : 'justify-start',
-          )}
-          title={t('layout.sidebar.menu-items.settings')}
-        >
-          <Link href={`${values.dashboardLink}/settings`}>
-            <Settings />
-            <span className={cn(sidebarIsCollapsed ? 'hidden' : 'block')}>
-              {t('layout.sidebar.menu-items.settings')}
-            </span>
-          </Link>
-        </Button>
+        {showSettings && (
+          <Button
+            asChild
+            variant='ghost'
+            className={cn(
+              'w-full py-2 text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground rounded-md',
+              sidebarIsCollapsed ? 'justify-center' : 'justify-start',
+            )}
+            title={t('layout.sidebar.menu-items.settings')}
+          >
+            <Link href={`${values.dashboardLink}/settings`}>
+              <Settings />
+              <span className={cn(sidebarIsCollapsed ? 'hidden' : 'block')}>
+                {t('layout.sidebar.menu-items.settings')}
+              </span>
+            </Link>
+          </Button>
+        )}
         <Logout showText={!sidebarIsCollapsed} />
       </div>
     </div>
