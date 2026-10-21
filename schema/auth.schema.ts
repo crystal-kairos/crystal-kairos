@@ -67,8 +67,15 @@ export const reviewAndSubmitSchema = z.object({
 export const setPasswordSchema = z
   .object({
     email: z.string().trim().min(1, 'Email is required'),
-    password: z.string().trim().min(1, 'Password is required'),
+    password: z
+      .string()
+      .trim()
+      .min(10, 'Password must be at least 10 characters long'),
     confirmPassword: z.string().trim().min(1, 'Confirm password is required'),
+  })
+  .refine((data) => data.password.toLowerCase() !== data.email.toLowerCase(), {
+    message: 'Password must not match your email address',
+    path: ['password'],
   })
   .refine((data) => data.password === data.confirmPassword, {
     message: 'Passwords do not match',
