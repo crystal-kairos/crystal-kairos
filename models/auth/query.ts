@@ -25,12 +25,10 @@ import {
   TokenError,
   verifyPasswordSetupToken,
 } from '@/lib/authz/tokens'
-import {
-  AdminPermission,
-  PasswordSetupTokenPurpose,
-} from '@/generated/prisma/enums'
+import { AdminPermission, PasswordSetupTokenPurpose } from '@/generated/prisma/enums'
 import { AuthzError, requireAnyPermission } from '@/lib/authz/guards'
 import { toActionErrorResult } from '@/lib/errors/to-action-result'
+import { normalizePhoneNumber } from '@/lib/domain/eligibility'
 
 export const register = async (
   personalInfo: Step1State['data'],
@@ -63,6 +61,34 @@ export const register = async (
       }
     }
 
+    // Normalise and check phone number uniqueness (A-22)
+    const normalizedPhone = normalizePhoneNumber(parsedPersonalInfo.phoneNumber)
+    const existingPhone = await prisma.userInfo.findFirst({
+      where: { phoneNumber: normalizedPhone },
+    })
+    if (existingPhone) {
+      return {
+        success: false,
+        error:
+          'A member with this phone number is already registered. Please contact an administrator.',
+      }
+    }
+
+    // Check duplicate active bank account across active members (A-22)
+    const existingBank = await prisma.bankAccount.findFirst({
+      where: {
+        accountNumber: parsedBankInfo.accountNumber,
+        user: { isActive: true },
+      },
+    })
+    if (existingBank) {
+      return {
+        success: false,
+        error:
+          'This bank account is already registered by another member. Please contact an administrator.',
+      }
+    }
+
     // Create a new user
     const { user } = await prisma.$transaction(async (tx) => {
       const newUser = await tx.user.create({
@@ -79,7 +105,7 @@ export const register = async (
           dateOfBirth: parsedPersonalInfo.dateOfBirth,
           gender: parsedPersonalInfo.gender,
           occupation: parsedPersonalInfo.occupation,
-          phoneNumber: parsedPersonalInfo.phoneNumber,
+          phoneNumber: normalizedPhone,
         },
       })
 
@@ -113,6 +139,15 @@ export const register = async (
           referralName: membershipInfo.referralName,
           referralPhoneNumber: membershipInfo.referralPhoneNumber,
           assumptions: membershipInfo.assumptions,
+        },
+      })
+
+      // Record technical baseline privacy consent (D-21, §1.10)
+      await tx.privacyConsent.create({
+        data: {
+          userId: newUser.id,
+          noticeVersion: 'v1.0',
+          acceptedAt: new Date(),
         },
       })
 

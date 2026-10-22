@@ -22,7 +22,7 @@ export const userInfos = [
     dateOfBirth: new Date('1985-06-20'),
     gender: Gender.FEMALE,
     occupation: 'Doctor',
-    phoneNumber: '+2348098765432',
+    phoneNumber: '+2348023456789',
     stateOfOrigin: 'Rivers',
   },
   {
@@ -30,7 +30,7 @@ export const userInfos = [
     dateOfBirth: new Date('1985-06-20'),
     gender: Gender.MALE,
     occupation: 'Software Engineer',
-    phoneNumber: '+2348098765432',
+    phoneNumber: '+2348034567890',
     stateOfOrigin: 'Enugu',
   },
 ]
