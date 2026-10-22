@@ -4,11 +4,13 @@ import { auth } from '@/auth'
 import { prisma } from '@/lib/prisma'
 import { nextOfKinSchema } from '@/schema/auth.schema'
 import { revalidatePath } from 'next/cache'
-import { AdminPermission, Relationship } from '@/generated/prisma/enums'
+import { AdminPermission, Relationship, UserDeactivationReason, UserRole } from '@/generated/prisma/enums'
 import {
   assertTargetUserIsMember,
+  requireAnyPermission,
   requireAuthenticatedSession,
   requireMemberOrStaffWithPermission,
+  requireOwner,
 } from '@/lib/authz/guards'
 import { toActionErrorResult } from '@/lib/errors/to-action-result'
 import { assertMockSessionAllowed } from '@/lib/authz/mock-session-guard'
@@ -103,9 +105,12 @@ export const updateNextOfKinAction = async (
 }
 
 interface BankAccountInput {
+  bankCode?: string
   bankName: string
   accountNumber: string
   accountName: string
+  isOverride?: boolean
+  overrideReason?: string
 }
 
 export const addBankAccountAction = async (
@@ -113,7 +118,7 @@ export const addBankAccountAction = async (
   data: BankAccountInput,
 ) => {
   try {
-    await requireMemberOrStaffWithPermission(userId, [
+    const actor = await requireMemberOrStaffWithPermission(userId, [
       AdminPermission.PROFILE_CHANGES_REVIEW,
       AdminPermission.MEMBERS_APPROVE,
     ])
@@ -121,6 +126,33 @@ export const addBankAccountAction = async (
 
     if (data.accountNumber.length !== 10) {
       return { success: false, error: 'Account number must be 10 digits' }
+    }
+
+    // Check duplicate active bank account across active members (A-22)
+    const existingActiveAccount = await prisma.bankAccount.findFirst({
+      where: {
+        bankCode: data.bankCode || null,
+        accountNumber: data.accountNumber,
+        user: { isActive: true },
+      },
+      include: { user: true },
+    })
+
+    if (existingActiveAccount && existingActiveAccount.userId !== userId) {
+      // Owner can override with recorded reason
+      if (!data.isOverride || actor.role !== UserRole.OWNER) {
+        return {
+          success: false,
+          error:
+            'This bank account is already registered by another member. Please contact an administrator.',
+        }
+      }
+      if (!data.overrideReason || data.overrideReason.trim().length === 0) {
+        return {
+          success: false,
+          error: 'An override reason is required to register a shared bank account.',
+        }
+      }
     }
 
     // Check if user already has bank accounts
@@ -134,6 +166,7 @@ export const addBankAccountAction = async (
     const result = await prisma.bankAccount.create({
       data: {
         userId,
+        bankCode: data.bankCode || null,
         bankName: data.bankName,
         accountNumber: data.accountNumber,
         accountName: data.accountName,
@@ -307,6 +340,230 @@ export const resolveAccountNameAction = async (
       error: err.error,
       code: err.code,
       fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
+    }
+  }
+}
+
+/**
+ * Soft deactivates a user account, revoking active sessions and recording reasons (§4.6, P2-01).
+ * Preserves all financial and audit records intact.
+ */
+export const deactivateUserAction = async (data: {
+  userId: string
+  reason: UserDeactivationReason
+  notes?: string
+}) => {
+  try {
+    const actor = await requireAnyPermission([
+      AdminPermission.MEMBERS_APPROVE,
+      AdminPermission.STAFF_MANAGE,
+    ])
+
+    const targetUser = await prisma.user.findUnique({
+      where: { id: data.userId },
+      select: { id: true, role: true, isActive: true },
+    })
+
+    if (!targetUser) {
+      return { success: false, error: 'User not found.' }
+    }
+
+    if (!targetUser.isActive) {
+      return { success: false, error: 'User is already deactivated.' }
+    }
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const user = await tx.user.update({
+        where: { id: data.userId },
+        data: {
+          isActive: false,
+          deactivatedAt: new Date(),
+          deactivatedById: actor.id,
+          deactivationReason: data.reason,
+          sessionVersion: { increment: 1 },
+        },
+      })
+
+      // Revoke any active sessions immediately
+      await tx.userSession.updateMany({
+        where: { userId: data.userId, revokedAt: null },
+        data: { revokedAt: new Date() },
+      })
+
+      return user
+    })
+
+    try {
+      revalidatePath(`/admin/members/${data.userId}`)
+      revalidatePath('/admin/members')
+    } catch {}
+
+    return { success: true, data: updated }
+  } catch (error) {
+    const err = toActionErrorResult(error, {
+      actionName: 'deactivateUserAction',
+      fallbackMessage: 'Failed to deactivate user.',
+      context: { userId: data.userId },
+    })
+    return {
+      success: false,
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
+    }
+  }
+}
+
+/**
+ * Reactivates a previously soft-deactivated user account (§4.6, P2-01).
+ */
+export const reactivateUserAction = async (data: { userId: string }) => {
+  try {
+    await requireAnyPermission([
+      AdminPermission.MEMBERS_APPROVE,
+      AdminPermission.STAFF_MANAGE,
+    ])
+
+    const targetUser = await prisma.user.findUnique({
+      where: { id: data.userId },
+      select: { id: true, isActive: true },
+    })
+
+    if (!targetUser) {
+      return { success: false, error: 'User not found.' }
+    }
+
+    if (targetUser.isActive) {
+      return { success: false, error: 'User is already active.' }
+    }
+
+    const updated = await prisma.user.update({
+      where: { id: data.userId },
+      data: {
+        isActive: true,
+        deactivatedAt: null,
+        deactivatedById: null,
+        deactivationReason: null,
+        sessionVersion: { increment: 1 },
+      },
+    })
+
+    try {
+      revalidatePath(`/admin/members/${data.userId}`)
+      revalidatePath('/admin/members')
+    } catch {}
+
+    return { success: true, data: updated }
+  } catch (error) {
+    const err = toActionErrorResult(error, {
+      actionName: 'reactivateUserAction',
+      fallbackMessage: 'Failed to reactivate user.',
+      context: { userId: data.userId },
+    })
+    return {
+      success: false,
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
+    }
+  }
+}
+
+/**
+ * Creates a cooperative receiving bank account shown to members for offline payments (P2-01).
+ * Never confused with member payout accounts.
+ */
+export const createSocietyBankAccountAction = async (data: {
+  bankCode?: string
+  bankName: string
+  accountNumber: string
+  accountName: string
+  isActive?: boolean
+}) => {
+  try {
+    const actor = await requireAnyPermission([
+      AdminPermission.SOCIETY_SETTINGS_MANAGE,
+    ])
+
+    const created = await prisma.societyBankAccount.create({
+      data: {
+        bankCode: data.bankCode || null,
+        bankName: data.bankName,
+        accountNumber: data.accountNumber,
+        accountName: data.accountName,
+        isActive: data.isActive ?? false,
+        createdById: actor.id,
+      },
+    })
+
+    try {
+      revalidatePath('/admin/settings')
+    } catch {}
+
+    return { success: true, data: created }
+  } catch (error) {
+    const err = toActionErrorResult(error, {
+      actionName: 'createSocietyBankAccountAction',
+      fallbackMessage: 'Failed to create society bank account.',
+    })
+    return {
+      success: false,
+      error: err.error,
+      code: err.code,
+      correlationId: err.correlationId,
+    }
+  }
+}
+
+/**
+ * Records privacy consent version and timestamp (D-21, §1.10).
+ */
+export const recordPrivacyConsentAction = async (data: {
+  userId: string
+  noticeVersion: string
+  ipHash?: string
+  userAgent?: string
+}) => {
+  try {
+    await requireMemberOrStaffWithPermission(data.userId, [
+      AdminPermission.MEMBERS_APPROVE,
+    ])
+
+    const consent = await prisma.privacyConsent.upsert({
+      where: {
+        userId_noticeVersion: {
+          userId: data.userId,
+          noticeVersion: data.noticeVersion,
+        },
+      },
+      update: {
+        acceptedAt: new Date(),
+        ipHash: data.ipHash,
+        userAgent: data.userAgent,
+      },
+      create: {
+        userId: data.userId,
+        noticeVersion: data.noticeVersion,
+        acceptedAt: new Date(),
+        ipHash: data.ipHash,
+        userAgent: data.userAgent,
+      },
+    })
+
+    return { success: true, data: consent }
+  } catch (error) {
+    const err = toActionErrorResult(error, {
+      actionName: 'recordPrivacyConsentAction',
+      fallbackMessage: 'Failed to record privacy consent.',
+      context: { userId: data.userId },
+    })
+    return {
+      success: false,
+      error: err.error,
+      code: err.code,
       correlationId: err.correlationId,
     }
   }

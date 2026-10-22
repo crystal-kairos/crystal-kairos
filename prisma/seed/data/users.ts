@@ -8,6 +8,7 @@ export const users = [
     password: 'admin123!',
     role: UserRole.ADMIN,
     hasSetPassword: true,
+    mfaEnabled: true,
   },
   {
     email: 'owner@crystalkairos.com',
@@ -16,6 +17,7 @@ export const users = [
     password: 'owner123!',
     role: UserRole.OWNER,
     hasSetPassword: true,
+    mfaEnabled: true,
   },
   {
     email: 'member1@example.com',

@@ -44,10 +44,11 @@ export const { auth, signIn, signOut, handlers } = NextAuth({
           },
         })
 
-        // Generic error on all login failures to prevent email or status enumeration
+        // Generic error on all login failures to prevent email or status enumeration.
+        // A member with MembershipStatus.PENDING is permitted to sign in to finish their profile (§1.1, P2-01).
+        // Deactivated users (isActive === false) or rejected memberships are blocked.
         if (
           !user ||
-          user.membership?.status === MembershipStatus.PENDING ||
           user.membership?.status === MembershipStatus.REJECTED ||
           !user.passwordHash ||
           !user.hasSetPassword ||

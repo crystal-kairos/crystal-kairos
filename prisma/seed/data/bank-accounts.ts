@@ -15,8 +15,8 @@ export const bankAccounts = [
     isPrimary: true,
   },
   {
-    accountNumber: '0987654321',
-    bankName: 'Access Bank',
+    accountNumber: '2345678901',
+    bankName: 'First Bank',
     isPrimary: true,
   },
 ]
