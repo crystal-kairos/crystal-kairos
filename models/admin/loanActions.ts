@@ -16,6 +16,7 @@ import {
   requirePermission,
 } from '@/lib/authz/guards'
 import { toActionErrorResult } from '@/lib/errors/to-action-result'
+import { validateAmount } from '@/lib/validation/money'
 
 /**
  * Admin approves a loan and sets the final approved amount.
@@ -26,6 +27,7 @@ export const approveLoanAction = async (
 ) => {
   try {
     const actor = await requirePermission(AdminPermission.LOANS_REVIEW)
+    const validatedApprovedAmount = validateAmount(approvedAmount, 'approvedAmount')
 
     const loan = await prisma.loan.findUnique({ where: { id: loanId } })
     if (!loan) return { success: false, error: 'Loan not found.' }
@@ -37,7 +39,7 @@ export const approveLoanAction = async (
       where: { id: loanId },
       data: {
         status: LoanStatus.APPROVED,
-        approvedAmount,
+        approvedAmount: validatedApprovedAmount,
         approvedBy: actor.id,
         approvedAt: new Date(),
       },
@@ -309,6 +311,11 @@ export const createLoanForMemberAction = async (data: {
       approvedAmount,
     } = data
 
+    const validatedRequestedAmount = validateAmount(requestedAmount, 'requestedAmount')
+    const validatedApprovedAmount = approvedAmount
+      ? validateAmount(approvedAmount, 'approvedAmount')
+      : undefined
+
     await assertTargetUserIsMember(userId)
 
     // Verify member exists and has bank accounts
@@ -333,11 +340,13 @@ export const createLoanForMemberAction = async (data: {
       ? Number(loanSettings.interestRate)
       : 10
 
-    const actualApprovedAmount = approvedAmount || requestedAmount
+    const actualApprovedAmount = validatedApprovedAmount
+      ? validatedApprovedAmount.toNumber()
+      : validatedRequestedAmount.toNumber()
 
     // Total repayment = Principal + (Principal * Interest Rate / 100)
-    let totalRepayment = requestedAmount
-    let outstandingBalance = requestedAmount
+    let totalRepayment = validatedRequestedAmount.toNumber()
+    let outstandingBalance = validatedRequestedAmount.toNumber()
 
     if (
       status === LoanStatus.DISBURSED ||
@@ -353,7 +362,7 @@ export const createLoanForMemberAction = async (data: {
       data: {
         userId,
         purpose,
-        requestedAmount: new Prisma.Decimal(requestedAmount),
+        requestedAmount: validatedRequestedAmount,
         approvedAmount:
           status === LoanStatus.DISBURSED ||
           status === LoanStatus.ACCEPTED ||

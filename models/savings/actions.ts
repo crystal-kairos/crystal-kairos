@@ -21,6 +21,7 @@ import {
 import { requireMemberSession } from '@/lib/authz/guards'
 import { bindStoredFileToRecord } from '@/lib/storage/cloudinary'
 import { toActionErrorResult } from '@/lib/errors/to-action-result'
+import { validateAmount } from '@/lib/validation/money'
 
 /**
  * Creates a new savings plan in PENDING status.
@@ -40,6 +41,7 @@ export const createSavingsPlanAction = async (
 ) => {
   try {
     const actor = await requireMemberSession(userId)
+    const validatedTargetAmount = validateAmount(data.targetAmount, 'targetAmount')
 
     let interestRate = 0
     if (data.productId) {
@@ -68,10 +70,11 @@ export const createSavingsPlanAction = async (
     }
 
     // Calculate expected maturity amount
-    let totalContribution = data.targetAmount
+    const targetAmountNum = validatedTargetAmount.toNumber()
+    let totalContribution = targetAmountNum
     if (data.savingsType === SavingsType.REGULAR) {
       const periods = getPeriodsCount(data.frequency, data.maturity)
-      totalContribution = data.targetAmount * Math.round(periods)
+      totalContribution = targetAmountNum * Math.round(periods)
     }
 
     const interestAmount = (totalContribution * interestRate) / 100
@@ -81,7 +84,7 @@ export const createSavingsPlanAction = async (
       data: {
         userId: actor.id,
         savingsType: data.savingsType,
-        targetAmount: data.targetAmount,
+        targetAmount: validatedTargetAmount,
         frequency: data.frequency,
         maturity: data.maturity,
         interestRate: new Prisma.Decimal(interestRate.toString()),
@@ -136,6 +139,7 @@ export const submitSavingsDepositAction = async (
 ) => {
   try {
     const actor = await requireMemberSession(userId)
+    const validatedAmount = validateAmount(data.amount)
 
     const savings = await prisma.savings.findFirst({
       where: { id: data.savingsId, userId: actor.id },
@@ -148,7 +152,7 @@ export const submitSavingsDepositAction = async (
     const newTransaction = await prisma.transaction.create({
       data: {
         userId: actor.id,
-        amount: new Prisma.Decimal(data.amount.toString()),
+        amount: validatedAmount,
         category: TransactionCategory.SAVINGS_DEPOSIT,
         type: TransactionType.DEPOSIT,
         status: TransactionStatus.PENDING,

@@ -19,13 +19,16 @@ import {
 } from '@/lib/authz/guards'
 import { AppError } from '@/lib/errors/app-error'
 import { toActionErrorResult } from '@/lib/errors/to-action-result'
+import { calculateMaturityDate } from '@/lib/savings'
+import { validateAmount } from '@/lib/validation/money'
 
 interface CreateTransactionInput {
   userId: string
-  amount: number | Prisma.Decimal
+  amount: number | Prisma.Decimal | string
   category: TransactionCategory
   type: TransactionType
   eAjoId?: string
+  eAjoMemberId?: string
   savingsId?: string
   loanId?: string
   receiptUrl?: string
@@ -100,6 +103,8 @@ export const createTransaction = async (input: CreateTransactionInput) => {
 
     await assertTargetUserIsMember(targetUserId)
 
+    const validatedAmount = validateAmount(input.amount)
+
     if (input.savingsId) {
       const savings = await prisma.savings.findFirst({
         where: { id: input.savingsId, userId: targetUserId },
@@ -139,6 +144,19 @@ export const createTransaction = async (input: CreateTransactionInput) => {
       }
     }
 
+    if (input.eAjoMemberId) {
+      const eAjoMember = await prisma.eAjoMember.findFirst({
+        where: { id: input.eAjoMemberId, userId: targetUserId },
+        select: { id: true },
+      })
+      if (!eAjoMember) {
+        return {
+          success: false,
+          error: 'eAjo member record not found for this member.',
+        }
+      }
+    }
+
     if (input.bankAccountId) {
       const bankAccount = await prisma.bankAccount.findFirst({
         where: { id: input.bankAccountId, userId: targetUserId },
@@ -155,11 +173,12 @@ export const createTransaction = async (input: CreateTransactionInput) => {
     const transaction = await prisma.transaction.create({
       data: {
         userId: targetUserId,
-        amount: new Prisma.Decimal(input.amount.toString()),
+        amount: validatedAmount,
         category: input.category,
         type: input.type,
         status: TransactionStatus.PENDING,
         eAjoId: input.eAjoId || null,
+        eAjoMemberId: input.eAjoMemberId || null,
         savingsId: input.savingsId || null,
         loanId: input.loanId || null,
         receiptUrl: input.receiptUrl || null,
@@ -226,27 +245,6 @@ export const transitionTransaction = async (
     const actor = await requireAnyPermission(allowedPerms)
 
     const result = await prisma.$transaction(async (tx) => {
-      // 1. Fetch current transaction details
-      const transaction = await tx.transaction.findUnique({
-        where: { id: transactionId },
-        include: {
-          eAjo: true,
-          savings: true,
-          loan: true,
-        },
-      })
-
-      if (!transaction) {
-        throw new AppError('NOT_FOUND', 'Transaction not found')
-      }
-
-      if (transaction.status !== TransactionStatus.PENDING) {
-        throw new AppError(
-          'CONFLICT',
-          `Transaction is already processed. Status: ${transaction.status}`,
-        )
-      }
-
       let newStatus: TransactionStatus = TransactionStatus.PENDING
       const upperAction = action.toUpperCase()
 
@@ -260,7 +258,50 @@ export const transitionTransaction = async (
         newStatus = TransactionStatus.FAILED
       }
 
-      // 2. Apply Ledger Invariants based on Category & Action
+      // 1. Double-confirmation race prevention: Conditional atomic update
+      const updateResult = await tx.transaction.updateMany({
+        where: {
+          id: transactionId,
+          status: TransactionStatus.PENDING,
+        },
+        data: {
+          status: newStatus,
+          processedBy: actor.id,
+          processedAt: new Date(),
+          rejectionReason: rejectionReason || null,
+          referenceNumber: referenceNumber || null,
+        },
+      })
+
+      if (updateResult.count !== 1) {
+        const existingTxCheck = await tx.transaction.findUnique({
+          where: { id: transactionId },
+          select: { id: true, status: true },
+        })
+        if (!existingTxCheck) {
+          throw new AppError('NOT_FOUND', 'Transaction not found.')
+        }
+        throw new AppError(
+          'STALE_STATE',
+          `Transaction was already processed. Status: ${existingTxCheck.status}`,
+        )
+      }
+
+      // 2. Fetch current transaction details with relations
+      const transaction = await tx.transaction.findUnique({
+        where: { id: transactionId },
+        include: {
+          eAjo: true,
+          savings: true,
+          loan: true,
+        },
+      })
+
+      if (!transaction) {
+        throw new AppError('NOT_FOUND', 'Transaction not found.')
+      }
+
+      // 3. Apply Ledger Invariants based on Category & Action
       if (newStatus === TransactionStatus.CONFIRMED) {
         // A. Ajo contributions
         if (
@@ -288,18 +329,18 @@ export const transitionTransaction = async (
           }
           if (transaction.savings?.status === SavingsStatus.PENDING) {
             updateData.status = SavingsStatus.ACTIVE
-            updateData.startDate = new Date()
+            const startDate = new Date()
+            updateData.startDate = startDate
 
             // Calculate maturity date from startDate for FIXED or REGULAR savings
             if (
               transaction.savings.savingsType === 'FIXED' ||
               transaction.savings.savingsType === 'REGULAR'
             ) {
-              const maturityMonths =
-                transaction.savings.maturity === 'SIX_MONTHS' ? 6 : 12
-              const maturityDate = new Date()
-              maturityDate.setMonth(maturityDate.getMonth() + maturityMonths)
-              updateData.maturityDate = maturityDate
+              updateData.maturityDate = calculateMaturityDate(
+                startDate,
+                transaction.savings.maturity,
+              )
             }
           }
           await tx.savings.update({
@@ -388,19 +429,14 @@ export const transitionTransaction = async (
         }
       }
 
-      // 3. Save processed changes to transaction using live actor.id
-      const updatedTx = await tx.transaction.update({
-        where: { id: transactionId },
-        data: {
-          status: newStatus,
-          processedBy: actor.id,
-          processedAt: new Date(),
-          rejectionReason: rejectionReason || null,
-          referenceNumber: referenceNumber || null,
-        },
-      })
-
-      return updatedTx
+      return {
+        ...transaction,
+        status: newStatus,
+        processedBy: actor.id,
+        processedAt: new Date(),
+        rejectionReason: rejectionReason || null,
+        referenceNumber: referenceNumber || null,
+      }
     })
 
     try {

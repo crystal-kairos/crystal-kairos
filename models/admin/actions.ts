@@ -15,7 +15,7 @@ import {
   UserRole,
 } from '@/generated/prisma/enums'
 import { sendEmail } from '@/features/notification'
-import { generateMembershipNumber } from '@/lib/membership-number'
+import { assignMembershipNumberWithRetry } from '@/lib/membership-number'
 import { issuePasswordSetupToken } from '@/lib/authz/tokens'
 import {
   assertUserHasNoMemberRecords,
@@ -511,23 +511,25 @@ export const createMemberAction = async (formData: {
       return { success: false, error: 'User with this email already exists.' }
     }
 
-    const user = await prisma.user.create({
-      data: {
-        name,
-        email,
-        passwordHash: null,
-        hasSetPassword: false,
-        role: UserRole.USER,
-        membership: {
-          create: {
-            membershipNumber: generateMembershipNumber(),
-            status: MembershipStatus.APPROVED,
-            approvedAt: new Date(),
-            approvedBy: actor.id,
+    const { result: user } = await assignMembershipNumberWithRetry((num) =>
+      prisma.user.create({
+        data: {
+          name,
+          email,
+          passwordHash: null,
+          hasSetPassword: false,
+          role: UserRole.USER,
+          membership: {
+            create: {
+              membershipNumber: num,
+              status: MembershipStatus.APPROVED,
+              approvedAt: new Date(),
+              approvedBy: actor.id,
+            },
           },
         },
-      },
-    })
+      }),
+    )
 
     const issued = await issuePasswordSetupToken({
       userId: user.id,

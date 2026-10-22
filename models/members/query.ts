@@ -10,7 +10,7 @@ import {
 } from '@/generated/prisma/enums'
 import { prisma } from '@/lib/prisma'
 import { AllMembersQueryParams } from '@/types/members.interface'
-import { generateMembershipNumber } from '@/lib/membership-number'
+import { assignMembershipNumberWithRetry } from '@/lib/membership-number'
 import {
   onMembershipApproved,
   onMembershipRejected,
@@ -267,16 +267,18 @@ export const approveMember = async (
     const actor = await requirePermission(AdminPermission.MEMBERS_APPROVE)
     await assertTargetUserIsMember(userId)
     const actorId = actor.id
-    const membershipNumber = generateMembershipNumber()
-    const member = await prisma.membership.update({
-      where: { userId },
-      data: {
-        status: MembershipStatus.APPROVED,
-        approvedAt: new Date(),
-        approvedBy: actorId,
-        membershipNumber,
-      },
-    })
+    const { membershipNumber, result: member } =
+      await assignMembershipNumberWithRetry((num) =>
+        prisma.membership.update({
+          where: { userId },
+          data: {
+            status: MembershipStatus.APPROVED,
+            approvedAt: new Date(),
+            approvedBy: actorId,
+            membershipNumber: num,
+          },
+        }),
+      )
     try {
       revalidatePath('/admin/members')
       revalidatePath(`/admin/members/${userId}`)
