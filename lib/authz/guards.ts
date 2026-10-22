@@ -6,6 +6,9 @@ import {
   hasPermissionInSet,
 } from '@/lib/authz/permissions'
 import { validateAndTouchUserSession } from '@/lib/authz/sessions'
+import { assertMockSessionAllowed } from '@/lib/authz/mock-session-guard'
+
+assertMockSessionAllowed()
 
 export type AuthzErrorCode =
   | 'UNAUTHENTICATED'

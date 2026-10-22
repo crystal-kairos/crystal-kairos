@@ -408,6 +408,10 @@ describe('Server authorization matrix & invariants (PR P1-04)', () => {
         transaction: {
           findUnique: prisma.transaction.findUnique,
           update: updateTxSpy,
+          updateMany: vi.fn(async (args) => {
+            await updateTxSpy(args)
+            return { count: 1 }
+          }),
         },
         savings: {
           update: vi.fn(async () => ({})),

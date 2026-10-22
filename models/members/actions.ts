@@ -11,6 +11,9 @@ import {
   requireMemberOrStaffWithPermission,
 } from '@/lib/authz/guards'
 import { toActionErrorResult } from '@/lib/errors/to-action-result'
+import { assertMockSessionAllowed } from '@/lib/authz/mock-session-guard'
+
+assertMockSessionAllowed()
 
 interface NextOfKinInput {
   name: string
@@ -24,14 +27,7 @@ interface NextOfKinInput {
 }
 
 export const getSessionHelper = async () => {
-  if (
-    process.env.MOCK_SESSION_USER &&
-    process.env.NODE_ENV !== 'test'
-  ) {
-    throw new Error(
-      'MOCK_SESSION_USER is forbidden outside NODE_ENV=test.',
-    )
-  }
+  assertMockSessionAllowed()
 
   try {
     return await auth()

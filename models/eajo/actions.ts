@@ -23,6 +23,7 @@ import {
   requireAuthenticatedSession,
   requireMemberOrStaffWithPermission,
 } from '@/lib/authz/guards'
+import { validateAmount } from '@/lib/validation/money'
 import { toActionErrorResult } from '@/lib/errors/to-action-result'
 
 const serializeMember = (m: EAjoMember) => ({
@@ -187,6 +188,8 @@ export const submitEAjoContributionAction = async (
     const targetUserId =
       actor.role === UserRole.USER ? actor.id : userId
 
+    const validatedAmount = validateAmount(amount)
+
     await assertTargetUserIsMember(targetUserId)
 
     // Verify membership record belongs to targetUserId
@@ -206,7 +209,7 @@ export const submitEAjoContributionAction = async (
     const newTransaction = await prisma.transaction.create({
       data: {
         userId: targetUserId,
-        amount,
+        amount: validatedAmount,
         category: TransactionCategory.AJO_CONTRIBUTION,
         type: TransactionType.DEPOSIT,
         status: TransactionStatus.PENDING,

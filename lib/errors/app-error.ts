@@ -5,6 +5,7 @@ export type AppErrorCode =
   | 'FORBIDDEN'
   | 'NOT_FOUND'
   | 'CONFLICT'
+  | 'STALE_STATE'
   | 'RATE_LIMITED'
   | 'DUAL_CONTROL_REQUIRED'
   | 'STAFF_CANNOT_BE_MEMBER'
@@ -41,7 +42,7 @@ export class AppError extends Error {
     super(message, options.cause ? { cause: options.cause } : undefined)
     this.name = 'AppError'
     this.code = code
-    this.statusCode = options.statusCode ?? 400
+    this.statusCode = options.statusCode ?? (code === 'STALE_STATE' || code === 'CONFLICT' ? 409 : 400)
     this.fieldErrors = options.fieldErrors
     this.isOperational = options.isOperational ?? true
   }

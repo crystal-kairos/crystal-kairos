@@ -18,6 +18,7 @@ import {
   requirePermission,
 } from '@/lib/authz/guards'
 import { toActionErrorResult } from '@/lib/errors/to-action-result'
+import { validateAmount } from '@/lib/validation/money'
 
 export interface CreateSavingsProductPayload {
   type: 'FIXED' | 'REGULAR' | 'STAGGERED'
@@ -276,6 +277,9 @@ export const createSavingsForMemberAction = async (data: {
     const { userId, productId, targetAmount, frequency, maturity, receiptUrl } =
       data
 
+    const validatedTargetAmount = validateAmount(targetAmount, 'targetAmount')
+    const targetAmountNum = validatedTargetAmount.toNumber()
+
     await assertTargetUserIsMember(userId)
 
     // Verify member exists and has bank accounts
@@ -349,7 +353,7 @@ export const createSavingsForMemberAction = async (data: {
               : 12
     }
 
-    const totalContribution = targetAmount * periods
+    const totalContribution = targetAmountNum * periods
     const interestAmount = (totalContribution * interestRate) / 100
     const expectedMaturityAmount = totalContribution + interestAmount
 
@@ -358,7 +362,7 @@ export const createSavingsForMemberAction = async (data: {
         data: {
           userId,
           savingsType,
-          targetAmount,
+          targetAmount: validatedTargetAmount,
           frequency,
           maturity,
           interestRate: new Prisma.Decimal(interestRate),

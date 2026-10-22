@@ -15,6 +15,7 @@ import {
   requirePermission,
 } from '@/lib/authz/guards'
 import { toActionErrorResult } from '@/lib/errors/to-action-result'
+import { bindStoredFileToRecord } from '@/lib/storage/cloudinary'
 
 export const addMemberToEAjoGroupAction = async (data: {
   userId: string
@@ -106,7 +107,7 @@ export const addMemberToEAjoGroupAction = async (data: {
 
       // 4. Optionally create initial contribution transaction
       if (receiptUrl) {
-        await tx.transaction.create({
+        const initialTx = await tx.transaction.create({
           data: {
             userId,
             amount: group.contributionAmount,
@@ -121,6 +122,16 @@ export const addMemberToEAjoGroupAction = async (data: {
             processedAt: new Date(),
           },
         })
+
+        await bindStoredFileToRecord(
+          {
+            fileUrl: receiptUrl,
+            ownerUserId: userId,
+            associatedType: 'TRANSACTION',
+            associatedId: initialTx.id,
+          },
+          tx as unknown as typeof prisma,
+        )
       }
 
       return eajoMember

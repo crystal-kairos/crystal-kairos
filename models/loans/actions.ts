@@ -17,6 +17,7 @@ import {
 } from '@/lib/authz/guards'
 import { bindStoredFileToRecord } from '@/lib/storage/cloudinary'
 import { toActionErrorResult } from '@/lib/errors/to-action-result'
+import { validateAmount } from '@/lib/validation/money'
 
 /**
  * Searches for an active cooperative member by email to nominate as a guarantor.
@@ -85,6 +86,11 @@ export const applyForLoanAction = async (
 ) => {
   try {
     const actor = await requireMemberSession(userId)
+    const validatedRequestedAmount = validateAmount(
+      data.requestedAmount,
+      'requestedAmount',
+    )
+    const requestedAmountNum = validatedRequestedAmount.toNumber()
 
     // 1. Fetch user's savings balance to calculate eligibility and tiers
     const savings = await prisma.savings.findMany({
@@ -99,7 +105,7 @@ export const applyForLoanAction = async (
     const borrowLimit = totalSavings * 2
 
     // 2. Validate borrowing limit if member has savings
-    if (totalSavings > 0 && data.requestedAmount > borrowLimit) {
+    if (totalSavings > 0 && requestedAmountNum > borrowLimit) {
       return {
         success: false,
         error: `Requested amount exceeds borrowing limit of ${new Intl.NumberFormat(
@@ -145,7 +151,7 @@ export const applyForLoanAction = async (
     const newLoan = await prisma.loan.create({
       data: {
         userId: actor.id,
-        requestedAmount: new Prisma.Decimal(data.requestedAmount.toString()),
+        requestedAmount: validatedRequestedAmount,
         interestRate: new Prisma.Decimal(interestRate.toString()),
         duration: data.duration,
         purpose: data.purpose,
@@ -197,6 +203,7 @@ export const submitLoanRepaymentAction = async (
 ) => {
   try {
     const actor = await requireMemberSession(userId)
+    const validatedAmount = validateAmount(data.amount)
 
     const loan = await prisma.loan.findFirst({
       where: { id: data.loanId, userId: actor.id },
@@ -221,7 +228,7 @@ export const submitLoanRepaymentAction = async (
     const newTransaction = await prisma.transaction.create({
       data: {
         userId: actor.id,
-        amount: new Prisma.Decimal(data.amount.toString()),
+        amount: validatedAmount,
         category: TransactionCategory.LOAN_REPAYMENT,
         type: TransactionType.DEPOSIT,
         status: TransactionStatus.PENDING,
