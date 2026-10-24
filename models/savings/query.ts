@@ -22,6 +22,9 @@ export const getSavingsPlanById = async (savingsId: string) => {
         transactions: {
           orderBy: { createdAt: 'desc' },
         },
+        periods: {
+          orderBy: { periodNumber: 'asc' },
+        },
       },
     })
 
@@ -41,11 +44,18 @@ export const getSavingsPlanById = async (savingsId: string) => {
       amount: Number(t.amount),
     }))
 
+    const serializedPeriods = (savings.periods || []).map((p) => ({
+      ...p,
+      amountDue: Number(p.amountDue),
+      amountPaid: Number(p.amountPaid),
+    }))
+
     return {
       success: true,
       data: {
         ...serializedSavings,
         transactions: serializedTransactions,
+        periods: serializedPeriods,
       },
     }
   } catch (error) {

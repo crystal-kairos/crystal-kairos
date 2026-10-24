@@ -17,6 +17,7 @@ import {
 } from '@/lib/authz/guards'
 import { toActionErrorResult } from '@/lib/errors/to-action-result'
 import { validateAmount } from '@/lib/validation/money'
+import { generateAndPersistLoanSchedule } from '@/lib/services/schedules.service'
 
 /**
  * Admin approves a loan and sets the final approved amount.
@@ -179,6 +180,14 @@ export const disburseLoanAction = async (
           repaymentEndDate,
           outstandingBalance: initialDebt, // initial debt matches approved amount + interest
         },
+      })
+
+      await generateAndPersistLoanSchedule(tx, {
+        loanId,
+        principal: loan.approvedAmount!,
+        termMonths: loan.duration,
+        monthlyInterestRatePercent: loan.interestRate,
+        disbursementValueDate: now,
       })
 
       return updatedLoan

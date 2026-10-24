@@ -1,3 +1,6 @@
+import { addMonthsClamped } from '@/lib/domain/dates'
+import { generateLoanSchedule } from '@/lib/domain/loan-schedule'
+
 interface Installment {
   installmentNumber: number
   dueDate: Date
@@ -45,35 +48,35 @@ export const calculateRepaymentSchedule = (
   if (durationMonths <= 0 || approvedAmount <= 0) return schedule
 
   const baseDate = startDate ? new Date(startDate) : new Date()
-  
-  const monthlyPrincipal = approvedAmount / durationMonths
-  const monthlyInterest = (approvedAmount * interestRatePct) / 100
-  const installmentTotal = monthlyPrincipal + monthlyInterest
+
+  const gen = generateLoanSchedule({
+    principal: approvedAmount,
+    termMonths: durationMonths,
+    monthlyInterestRatePercent: interestRatePct,
+    anchorDate: baseDate,
+  })
 
   let runningRepaid = totalRepaid
 
-  for (let i = 1; i <= durationMonths; i++) {
-    const dueDate = new Date(baseDate)
-    dueDate.setMonth(baseDate.getMonth() + i)
-
-    // Acknowledge payment allocation: if runningRepaid is enough to cover this installment
+  for (const item of gen.instalments) {
+    const installmentTotal = Number(item.totalDue)
     let status: 'PAID' | 'PENDING' | 'OVERDUE' = 'PENDING'
     if (runningRepaid >= installmentTotal) {
       status = 'PAID'
       runningRepaid -= installmentTotal
     } else {
-      const graceLimit = new Date(dueDate)
-      graceLimit.setDate(dueDate.getDate() + gracePeriodDays)
+      const graceLimit = new Date(item.dueDate)
+      graceLimit.setDate(item.dueDate.getDate() + gracePeriodDays)
       if (new Date() > graceLimit) {
         status = 'OVERDUE'
       }
     }
 
     schedule.push({
-      installmentNumber: i,
-      dueDate,
-      principalAmount: monthlyPrincipal,
-      interestAmount: monthlyInterest,
+      installmentNumber: item.instalmentNumber,
+      dueDate: item.dueDate,
+      principalAmount: Number(item.principalDue),
+      interestAmount: Number(item.interestDue),
       totalAmount: installmentTotal,
       status,
     })

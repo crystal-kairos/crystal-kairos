@@ -69,6 +69,10 @@ export const getUserEAjoMemberships = async (userId: string) => {
           orderBy: { createdAt: 'desc' },
           take: 5,
         },
+        contributionPeriods: {
+          orderBy: { periodNumber: 'asc' },
+          include: { penalties: true },
+        },
       },
     })
 
@@ -87,6 +91,18 @@ export const getUserEAjoMemberships = async (userId: string) => {
       transactions: m.transactions.map((tx) => ({
         ...tx,
         amount: Number(tx.amount),
+      })),
+      contributionPeriods: (m.contributionPeriods || []).map((cp) => ({
+        ...cp,
+        contributionDue: Number(cp.contributionDue),
+        contributionPaid: Number(cp.contributionPaid),
+        penaltyAssessed: Number(cp.penaltyAssessed),
+        penaltyPaid: Number(cp.penaltyPaid),
+        penaltyWaived: Number(cp.penaltyWaived),
+        penalties: (cp.penalties || []).map((p) => ({
+          ...p,
+          amount: Number(p.amount),
+        })),
       })),
     }))
 

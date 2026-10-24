@@ -31,6 +31,10 @@ export const getLoanPlanById = async (loanId: string) => {
         transactions: {
           orderBy: { createdAt: 'desc' },
         },
+        instalments: {
+          orderBy: { instalmentNumber: 'asc' },
+          include: { penalties: true },
+        },
       },
     })
 
@@ -48,6 +52,21 @@ export const getLoanPlanById = async (loanId: string) => {
     const serializedTransactions = (loan.transactions || []).map((t) => ({
       ...t,
       amount: Number(t.amount),
+    }))
+
+    const serializedInstalments = (loan.instalments || []).map((inst) => ({
+      ...inst,
+      principalDue: Number(inst.principalDue),
+      interestDue: Number(inst.interestDue),
+      principalPaid: Number(inst.principalPaid),
+      interestPaid: Number(inst.interestPaid),
+      penaltyAssessed: Number(inst.penaltyAssessed),
+      penaltyPaid: Number(inst.penaltyPaid),
+      penaltyWaived: Number(inst.penaltyWaived),
+      penalties: (inst.penalties || []).map((p) => ({
+        ...p,
+        amount: Number(p.amount),
+      })),
     }))
 
     // Calculate dynamic schedule if disbursed (ACTIVE/OVERDUE/COMPLETED/DEFAULTED)
@@ -85,6 +104,7 @@ export const getLoanPlanById = async (loanId: string) => {
         },
         transactions: serializedTransactions,
         schedule,
+        instalments: serializedInstalments,
       },
     }
   } catch (error) {

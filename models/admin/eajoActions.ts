@@ -16,6 +16,7 @@ import {
 } from '@/lib/authz/guards'
 import { toActionErrorResult } from '@/lib/errors/to-action-result'
 import { bindStoredFileToRecord } from '@/lib/storage/cloudinary'
+import { generateAndPersistEAjoSchedule } from '@/lib/services/schedules.service'
 
 export const addMemberToEAjoGroupAction = async (data: {
   userId: string
@@ -105,7 +106,17 @@ export const addMemberToEAjoGroupAction = async (data: {
         },
       })
 
-      // 4. Optionally create initial contribution transaction
+      // 4. Generate schedule if member is active and group start date is established
+      if (status === EAjoMemberStatus.ACTIVE && group.startDate) {
+        await generateAndPersistEAjoSchedule(tx, {
+          eAjoMemberId: eajoMember.id,
+          contributionAmount: group.contributionAmount,
+          totalSlots: group.totalSlots,
+          groupStartDate: group.startDate,
+        })
+      }
+
+      // 5. Optionally create initial contribution transaction
       if (receiptUrl) {
         const initialTx = await tx.transaction.create({
           data: {

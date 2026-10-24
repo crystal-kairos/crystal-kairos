@@ -1,4 +1,5 @@
 import { SavingsType, SavingsFrequency, SavingsMaturity } from '@/generated/prisma/enums'
+import { addMonthsClamped } from '@/lib/domain/dates'
 
 // Helper to serialize Decimal fields to numbers to prevent RSC boundary serialization errors
 export const serializeSavings = <T extends Record<string, unknown>>(
@@ -56,9 +57,7 @@ export const calculateMaturityDate = (
   maturity: SavingsMaturity,
 ): Date => {
   const months = maturityToMonths(maturity)
-  const maturityDate = new Date(startDate.getTime())
-  maturityDate.setMonth(maturityDate.getMonth() + months)
-  return maturityDate
+  return addMonthsClamped(startDate, months)
 }
 
 // Calculate interest rate based on plan type and term
