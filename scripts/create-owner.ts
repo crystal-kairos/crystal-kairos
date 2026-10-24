@@ -62,6 +62,7 @@ export async function bootstrapInitialOwner(
       role: UserRole.OWNER,
       passwordHash,
       hasSetPassword: true,
+      mfaEnabled: true,
     },
     select: {
       id: true,

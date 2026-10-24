@@ -5,6 +5,8 @@ import { Wallet, Landmark, Handshake, Banknote, HelpCircle } from 'lucide-react'
 
 interface LedgerBalances {
   generalWalletBalance: number
+  availableWallet?: number
+  heldBalance?: number
   subLedgers: {
     ajo: {
       totalContributed: number
@@ -63,11 +65,16 @@ export const WalletLedgerSummary = ({ balances }: WalletLedgerSummaryProps) => {
               Available Balance
             </span>
             <h2 className='text-3xl font-extrabold font-mono tracking-tight text-white leading-none'>
-              {format(balances.generalWalletBalance)}
+              {format(balances.availableWallet ?? balances.generalWalletBalance)}
             </h2>
+            {balances.heldBalance !== undefined && balances.heldBalance > 0 && (
+              <span className='text-[10px] text-amber-300 font-medium mt-1'>
+                (Held on withdrawal: {format(balances.heldBalance)} | Total: {format(balances.generalWalletBalance)})
+              </span>
+            )}
           </div>
           <p className='text-[10px] text-white/50 mt-2'>
-            Base ledger balance for general deposits & withdrawals
+            Operational double-entry ledger balance for general deposits & withdrawals
           </p>
         </CardContent>
       </Card>

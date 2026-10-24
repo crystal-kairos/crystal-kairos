@@ -21,6 +21,15 @@ import { AppError } from '@/lib/errors/app-error'
 import { toActionErrorResult } from '@/lib/errors/to-action-result'
 import { calculateMaturityDate } from '@/lib/savings'
 import { validateAmount } from '@/lib/validation/money'
+import { lockMembers } from '@/lib/db/concurrency'
+import {
+  postSavingsDeposit,
+  postWalletCredit,
+  postLoanDisbursement,
+  postLoanRepayment,
+  postEajoContribution,
+  postWalletWithdrawal,
+} from '@/lib/services/ledger.service'
 
 interface CreateTransactionInput {
   userId: string
@@ -301,7 +310,10 @@ export const transitionTransaction = async (
         throw new AppError('NOT_FOUND', 'Transaction not found.')
       }
 
-      // 3. Apply Ledger Invariants based on Category & Action
+      // Take transaction-scoped advisory lock on member to prevent concurrent ledger anomalies (PR P2-02, §2.12)
+      await lockMembers(tx, [transaction.userId])
+
+      // 3. Apply Ledger Invariants and Journal Postings based on Category & Action
       if (newStatus === TransactionStatus.CONFIRMED) {
         // A. Ajo contributions
         if (
@@ -314,6 +326,16 @@ export const transitionTransaction = async (
               currentBalance: { increment: transaction.amount },
               totalContributed: { increment: transaction.amount },
             },
+          })
+
+          await postEajoContribution(tx, {
+            amount: transaction.amount,
+            memberId: transaction.userId,
+            eAjoMemberId: transaction.eAjoMemberId,
+            isPostPayout: false,
+            effectiveDate: new Date(),
+            idempotencyKey: `tx-${transaction.id}-confirm`,
+            postedById: actor.id,
           })
         }
 
@@ -347,6 +369,15 @@ export const transitionTransaction = async (
             where: { id: transaction.savingsId },
             data: updateData,
           })
+
+          await postSavingsDeposit(tx, {
+            amount: transaction.amount,
+            memberId: transaction.userId,
+            savingsId: transaction.savingsId,
+            effectiveDate: new Date(),
+            idempotencyKey: `tx-${transaction.id}-confirm`,
+            postedById: actor.id,
+          })
         }
 
         // C. Loan Repayments
@@ -372,6 +403,26 @@ export const transitionTransaction = async (
                 ? LoanStatus.COMPLETED
                 : undefined,
             },
+          })
+
+          await postLoanRepayment(tx, {
+            memberId: transaction.userId,
+            loanId: transaction.loanId,
+            principalPortion: transaction.amount,
+            effectiveDate: new Date(),
+            idempotencyKey: `tx-${transaction.id}-confirm`,
+            postedById: actor.id,
+          })
+        }
+
+        // D. General Wallet Top-up
+        if (transaction.category === TransactionCategory.WALLET_TOPUP) {
+          await postWalletCredit(tx, {
+            amount: transaction.amount,
+            memberId: transaction.userId,
+            effectiveDate: new Date(),
+            idempotencyKey: `tx-${transaction.id}-confirm`,
+            postedById: actor.id,
           })
         }
       }
@@ -425,6 +476,27 @@ export const transitionTransaction = async (
               disbursedAt: new Date(),
               outstandingBalance: initialDebt, // Initial debt matches approved amount + interest
             },
+          })
+
+          await postLoanDisbursement(tx, {
+            amount: transaction.amount,
+            memberId: transaction.userId,
+            loanId: transaction.loanId,
+            effectiveDate: new Date(),
+            idempotencyKey: `tx-${transaction.id}-disburse`,
+            postedById: actor.id,
+          })
+        }
+
+        // D. Wallet Withdrawal
+        if (transaction.category === TransactionCategory.WALLET_WITHDRAWAL) {
+          await postWalletWithdrawal(tx, {
+            amount: transaction.amount,
+            memberId: transaction.userId,
+            withdrawalId: transaction.id,
+            effectiveDate: new Date(),
+            idempotencyKey: `tx-${transaction.id}-disburse`,
+            postedById: actor.id,
           })
         }
       }

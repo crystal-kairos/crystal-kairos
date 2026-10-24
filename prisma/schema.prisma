@@ -265,6 +265,11 @@ model User {
   deactivatedUsers       User[]                 @relation("UserDeactivations")
   privacyConsents        PrivacyConsent[]
   societyBankAccountsCreated SocietyBankAccount[] @relation("SocietyBankAccountCreator")
+  journalEntriesPosted   JournalEntry[]         @relation("JournalEntryPoster")
+  journalLines           JournalLine[]          @relation("JournalLineMember")
+  walletWithdrawals      WalletWithdrawal[]     @relation("MemberWalletWithdrawals")
+  walletWithdrawalsApproved WalletWithdrawal[]  @relation("WalletWithdrawalApprover")
+  auditEvents            AuditEvent[]           @relation("UserAuditEvents")
   accounts                Account[]
   sessions                Session[]
   userSessions            UserSession[]
@@ -444,6 +449,7 @@ model BankAccount {
   updatedAt     DateTime      @updatedAt
   user          User          @relation(fields: [userId], references: [id], onDelete: Restrict)
   transactions  Transaction[]
+  walletWithdrawals WalletWithdrawal[]
 
   @@unique([userId, bankCode, accountNumber])
   @@index([bankCode, accountNumber])
@@ -890,4 +896,131 @@ model SocietySetting {
   updatedAt DateTime @updatedAt
 
   @@map("society_settings")
+}
+
+// ============================================
+// FINANCIAL JOURNAL & LEDGER MODELS (PR P2-02, §2.12)
+// ============================================
+
+enum LedgerAccountType {
+  COOPERATIVE_CASH
+  SUSPENSE_UNIDENTIFIED
+  MEMBER_WALLET_LIABILITY
+  SAVINGS_PRINCIPAL_LIABILITY
+  SAVINGS_INTEREST_PAYABLE
+  SAVINGS_INTEREST_EXPENSE
+  LOAN_RECEIVABLE_PRINCIPAL
+  LOAN_INTEREST_RECEIVABLE
+  LOAN_INTEREST_INCOME
+  LOAN_PENALTY_RECEIVABLE
+  EAJO_CONTRIBUTION_LIABILITY
+  EAJO_ADVANCE_RECEIVABLE
+  EAJO_PENALTY_RECEIVABLE
+  EAJO_EARLY_SLOT_INCOME
+  PENALTY_INCOME
+  FEE_INCOME
+  WAIVER_EXPENSE
+  BAD_DEBT_EXPENSE
+  MEMBER_SETTLEMENT_PAYABLE
+  REVERSAL_SHORTFALL_RECEIVABLE
+  OPENING_BALANCE_EQUITY
+  ADJUSTMENT
+}
+
+enum WalletWithdrawalStatus {
+  REQUESTED
+  APPROVED
+  PAID
+  REJECTED
+  CANCELLED
+  FAILED
+}
+
+model JournalEntry {
+  id             String        @id @default(uuid())
+  sourceType     String        // e.g. TRANSACTION, PAYMENT, DISBURSEMENT, RECOVERY, ACCRUAL
+  sourceId       String
+  idempotencyKey String        @unique
+  description    String
+  effectiveDate  DateTime      @db.Date
+  postedAt       DateTime      @default(now())
+  postedById     String?
+  reversalOfId   String?       @unique
+  reason         String?
+  createdAt      DateTime      @default(now())
+
+  postedBy   User?         @relation("JournalEntryPoster", fields: [postedById], references: [id], onDelete: Restrict)
+  reversalOf JournalEntry? @relation("JournalReversal", fields: [reversalOfId], references: [id], onDelete: Restrict)
+  reversedBy JournalEntry? @relation("JournalReversal")
+  lines      JournalLine[]
+
+  @@index([sourceType, sourceId])
+  @@index([effectiveDate])
+  @@index([postedAt])
+  @@map("journal_entries")
+}
+
+model JournalLine {
+  id             String            @id @default(uuid())
+  journalEntryId String
+  accountType    LedgerAccountType
+  memberId       String?
+  accountRefType String?           // SAVINGS, LOAN, EAJO_MEMBER, WALLET, etc.
+  accountRefId   String?
+  currency       String            @default("NGN")
+  debit          Decimal           @default(0) @db.Decimal(15, 2)
+  credit         Decimal           @default(0) @db.Decimal(15, 2)
+  createdAt      DateTime          @default(now())
+
+  journalEntry JournalEntry @relation(fields: [journalEntryId], references: [id], onDelete: Restrict)
+  member       User?        @relation("JournalLineMember", fields: [memberId], references: [id], onDelete: Restrict)
+
+  @@index([accountType, accountRefId])
+  @@index([memberId, accountType])
+  @@index([journalEntryId])
+  @@map("journal_lines")
+}
+
+model WalletWithdrawal {
+  id               String                 @id @default(uuid())
+  withdrawalNumber String                 @unique
+  memberId         String
+  amount           Decimal                @db.Decimal(15, 2)
+  bankAccountId    String
+  status           WalletWithdrawalStatus @default(REQUESTED)
+  requestedAt      DateTime               @default(now())
+  approvedById     String?
+  approvedAt       DateTime?
+  rejectionReason  String?
+  idempotencyKey   String                 @unique
+
+  member        User        @relation("MemberWalletWithdrawals", fields: [memberId], references: [id], onDelete: Restrict)
+  bankAccount   BankAccount @relation(fields: [bankAccountId], references: [id], onDelete: Restrict)
+  approvedBy    User?       @relation("WalletWithdrawalApprover", fields: [approvedById], references: [id], onDelete: Restrict)
+
+  @@index([memberId, status])
+  @@map("wallet_withdrawals")
+}
+
+model AuditEvent {
+  id               String    @id @default(uuid())
+  actorId          String?
+  actorRole        UserRole?
+  action           String
+  entityType       String
+  entityId         String
+  beforeState      Json?
+  afterState       Json?
+  metadata         Json?
+  ipHash           String?
+  userAgent        String?
+  isSingleOperator Boolean   @default(false)
+  timestamp        DateTime  @default(now())
+
+  actor User? @relation("UserAuditEvents", fields: [actorId], references: [id], onDelete: Restrict)
+
+  @@index([entityType, entityId])
+  @@index([actorId, timestamp])
+  @@index([timestamp])
+  @@map("audit_events")
 }
