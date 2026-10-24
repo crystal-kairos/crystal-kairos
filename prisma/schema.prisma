@@ -174,6 +174,16 @@ enum LoanStatus {
   OVERDUE
 }
 
+enum PaymentPeriodStatus {
+  PENDING
+  IN_REVIEW
+  ONGOING
+  COMPLETED
+  REJECTED
+  OVERDUE
+  WAIVED
+}
+
 // enum LoanApplicantType {
 //   MEMBER_WITH_SAVINGS
 //   MEMBER_WITHOUT_SAVINGS
@@ -646,15 +656,54 @@ model EAjoMember {
   createdAt            DateTime         @default(now())
   updatedAt            DateTime         @updatedAt
 
-  group        EAjoGroup     @relation(fields: [groupId], references: [id], onDelete: Restrict)
-  user         User          @relation(fields: [userId], references: [id], onDelete: Restrict)
-  transactions Transaction[]
+  group               EAjoGroup                @relation(fields: [groupId], references: [id], onDelete: Restrict)
+  user                User                     @relation(fields: [userId], references: [id], onDelete: Restrict)
+  transactions        Transaction[]
+  contributionPeriods EAjoContributionPeriod[]
 
   @@unique([groupId, payoutPosition]) // One member per slot per group
   @@unique([groupId, userId]) // One application per user per group
   @@index([userId])
   @@index([groupId])
   @@map("e_ajo_members")
+}
+
+model EAjoContributionPeriod {
+  id               String                 @id @default(uuid())
+  eajoMemberId     String
+  periodNumber     Int
+  dueDate          DateTime               @db.Date
+  contributionDue  Decimal                @db.Decimal(15, 2)
+  contributionPaid Decimal                @default(0) @db.Decimal(15, 2)
+  penaltyAssessed  Decimal                @default(0) @db.Decimal(15, 2)
+  penaltyPaid      Decimal                @default(0) @db.Decimal(15, 2)
+  penaltyWaived    Decimal                @default(0) @db.Decimal(15, 2)
+  status           PaymentPeriodStatus    @default(PENDING)
+  createdAt        DateTime               @default(now())
+  updatedAt        DateTime               @updatedAt
+
+  eajoMember       EAjoMember             @relation(fields: [eajoMemberId], references: [id], onDelete: Restrict)
+  penalties        EAjoPenaltyAccrual[]
+
+  @@unique([eajoMemberId, periodNumber])
+  @@index([status, dueDate])
+  @@map("e_ajo_contribution_periods")
+}
+
+model EAjoPenaltyAccrual {
+  id                       String                 @id @default(uuid())
+  eajoContributionPeriodId String
+  penaltyDate              DateTime               @db.Date
+  amount                   Decimal                @db.Decimal(15, 2)
+  reversedAt               DateTime?
+  reversalReason           String?
+  journalEntryId           String?
+  createdAt                DateTime               @default(now())
+
+  period                   EAjoContributionPeriod @relation(fields: [eajoContributionPeriodId], references: [id], onDelete: Restrict)
+
+  @@unique([eajoContributionPeriodId, penaltyDate])
+  @@map("e_ajo_penalty_accruals")
 }
 
 enum TransactionStatus {
@@ -795,11 +844,31 @@ model Savings {
   user         User            @relation(fields: [userId], references: [id], onDelete: Restrict)
   product      SavingsProduct? @relation(fields: [productId], references: [id], onDelete: Restrict)
   transactions Transaction[]
+  periods      SavingsPeriod[]
 
   @@index([userId])
   @@index([status])
   @@index([productId])
   @@map("savings")
+}
+
+model SavingsPeriod {
+  id                String              @id @default(uuid())
+  savingsId         String
+  periodNumber      Int
+  dueDate           DateTime            @db.Date
+  amountDue         Decimal             @db.Decimal(15, 2)
+  amountPaid        Decimal             @default(0) @db.Decimal(15, 2)
+  status            PaymentPeriodStatus @default(PENDING)
+  interestForfeited Boolean             @default(false)
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  savings           Savings             @relation(fields: [savingsId], references: [id], onDelete: Restrict)
+
+  @@unique([savingsId, periodNumber])
+  @@index([status, dueDate])
+  @@map("savings_periods")
 }
 
 // Deprecated savings transactions removed
@@ -840,14 +909,56 @@ model Loan {
   createdAt            DateTime   @default(now())
   updatedAt            DateTime   @updatedAt
 
-  user         User          @relation(fields: [userId], references: [id], onDelete: Restrict)
+  user         User             @relation(fields: [userId], references: [id], onDelete: Restrict)
   // guarantor  User?            @relation("LoanGuarantor", fields: [guarantorId], references: [id])
   transactions Transaction[]
+  instalments  LoanInstalment[]
 
   @@index([userId])
   @@index([guarantorId])
   @@index([status])
   @@map("loans")
+}
+
+model LoanInstalment {
+  id                   String               @id @default(uuid())
+  loanId               String
+  instalmentNumber     Int
+  dueDate              DateTime             @db.Date
+  principalDue         Decimal              @db.Decimal(15, 2)
+  interestDue          Decimal              @db.Decimal(15, 2)
+  principalPaid        Decimal              @default(0) @db.Decimal(15, 2)
+  interestPaid         Decimal              @default(0) @db.Decimal(15, 2)
+  penaltyAssessed      Decimal              @default(0) @db.Decimal(15, 2) // net of value-date reversals
+  penaltyPaid          Decimal              @default(0) @db.Decimal(15, 2)
+  penaltyWaived        Decimal              @default(0) @db.Decimal(15, 2)
+  interestRecognisedAt DateTime?
+  status               PaymentPeriodStatus  @default(PENDING)
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+
+  loan                 Loan                 @relation(fields: [loanId], references: [id], onDelete: Restrict)
+  penalties            LoanPenaltyAccrual[]
+
+  @@unique([loanId, instalmentNumber])
+  @@index([status, dueDate])
+  @@map("loan_instalments")
+}
+
+model LoanPenaltyAccrual {
+  id               String         @id @default(uuid())
+  loanInstalmentId String
+  penaltyDate      DateTime       @db.Date
+  amount           Decimal        @db.Decimal(15, 2)
+  reversedAt       DateTime?
+  reversalReason   String?
+  journalEntryId   String?
+  createdAt        DateTime       @default(now())
+
+  instalment       LoanInstalment @relation(fields: [loanInstalmentId], references: [id], onDelete: Restrict)
+
+  @@unique([loanInstalmentId, penaltyDate])
+  @@map("loan_penalty_accruals")
 }
 
 model LoanSettings {

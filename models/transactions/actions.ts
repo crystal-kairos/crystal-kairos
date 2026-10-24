@@ -23,6 +23,11 @@ import { calculateMaturityDate } from '@/lib/savings'
 import { validateAmount } from '@/lib/validation/money'
 import { lockMembers } from '@/lib/db/concurrency'
 import {
+  generateAndPersistLoanSchedule,
+  generateAndPersistSavingsSchedule,
+  generateAndPersistEAjoSchedule,
+} from '@/lib/services/schedules.service'
+import {
   postSavingsDeposit,
   postWalletCredit,
   postLoanDisbursement,
@@ -364,6 +369,16 @@ export const transitionTransaction = async (
                 transaction.savings.maturity,
               )
             }
+
+            await generateAndPersistSavingsSchedule(tx, {
+              savingsId: transaction.savingsId,
+              savingsType: transaction.savings.savingsType,
+              frequency: transaction.savings.frequency,
+              maturity: transaction.savings.maturity,
+              targetAmount:
+                transaction.savings.targetAmount || transaction.amount,
+              firstDepositValueDate: startDate,
+            })
           }
           await tx.savings.update({
             where: { id: transaction.savingsId },
@@ -476,6 +491,14 @@ export const transitionTransaction = async (
               disbursedAt: new Date(),
               outstandingBalance: initialDebt, // Initial debt matches approved amount + interest
             },
+          })
+
+          await generateAndPersistLoanSchedule(tx, {
+            loanId: transaction.loanId,
+            principal: transaction.loan.approvedAmount || transaction.amount,
+            termMonths: transaction.loan.duration,
+            monthlyInterestRatePercent: transaction.loan.interestRate,
+            disbursementValueDate: new Date(),
           })
 
           await postLoanDisbursement(tx, {
