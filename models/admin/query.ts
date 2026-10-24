@@ -1,6 +1,7 @@
 'use server'
 
 import { prisma } from '@/lib/prisma'
+import { Prisma } from '@/generated/prisma/client'
 import {
   AdminPermission,
   MembershipStatus,
@@ -703,5 +704,89 @@ export const getAllMembers = async () => {
   } catch (error) {
     console.error('Error fetching members:', error)
     return { success: false, error: 'Failed to fetch members', data: [] }
+  }
+}
+
+/**
+ * Fetches general operational ledger balances across all 22 accounts (§2.12).
+ * Verifies general ledger equality: Total Debits == Total Credits.
+ */
+export const getOperationalLedgerBalances = async () => {
+  try {
+    await requireStaffSession()
+
+    const lines = await prisma.journalLine.groupBy({
+      by: ['accountType'],
+      _sum: {
+        debit: true,
+        credit: true,
+      },
+    })
+
+    const accounts = lines.map((l) => {
+      const debit = l._sum.debit || new Prisma.Decimal(0)
+      const credit = l._sum.credit || new Prisma.Decimal(0)
+      return {
+        accountType: l.accountType,
+        debit,
+        credit,
+        netBalance: credit.minus(debit),
+      }
+    })
+
+    const totalDebits = accounts.reduce((acc, a) => acc.plus(a.debit), new Prisma.Decimal(0))
+    const totalCredits = accounts.reduce((acc, a) => acc.plus(a.credit), new Prisma.Decimal(0))
+
+    return {
+      success: true,
+      data: {
+        accounts,
+        totalDebits,
+        totalCredits,
+        isBalanced: totalDebits.equals(totalCredits),
+      },
+    }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to fetch ledger balances',
+    }
+  }
+}
+
+/**
+ * Fetches journal entries with pagination and optional filtering (§2.12).
+ */
+export const getJournalEntries = async (filter?: {
+  memberId?: string
+  limit?: number
+}) => {
+  try {
+    await requireStaffSession()
+
+    const entries = await prisma.journalEntry.findMany({
+      where: filter?.memberId
+        ? {
+            lines: {
+              some: { memberId: filter.memberId },
+            },
+          }
+        : undefined,
+      include: {
+        lines: true,
+        postedBy: {
+          select: { id: true, name: true, email: true },
+        },
+      },
+      orderBy: { postedAt: 'desc' },
+      take: filter?.limit || 50,
+    })
+
+    return { success: true, data: entries }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to fetch journal entries',
+    }
   }
 }
