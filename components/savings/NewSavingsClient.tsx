@@ -21,7 +21,7 @@ import {
 import { createSavingsPlanAction } from '@/models/savings/actions'
 import { getPeriodsCount } from '@/lib/savings'
 import { useRouter } from 'next/navigation'
-import { SavingsProduct } from '@/generated/prisma/client'
+import type { SavingsProduct } from '@/generated/prisma/client'
 
 interface BankAccount {
   id: string
