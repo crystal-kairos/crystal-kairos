@@ -28,6 +28,7 @@ import {
 } from '@/lib/services/guarantees.service'
 import { getActiveLoanRateForDuration } from '@/lib/services/rate-policy.service'
 import { getSocietySetting } from '@/lib/services/society-settings.service'
+import { recordAuditEvent, AuditAction, AuditOutcome } from '@/lib/services/audit.service'
 
 /**
  * Searches for an active cooperative member by email to nominate as a guarantor.
@@ -192,6 +193,25 @@ export const applyForLoanAction = async (
           termsVersion: rateVersion,
         })
       }
+
+      await recordAuditEvent(
+        {
+          actorId: actor.id,
+          actorRole: actor.role,
+          affectedUserId: actor.id,
+          action: AuditAction.LOAN_APPLIED,
+          entityType: 'Loan',
+          entityId: loan.id,
+          outcome: AuditOutcome.SUCCESS,
+          metadata: {
+            loanId: loan.id,
+            amount: Number(loan.requestedAmount),
+            durationMonths: loan.duration,
+            monthlyInterestRatePercent: Number(loan.monthlyInterestRatePercent),
+          },
+        },
+        tx
+      )
 
       return loan
     })
@@ -474,12 +494,36 @@ export const decideGuarantorRequestAction = async (params: {
     }
 
     const result = await prisma.$transaction(async (tx) => {
-      return decideGuarantorRequest(tx, {
+      const res = await decideGuarantorRequest(tx, {
         reservationId: params.reservationId,
         guarantorId: actor.id,
         decision: params.decision,
         reason: params.reason,
       })
+
+      await recordAuditEvent(
+        {
+          actorId: actor.id,
+          actorRole: actor.role,
+          affectedUserId: res.reservation.applicantId,
+          action:
+            params.decision === 'ACCEPT'
+              ? AuditAction.GUARANTEE_CONSENT_GIVEN
+              : AuditAction.GUARANTEE_CONSENT_DECLINED,
+          entityType: 'GuaranteeReservation',
+          entityId: res.reservation.id,
+          outcome: AuditOutcome.SUCCESS,
+          metadata: {
+            reservationId: res.reservation.id,
+            loanId: res.reservation.loanId,
+            decision: params.decision,
+            reason: params.reason,
+          },
+        },
+        tx
+      )
+
+      return res
     })
 
     try {

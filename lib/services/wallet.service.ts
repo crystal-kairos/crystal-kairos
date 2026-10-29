@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { AppError } from '@/lib/errors/app-error'
 import { roundMoney, toDecimal } from '@/lib/domain/money'
 import { lockMembers } from '@/lib/db/concurrency'
+import { recordAuditEvent, AuditAction, AuditOutcome } from '@/lib/services/audit.service'
 
 export interface WalletSummary {
   memberId: string
@@ -163,6 +164,24 @@ export async function requestWalletWithdrawal(
     },
     include: { bankAccount: true },
   })
+
+  await recordAuditEvent(
+    {
+      actorId: params.memberId,
+      affectedUserId: params.memberId,
+      action: AuditAction.WALLET_WITHDRAWAL_REQUESTED,
+      entityType: 'WalletWithdrawal',
+      entityId: withdrawal.id,
+      outcome: AuditOutcome.SUCCESS,
+      metadata: {
+        withdrawalNumber,
+        amount: Number(dAmount),
+        bankAccountId: params.bankAccountId,
+        accountNumber: bankAccount.accountNumber,
+      },
+    },
+    tx
+  ).catch(() => {})
 
   return withdrawal
 }

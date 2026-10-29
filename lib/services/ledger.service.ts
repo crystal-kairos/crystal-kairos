@@ -3,6 +3,7 @@ import { LedgerAccountType } from '@/generated/prisma/enums'
 import { prisma } from '@/lib/prisma'
 import { AppError } from '@/lib/errors/app-error'
 import { roundMoney, toDecimal } from '@/lib/domain/money'
+import { recordAuditEvent, AuditAction, AuditOutcome } from '@/lib/services/audit.service'
 
 export interface JournalLineInput {
   accountType: LedgerAccountType
@@ -166,6 +167,24 @@ export async function postJournalEntry(
     include: { lines: true },
   })
 
+  await recordAuditEvent(
+    {
+      actorId: input.postedById ?? null,
+      action: AuditAction.FINANCIAL_POSTING,
+      entityType: 'JournalEntry',
+      entityId: entry.id,
+      outcome: AuditOutcome.SUCCESS,
+      metadata: {
+        journalEntryId: entry.id,
+        sourceType: entry.sourceType,
+        sourceId: entry.sourceId,
+        idempotencyKey: entry.idempotencyKey,
+        linesCount: entry.lines.length,
+      },
+    },
+    tx
+  ).catch(() => {})
+
   return entry
 }
 
@@ -247,6 +266,22 @@ export async function reverseJournalEntry(
     },
     include: { lines: true },
   })
+
+  await recordAuditEvent(
+    {
+      actorId: input.postedById ?? null,
+      action: AuditAction.FINANCIAL_REVERSAL,
+      entityType: 'JournalEntry',
+      entityId: reversal.id,
+      outcome: AuditOutcome.SUCCESS,
+      metadata: {
+        originalJournalEntryId: original.id,
+        reversalJournalEntryId: reversal.id,
+        reason: input.reason,
+      },
+    },
+    tx
+  ).catch(() => {})
 
   return reversal
 }

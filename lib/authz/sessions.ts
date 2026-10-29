@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/prisma'
 import { UserRole } from '@/generated/prisma/enums'
 import { hashSha256 } from '@/lib/authz/crypto'
+import { recordAuditEvent, AuditAction, AuditOutcome } from '@/lib/services/audit.service'
 
 export interface SessionLifetimes {
   idleMinutes: number
@@ -136,12 +137,27 @@ export async function revokeUserSession(
     whereClause.userId = userId
   }
 
-  return db.userSession.updateMany({
+  const result = await db.userSession.updateMany({
     where: whereClause,
     data: {
       revokedAt: new Date(),
     },
   })
+
+  await recordAuditEvent(
+    {
+      actorId: userId ?? null,
+      affectedUserId: userId ?? null,
+      action: AuditAction.AUTH_SESSION_REVOKED,
+      entityType: 'UserSession',
+      entityId: sessionId,
+      outcome: AuditOutcome.SUCCESS,
+      metadata: { sessionId, singleRevocation: true },
+    },
+    db as any,
+  ).catch(() => {})
+
+  return result
 }
 
 /**
@@ -162,6 +178,19 @@ export async function revokeAllUserSessions(
       data: { sessionVersion: { increment: 1 } },
     }),
   ])
+
+  await recordAuditEvent(
+    {
+      actorId: userId,
+      affectedUserId: userId,
+      action: AuditAction.AUTH_SESSION_REVOKED,
+      entityType: 'UserSession',
+      entityId: userId,
+      outcome: AuditOutcome.SUCCESS,
+      metadata: { userId, allSessionsRevoked: true },
+    },
+    db as any,
+  ).catch(() => {})
 }
 
 /**

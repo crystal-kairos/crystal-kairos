@@ -25,6 +25,7 @@ import { AppError } from '@/lib/errors/app-error'
 import { validateAmount } from '@/lib/validation/money'
 import { lockMembers } from '@/lib/db/concurrency'
 import { assertSavingsWithdrawalAllowed } from '@/lib/services/guarantees.service'
+import { recordAuditEvent, AuditAction, AuditOutcome } from '@/lib/services/audit.service'
 
 /**
  * Creates a new savings plan in PENDING status.
@@ -125,6 +126,23 @@ export const createSavingsPlanAction = async (
         productId: data.productId || null,
       },
     })
+
+    await recordAuditEvent({
+      actorId: actor.id,
+      actorRole: actor.role,
+      affectedUserId: actor.id,
+      action: AuditAction.SAVINGS_PLAN_CREATED,
+      entityType: 'Savings',
+      entityId: newSavings.id,
+      outcome: AuditOutcome.SUCCESS,
+      metadata: {
+        savingsId: newSavings.id,
+        targetAmount: Number(newSavings.targetAmount),
+        durationMonths,
+        ratePercent: Number(newSavings.ratePercent),
+        accountNumber: data.accountNumber,
+      },
+    }).catch(() => {})
 
     try {
       revalidatePath(`/dashboard/${actor.id}/savings`)

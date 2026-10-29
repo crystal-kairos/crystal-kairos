@@ -35,6 +35,7 @@ import {
   postEajoContribution,
   postWalletWithdrawal,
 } from '@/lib/services/ledger.service'
+import { recordAuditEvent, AuditAction, AuditOutcome } from '@/lib/services/audit.service'
 
 interface CreateTransactionInput {
   userId: string
@@ -201,6 +202,23 @@ export const createTransaction = async (input: CreateTransactionInput) => {
         recordedBy: actor.id,
       },
     })
+
+    await recordAuditEvent({
+      actorId: actor.id,
+      actorRole: actor.role,
+      affectedUserId: targetUserId,
+      action: AuditAction.RECEIPT_SUBMITTED,
+      entityType: 'Transaction',
+      entityId: transaction.id,
+      outcome: AuditOutcome.SUCCESS,
+      metadata: {
+        transactionId: transaction.id,
+        category: transaction.category,
+        type: transaction.type,
+        amount: Number(transaction.amount),
+        notes: transaction.notes,
+      },
+    }).catch(() => {})
 
     try {
       revalidatePath('/admin/transactions')
@@ -523,6 +541,33 @@ export const transitionTransaction = async (
           })
         }
       }
+
+      await recordAuditEvent(
+        {
+          actorId: actor.id,
+          actorRole: actor.role,
+          affectedUserId: transaction.userId,
+          action:
+            newStatus === TransactionStatus.CONFIRMED
+              ? AuditAction.RECEIPT_CONFIRMED
+              : newStatus === TransactionStatus.REJECTED
+                ? AuditAction.RECEIPT_REJECTED
+                : AuditAction.FINANCIAL_POSTING,
+          entityType: 'Transaction',
+          entityId: transaction.id,
+          outcome: newStatus === TransactionStatus.FAILED ? AuditOutcome.FAILURE : AuditOutcome.SUCCESS,
+          metadata: {
+            transactionId: transaction.id,
+            category: transaction.category,
+            amount: Number(transaction.amount),
+            action,
+            newStatus,
+            rejectionReason: rejectionReason || null,
+            referenceNumber: referenceNumber || null,
+          },
+        },
+        tx
+      )
 
       return {
         ...transaction,

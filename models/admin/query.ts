@@ -18,6 +18,7 @@ import {
   requirePermission,
   requireStaffSession,
 } from '@/lib/authz/guards'
+import { queryAuditEvents, AuditQueryParams } from '@/lib/services/audit.service'
 
 /**
  * Fetches comprehensive aggregate statistics and activity feeds for the Admin Dashboard
@@ -787,6 +788,26 @@ export const getJournalEntries = async (filter?: {
     return {
       success: false,
       error: error instanceof Error ? error.message : 'Failed to fetch journal entries',
+    }
+  }
+}
+
+/**
+ * Retrieves paginated audit events with rich filtering for admins/owners (PR P2-06).
+ */
+export const getAdminAuditEventsQuery = async (params: AuditQueryParams = {}) => {
+  try {
+    await requireAnyPermission([AdminPermission.AUDIT_READ])
+
+    const result = await queryAuditEvents(params)
+    return {
+      success: true,
+      data: result,
+    }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to fetch audit events',
     }
   }
 }

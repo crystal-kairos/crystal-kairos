@@ -281,6 +281,7 @@ export const ADMIN_NAV_SECTION_PERMISSIONS: Record<
     AdminPermission.NOTIFICATIONS_MANAGE,
     AdminPermission.POLICY_NOTICES_MANAGE,
   ],
+  activity: [AdminPermission.AUDIT_READ],
 }
 
 export function hasPermissionInSet(
@@ -378,6 +379,9 @@ export function resolveRequiredPermissionsForAdminPath(
       AdminPermission.EAJO_PAYMENTS_REVIEW,
       AdminPermission.EAJO_PAYOUTS_MANAGE,
     ]
+  }
+  if (pathname.startsWith('/admin/activity')) {
+    return [AdminPermission.AUDIT_READ]
   }
   if (pathname.startsWith('/admin/settings')) {
     return ADMIN_NAV_SECTION_PERMISSIONS.settings

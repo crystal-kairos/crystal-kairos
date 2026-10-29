@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/prisma'
+import { recordAuditEvent, AuditAction, AuditOutcome } from '@/lib/services/audit.service'
 
 export interface SocietySettingsMap {
   finalNoticeDays: number
@@ -65,6 +66,10 @@ export async function setSocietySetting<K extends keyof SocietySettingsMap>(
   value: SocietySettingsMap[K],
   updatedById?: string
 ): Promise<void> {
+  const existing = await prisma.societySetting.findUnique({
+    where: { key: key as string },
+  })
+
   await prisma.societySetting.upsert({
     where: { key: key as string },
     create: {
@@ -77,4 +82,15 @@ export async function setSocietySetting<K extends keyof SocietySettingsMap>(
       updatedBy: updatedById,
     },
   })
+
+  await recordAuditEvent({
+    actorId: updatedById ?? null,
+    action: AuditAction.SETTING_CHANGED,
+    entityType: 'SocietySetting',
+    entityId: key as string,
+    outcome: AuditOutcome.SUCCESS,
+    beforeState: existing ? { key, value: existing.value } : null,
+    afterState: { key, value },
+    metadata: { key, updatedById },
+  }).catch(() => {})
 }

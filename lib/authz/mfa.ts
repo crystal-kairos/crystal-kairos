@@ -6,6 +6,7 @@ import { Prisma } from '@/generated/prisma/client'
 import { decryptMfaSecret, encryptMfaSecret, hashSha256 } from '@/lib/authz/crypto'
 import { getOptionalEnv } from '@/lib/env'
 import { AppError } from '@/lib/errors/app-error'
+import { recordAuditEvent, AuditAction, AuditOutcome } from '@/lib/services/audit.service'
 
 export interface BackupCodeItem {
   hash: string
@@ -187,6 +188,19 @@ export async function enrollMfa(params: {
     },
   })
 
+  await recordAuditEvent(
+    {
+      actorId: params.userId,
+      affectedUserId: params.userId,
+      action: AuditAction.AUTH_MFA_ENROLLED,
+      entityType: 'User',
+      entityId: params.userId,
+      outcome: AuditOutcome.SUCCESS,
+      metadata: { mfaEnabled: true, backupCodesCount: 10 },
+    },
+    db as any,
+  ).catch(() => {})
+
   return { plaintextBackupCodes: plaintextCodes }
 }
 
@@ -208,4 +222,17 @@ export async function resetUserMfa(
       sessionVersion: { increment: 1 },
     },
   })
+
+  await recordAuditEvent(
+    {
+      actorId: _resetByUserId ?? userId,
+      affectedUserId: userId,
+      action: AuditAction.AUTH_MFA_RESET,
+      entityType: 'User',
+      entityId: userId,
+      outcome: AuditOutcome.SUCCESS,
+      metadata: { mfaEnabled: false, resetByUserId: _resetByUserId ?? userId },
+    },
+    db as any,
+  ).catch(() => {})
 }

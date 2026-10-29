@@ -62,6 +62,14 @@ describe('PR P2-05 Integration Tests: Rates, Penalties, Savings Plan Terms & E-A
     await prisma.loanTermRate.deleteMany()
     await prisma.bankAccount.deleteMany({ where: { user: { email: { contains: '-rates-' } } } })
     await prisma.membership.deleteMany({ where: { user: { email: { contains: '-rates-' } } } })
+    await prisma.auditEvent.deleteMany({
+      where: {
+        OR: [
+          { actor: { email: { contains: '-rates-' } } },
+          { affectedUser: { email: { contains: '-rates-' } } },
+        ],
+      },
+    })
     await prisma.adminPermissionGrant.deleteMany({
       where: {
         OR: [
