@@ -21,7 +21,10 @@ import {
 import { requireMemberSession } from '@/lib/authz/guards'
 import { bindStoredFileToRecord } from '@/lib/storage/cloudinary'
 import { toActionErrorResult } from '@/lib/errors/to-action-result'
+import { AppError } from '@/lib/errors/app-error'
 import { validateAmount } from '@/lib/validation/money'
+import { lockMembers } from '@/lib/db/concurrency'
+import { assertSavingsWithdrawalAllowed } from '@/lib/services/guarantees.service'
 
 /**
  * Creates a new savings plan in PENDING status.
@@ -207,61 +210,80 @@ export const requestSavingsWithdrawalAction = async (
   try {
     const actor = await requireMemberSession(userId)
 
-    const savings = await prisma.savings.findFirst({
-      where: { id: savingsId, userId: actor.id },
-    })
+    const result = await prisma.$transaction(async (tx) => {
+      // 1. Transaction advisory lock on member (§2.1, §2.7)
+      await lockMembers(tx, [actor.id])
 
-    if (!savings) {
-      return { success: false, error: 'Savings plan not found' }
-    }
+      const savings = await tx.savings.findFirst({
+        where: { id: savingsId, userId: actor.id },
+      })
 
-    if (savings.status !== SavingsStatus.ACTIVE) {
-      return {
-        success: false,
-        error: 'Only active savings plans can be withdrawn',
+      if (!savings) {
+        throw new AppError('NOT_FOUND', 'Savings plan not found', {
+          statusCode: 404,
+        })
       }
-    }
 
-    const now = new Date()
-    const isEarly = savings.maturityDate ? now < savings.maturityDate : true
+      if (savings.status !== SavingsStatus.ACTIVE) {
+        throw new AppError(
+          'INVALID_STATE',
+          'Only active savings plans can be withdrawn',
+          { statusCode: 422 },
+        )
+      }
 
-    // Principal balance
-    const currentBalance = Number(savings.currentBalance)
-    const accruedInterest = Number(savings.accruedInterest)
+      const now = new Date()
+      const isEarly = savings.maturityDate ? now < savings.maturityDate : true
 
-    // If early withdrawal, interest is 100% forfeited
-    const withdrawAmount = isEarly
-      ? currentBalance
-      : currentBalance + accruedInterest
+      // Principal balance
+      const currentBalance = Number(savings.currentBalance)
+      const accruedInterest = Number(savings.accruedInterest)
 
-    const updatedSavings = await prisma.savings.update({
-      where: { id: savingsId },
-      data: {
-        status: isEarly
-          ? SavingsStatus.EARLY_WITHDRAWAL
-          : SavingsStatus.WITHDRAWN,
-        earlyWithdrawal: isEarly,
-        accruedInterest: isEarly ? 0 : savings.accruedInterest, // Forfeit interest if early
-      },
-    })
+      // If early withdrawal, interest is 100% forfeited
+      const withdrawAmount = isEarly
+        ? currentBalance
+        : currentBalance + accruedInterest
 
-    // Create a pending withdrawal transaction (to enter the admin disbursement queue)
-    const newTransaction = await prisma.transaction.create({
-      data: {
-        userId: actor.id,
-        amount: new Prisma.Decimal(withdrawAmount.toString()),
-        category: TransactionCategory.SAVINGS_WITHDRAWAL,
-        type: TransactionType.WITHDRAWAL,
-        status: TransactionStatus.PENDING,
-        savingsId: savingsId,
-        notes:
-          notes ||
-          (isEarly
-            ? 'Early withdrawal request - interest forfeited'
-            : 'Matured savings withdrawal request'),
-        recordedBy: actor.id,
-        bankAccountId: null, // Admin will disburse to the saved details on the Savings record
-      },
+      // 2. Enforce own-savings lock (FULL mode) and guarantee encumbrances (§2.1, D-02)
+      await assertSavingsWithdrawalAllowed(tx, {
+        memberId: actor.id,
+        withdrawalAmount: currentBalance,
+      })
+
+      const updatedSavings = await tx.savings.update({
+        where: { id: savingsId },
+        data: {
+          status: isEarly
+            ? SavingsStatus.EARLY_WITHDRAWAL
+            : SavingsStatus.WITHDRAWN,
+          earlyWithdrawal: isEarly,
+          accruedInterest: isEarly ? 0 : savings.accruedInterest, // Forfeit interest if early
+        },
+      })
+
+      // Create a pending withdrawal transaction (to enter the admin disbursement queue)
+      const newTransaction = await tx.transaction.create({
+        data: {
+          userId: actor.id,
+          amount: new Prisma.Decimal(withdrawAmount.toString()),
+          category: TransactionCategory.SAVINGS_WITHDRAWAL,
+          type: TransactionType.WITHDRAWAL,
+          status: TransactionStatus.PENDING,
+          savingsId: savingsId,
+          notes:
+            notes ||
+            (isEarly
+              ? 'Early withdrawal request - interest forfeited'
+              : 'Matured savings withdrawal request'),
+          recordedBy: actor.id,
+          bankAccountId: null, // Admin will disburse to the saved details on the Savings record
+        },
+      })
+
+      return {
+        savings: serializeSavings(updatedSavings),
+        transaction: serializeTransaction(newTransaction),
+      }
     })
 
     try {
@@ -273,10 +295,7 @@ export const requestSavingsWithdrawalAction = async (
 
     return {
       success: true,
-      data: {
-        savings: serializeSavings(updatedSavings),
-        transaction: serializeTransaction(newTransaction),
-      },
+      data: result,
     }
   } catch (error) {
     const err = toActionErrorResult(error, {

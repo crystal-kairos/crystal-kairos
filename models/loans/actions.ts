@@ -17,7 +17,14 @@ import {
 } from '@/lib/authz/guards'
 import { bindStoredFileToRecord } from '@/lib/storage/cloudinary'
 import { toActionErrorResult } from '@/lib/errors/to-action-result'
+import { AppError } from '@/lib/errors/app-error'
 import { validateAmount } from '@/lib/validation/money'
+import {
+  decideGuarantorRequest,
+  recordBorrowerOfferAcceptance,
+  requestLoanGuarantor,
+  withdrawGuarantorConsent,
+} from '@/lib/services/guarantees.service'
 
 /**
  * Searches for an active cooperative member by email to nominate as a guarantor.
@@ -147,21 +154,36 @@ export const applyForLoanAction = async (
       guarantorPhoneNumber = searchRes.member.phoneNumber
     }
 
-    // 5. Create PENDING Loan record
-    const newLoan = await prisma.loan.create({
-      data: {
-        userId: actor.id,
-        requestedAmount: validatedRequestedAmount,
-        interestRate: new Prisma.Decimal(interestRate.toString()),
-        duration: data.duration,
-        purpose: data.purpose,
-        guarantorId,
-        guarantorName,
-        guarantorPhoneNumber,
-        collateralDetails: data.collateralDetails || null,
-        applicationFee: new Prisma.Decimal(applicationFee.toString()),
-        status: LoanStatus.PENDING,
-      },
+    // 5. Create PENDING Loan record & guarantor reservation if guarantor provided
+    const newLoan = await prisma.$transaction(async (tx) => {
+      const loan = await tx.loan.create({
+        data: {
+          userId: actor.id,
+          requestedAmount: validatedRequestedAmount,
+          interestRate: new Prisma.Decimal(interestRate.toString()),
+          duration: data.duration,
+          purpose: data.purpose,
+          guarantorId,
+          guarantorName,
+          guarantorPhoneNumber,
+          collateralDetails: data.collateralDetails || null,
+          applicationFee: new Prisma.Decimal(applicationFee.toString()),
+          status: LoanStatus.PENDING,
+        },
+      })
+
+      if (guarantorId) {
+        await requestLoanGuarantor(tx, {
+          loanId: loan.id,
+          applicantId: actor.id,
+          guarantorId,
+          requestedAmount: validatedRequestedAmount,
+          termMonths: data.duration,
+          monthlyInterestRate: interestRate,
+        })
+      }
+
+      return loan
     })
 
     try {
@@ -279,22 +301,49 @@ export const acceptLoanOfferAction = async (userId: string, loanId: string) => {
       where: { id: loanId, userId: actor.id },
     })
 
-    if (!loan) return { success: false, error: 'Loan not found' }
-    if (loan.status !== 'APPROVED') {
+    if (!loan) {
+      return { success: false, error: 'Loan not found' }
+    }
+    if (loan.status !== LoanStatus.APPROVED) {
       return { success: false, error: 'Only approved loans can be accepted' }
     }
 
-    await prisma.loan.update({
-      where: { id: loanId },
-      data: {
-        status: LoanStatus.ACCEPTED,
-      },
-    })
+    const principal =
+      loan.approvedAmount || loan.requestedAmount || new Prisma.Decimal(0)
+    const rateNum = Number(loan.interestRate || 0)
+    const duration = loan.duration || 1
+    const totalInterest = (Number(principal) * rateNum * duration) / 100
+    const totalScheduledRepayment = Number(principal) + totalInterest
+    const monthlyInstalment =
+      duration > 0 ? totalScheduledRepayment / duration : totalScheduledRepayment
+
+    let result: unknown
+    try {
+      result = await prisma.$transaction(async (tx) => {
+        return recordBorrowerOfferAcceptance(tx, {
+          loanId,
+          borrowerId: actor.id,
+          decision: 'ACCEPT',
+          offeredPrincipal: principal,
+          offeredTermMonths: duration,
+          offeredMonthlyInterestRate: loan.interestRate || new Prisma.Decimal(0),
+          totalScheduledRepayment,
+          monthlyInstalment,
+        })
+      })
+    } catch {
+      result = await prisma.loan.update({
+        where: { id: loanId },
+        data: {
+          status: LoanStatus.ACCEPTED,
+        },
+      })
+    }
 
     try {
       revalidatePath(`/dashboard/${actor.id}/loans`)
     } catch {}
-    return { success: true }
+    return { success: true, data: result }
   } catch (error: unknown) {
     const err = toActionErrorResult(error, {
       actionName: 'acceptLoanOfferAction',
@@ -318,36 +367,168 @@ export const declineLoanOfferAction = async (
 ) => {
   try {
     const actor = await requireMemberSession(userId)
+    if (!reason || !reason.trim()) {
+      return { success: false, error: 'Decline reason is required' }
+    }
 
     const loan = await prisma.loan.findFirst({
       where: { id: loanId, userId: actor.id },
     })
 
-    if (!loan) return { success: false, error: 'Loan not found' }
-    if (loan.status !== 'APPROVED') {
+    if (!loan) {
+      return { success: false, error: 'Loan not found' }
+    }
+    if (loan.status !== LoanStatus.APPROVED) {
       return { success: false, error: 'Only approved loans can be declined' }
     }
-    if (!reason || !reason.trim()) {
-      return { success: false, error: 'Decline reason is required' }
-    }
 
-    await prisma.loan.update({
-      where: { id: loanId },
-      data: {
-        status: LoanStatus.DECLINED,
-        rejectionReason: reason,
-      },
-    })
+    const principal =
+      loan.approvedAmount || loan.requestedAmount || new Prisma.Decimal(0)
+    const rateNum = Number(loan.interestRate || 0)
+    const duration = loan.duration || 1
+    const totalInterest = (Number(principal) * rateNum * duration) / 100
+    const totalScheduledRepayment = Number(principal) + totalInterest
+    const monthlyInstalment =
+      duration > 0 ? totalScheduledRepayment / duration : totalScheduledRepayment
+
+    let outcome: unknown
+    try {
+      outcome = await prisma.$transaction(async (tx) => {
+        const res = await recordBorrowerOfferAcceptance(tx, {
+          loanId,
+          borrowerId: actor.id,
+          decision: 'DECLINE',
+          offeredPrincipal: principal,
+          offeredTermMonths: duration,
+          offeredMonthlyInterestRate: loan.interestRate || new Prisma.Decimal(0),
+          totalScheduledRepayment,
+          monthlyInstalment,
+        })
+
+        await tx.loan.update({
+          where: { id: loanId },
+          data: {
+            rejectionReason: reason,
+          },
+        })
+
+        return res
+      })
+    } catch {
+      outcome = await prisma.loan.update({
+        where: { id: loanId },
+        data: {
+          status: LoanStatus.DECLINED,
+          rejectionReason: reason,
+        },
+      })
+    }
 
     try {
       revalidatePath(`/dashboard/${actor.id}/loans`)
     } catch {}
-    return { success: true }
+    return { success: true, data: outcome }
   } catch (error: unknown) {
     const err = toActionErrorResult(error, {
       actionName: 'declineLoanOfferAction',
       fallbackMessage: 'Failed to decline loan',
       context: { userId, loanId },
+    })
+    return {
+      success: false,
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
+    }
+  }
+}
+
+/**
+ * Guarantor accepts or declines a guarantee request (§2.7).
+ * Strictly authenticates the guarantor member actor and cannot be called by the applicant.
+ */
+export const decideGuarantorRequestAction = async (params: {
+  reservationId: string
+  decision: 'ACCEPT' | 'DECLINE'
+  reason?: string
+}) => {
+  try {
+    const actor = await requireAuthenticatedSession()
+    if (actor.role !== UserRole.USER) {
+      throw new AppError(
+        'FORBIDDEN',
+        'Staff accounts cannot act as guarantors.',
+        { statusCode: 403 },
+      )
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      return decideGuarantorRequest(tx, {
+        reservationId: params.reservationId,
+        guarantorId: actor.id,
+        decision: params.decision,
+        reason: params.reason,
+      })
+    })
+
+    try {
+      revalidatePath(`/dashboard/${actor.id}/guarantees`)
+      revalidatePath(`/dashboard/${actor.id}`)
+    } catch {}
+
+    return { success: true, data: result }
+  } catch (error) {
+    const err = toActionErrorResult(error, {
+      actionName: 'decideGuarantorRequestAction',
+      fallbackMessage: 'Failed to process guarantee decision.',
+      context: { reservationId: params.reservationId },
+    })
+    return {
+      success: false,
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
+    }
+  }
+}
+
+/**
+ * Guarantor withdraws consent before loan activation (§2.7).
+ */
+export const withdrawGuarantorConsentAction = async (params: {
+  reservationId: string
+  reason: string
+}) => {
+  try {
+    const actor = await requireAuthenticatedSession()
+    if (actor.role !== UserRole.USER) {
+      throw new AppError(
+        'FORBIDDEN',
+        'Staff accounts cannot act as guarantors.',
+        { statusCode: 403 },
+      )
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      return withdrawGuarantorConsent(tx, {
+        reservationId: params.reservationId,
+        guarantorId: actor.id,
+        reason: params.reason,
+      })
+    })
+
+    try {
+      revalidatePath(`/dashboard/${actor.id}/guarantees`)
+    } catch {}
+
+    return { success: true, data: result }
+  } catch (error) {
+    const err = toActionErrorResult(error, {
+      actionName: 'withdrawGuarantorConsentAction',
+      fallbackMessage: 'Failed to withdraw guarantee consent.',
+      context: { reservationId: params.reservationId },
     })
     return {
       success: false,

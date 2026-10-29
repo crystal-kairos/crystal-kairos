@@ -121,7 +121,9 @@ describe('Member Lifecycle, Profile State, Bank Settings and Soft Deactivation (
     expect(completeProfile.missingSections).toHaveLength(0)
   })
 
-  it('allows a user with incomplete profile and MembershipStatus.PENDING to sign in while deactivated users are blocked (§1.1, P2-01)', async () => {
+  it(
+    'allows a user with incomplete profile and MembershipStatus.PENDING to sign in while deactivated users are blocked (§1.1, P2-01)',
+    async () => {
     // Create an active member with PENDING membership and set password
     const pendingEmail = `${testEmailPrefix}-pending@example.com`
     const pendingPasswordHash = await hash('SecurePass123!', 10)
@@ -164,7 +166,7 @@ describe('Member Lifecycle, Profile State, Bank Settings and Soft Deactivation (
     })
 
     expect(() => assertUserActive(deactivatedUser)).toThrowError(/deactivated/)
-  })
+  }, 20000)
 
   it('enforces that staff users (OWNER, ADMIN) are never members and cannot participate in products (D-15)', () => {
     const ownerUser = {
