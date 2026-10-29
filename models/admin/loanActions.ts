@@ -4,6 +4,8 @@ import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
 import {
   AdminPermission,
+  BorrowerOfferDecision,
+  GuaranteeState,
   LoanStatus,
   TransactionCategory,
   TransactionStatus,
@@ -16,6 +18,17 @@ import {
   requirePermission,
 } from '@/lib/authz/guards'
 import { toActionErrorResult } from '@/lib/errors/to-action-result'
+import { AppError } from '@/lib/errors/app-error'
+import { lockMembers } from '@/lib/db/concurrency'
+import {
+  calculateApplicantTotalLoanExposure,
+  calculateRequiredGuaranteeSupport,
+  getBorrowerStandaloneLimit,
+} from '@/lib/domain/capacity'
+import {
+  getMemberEligibleSavingsPrincipal,
+  getMemberUnencumberedSavings,
+} from '@/lib/services/guarantees.service'
 import { validateAmount } from '@/lib/validation/money'
 import { generateAndPersistLoanSchedule } from '@/lib/services/schedules.service'
 
@@ -30,21 +43,134 @@ export const approveLoanAction = async (
     const actor = await requirePermission(AdminPermission.LOANS_REVIEW)
     const validatedApprovedAmount = validateAmount(approvedAmount, 'approvedAmount')
 
-    const loan = await prisma.loan.findUnique({ where: { id: loanId } })
-    if (!loan) return { success: false, error: 'Loan not found.' }
-    if (loan.status !== LoanStatus.PENDING) {
-      return { success: false, error: 'Only pending loans can be approved.' }
-    }
+    const updated = await prisma.$transaction(async (tx) => {
+      const loan = await tx.loan.findUnique({
+        where: { id: loanId },
+        include: {
+          guaranteeReservations: {
+            where: {
+              state: {
+                in: [
+                  GuaranteeState.CONSENTED,
+                  GuaranteeState.PENDING,
+                  GuaranteeState.AWAITING_RECONSENT,
+                ],
+              },
+            },
+          },
+        },
+      })
+      if (!loan) {
+        throw new AppError('NOT_FOUND', 'Loan not found.', { statusCode: 404 })
+      }
+      if (loan.status !== LoanStatus.PENDING) {
+        throw new AppError(
+          'INVALID_STATE',
+          'Only pending loans can be approved.',
+          { statusCode: 422 },
+        )
+      }
 
-    const updated = await prisma.loan.update({
-      where: { id: loanId },
-      data: {
-        status: LoanStatus.APPROVED,
-        approvedAmount: validatedApprovedAmount,
-        approvedBy: actor.id,
-        approvedAt: new Date(),
-      },
+      // Collect member IDs to lock (borrower and any associated guarantor)
+      const reservation = loan.guaranteeReservations[0] || null
+      const memberIdsToLock = reservation
+        ? [loan.userId, reservation.guarantorId]
+        : [loan.userId]
+      await lockMembers(tx, memberIdsToLock)
+
+      // Calculate cumulative exposure & guarantee requirements (§2.1)
+      const borrowerSavings = await getMemberEligibleSavingsPrincipal(
+        loan.userId,
+        tx,
+      )
+      const existingLoans = await tx.loan.findMany({
+        where: {
+          userId: loan.userId,
+          id: { not: loanId },
+          status: {
+            in: [
+              LoanStatus.APPROVED,
+              LoanStatus.ACCEPTED,
+              LoanStatus.DISBURSED,
+              LoanStatus.ACTIVE,
+              LoanStatus.OVERDUE,
+              LoanStatus.DEFAULTED,
+            ],
+          },
+        },
+        select: { approvedAmount: true, requestedAmount: true },
+      })
+
+      const standaloneLimit = getBorrowerStandaloneLimit(borrowerSavings)
+      const existingExposure = calculateApplicantTotalLoanExposure(existingLoans)
+      const totalExposure = existingExposure.plus(validatedApprovedAmount)
+      const requiredGuaranteeSupport = calculateRequiredGuaranteeSupport(
+        totalExposure,
+        standaloneLimit,
+      )
+
+      if (requiredGuaranteeSupport.gt(0)) {
+        if (!reservation) {
+          throw new AppError(
+            'GUARANTOR_REQUIRED',
+            `Loan requires guarantee support of ₦${requiredGuaranteeSupport.toFixed(2)}, but no guarantor is attached to this loan.`,
+            { statusCode: 422 },
+          )
+        }
+
+        // Check if approved terms differ from consented terms (§2.7)
+        const termsDiffer =
+          !reservation.consentedAmount.equals(validatedApprovedAmount) ||
+          reservation.state === GuaranteeState.AWAITING_RECONSENT
+
+        if (termsDiffer && reservation.state === GuaranteeState.CONSENTED) {
+          // Move to AWAITING_RECONSENT and release old reservation
+          await tx.guaranteeReservation.update({
+            where: { id: reservation.id },
+            data: {
+              state: GuaranteeState.AWAITING_RECONSENT,
+              reservedAmount: new Prisma.Decimal(0),
+              requestedAmount: validatedApprovedAmount,
+              termsVersion: reservation.termsVersion + 1,
+            },
+          })
+
+          return {
+            needsReconsent: true,
+            code: 'AWAITING_RECONSENT',
+            error: `Approved amount (₦${validatedApprovedAmount.toFixed(2)}) differs from consented terms (₦${reservation.consentedAmount.toFixed(2)}). Guarantor must re-consent before loan can be approved (§2.7).`,
+          }
+        }
+
+        if (reservation.state !== GuaranteeState.CONSENTED) {
+          throw new AppError(
+            'GUARANTOR_CONSENT_REQUIRED',
+            `Loan cannot be approved: guarantor has not consented (state: ${reservation.state}).`,
+            { statusCode: 422 },
+          )
+        }
+      }
+
+      const res = await tx.loan.update({
+        where: { id: loanId },
+        data: {
+          status: LoanStatus.APPROVED,
+          approvedAmount: validatedApprovedAmount,
+          approvedBy: actor.id,
+          approvedAt: new Date(),
+        },
+      })
+
+      return res
     })
+
+    if ('needsReconsent' in updated && updated.needsReconsent) {
+      return {
+        success: false,
+        error: updated.error,
+        code: updated.code,
+      }
+    }
 
     try {
       revalidatePath('/admin/loans')
@@ -153,6 +279,21 @@ export const disburseLoanAction = async (
 
     // Run in a transaction: Create disbursement record + update loan
     const result = await prisma.$transaction(async (tx) => {
+      // Lock borrower during disbursement (§2.1, §2.7)
+      await lockMembers(tx, [loan.userId])
+
+      // Verify borrower explicit offer acceptance (§2.7, §2.9)
+      const acceptance = await tx.borrowerOfferAcceptance.findUnique({
+        where: { loanId: loan.id },
+      })
+      if (!acceptance || acceptance.decision !== BorrowerOfferDecision.ACCEPTED) {
+        throw new AppError(
+          'OFFER_NOT_ACCEPTED',
+          'Loan cannot be disbursed: borrower has not explicitly accepted the final loan offer (§2.7).',
+          { statusCode: 422 },
+        )
+      }
+
       // Create the disbursement transaction
       await tx.transaction.create({
         data: {

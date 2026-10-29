@@ -184,6 +184,27 @@ enum PaymentPeriodStatus {
   WAIVED
 }
 
+enum GuaranteeState {
+  PENDING
+  CONSENTED
+  DECLINED
+  WITHDRAWN_BEFORE_ACTIVATION
+  AWAITING_RECONSENT
+  REPLACED
+  RELEASED
+}
+
+enum GuaranteeType {
+  LOAN
+  EAJO
+}
+
+enum BorrowerOfferDecision {
+  PENDING
+  ACCEPTED
+  DECLINED
+}
+
 // enum LoanApplicantType {
 //   MEMBER_WITH_SAVINGS
 //   MEMBER_WITHOUT_SAVINGS
@@ -302,6 +323,9 @@ model User {
   transactionsRecorded    Transaction[]          @relation("TransactionRecorder")
   transactionsProcessed   Transaction[]          @relation("TransactionProcessor")
   createdSavingsProducts  SavingsProduct[]       @relation("SavingsProductCreator")
+  guaranteesProvided      GuaranteeReservation[]    @relation("GuarantorReservations")
+  guaranteesReceived      GuaranteeReservation[]    @relation("ApplicantReservations")
+  borrowerOfferAcceptances BorrowerOfferAcceptance[]
 
   @@map("users")
 }
@@ -656,10 +680,11 @@ model EAjoMember {
   createdAt            DateTime         @default(now())
   updatedAt            DateTime         @updatedAt
 
-  group               EAjoGroup                @relation(fields: [groupId], references: [id], onDelete: Restrict)
-  user                User                     @relation(fields: [userId], references: [id], onDelete: Restrict)
-  transactions        Transaction[]
-  contributionPeriods EAjoContributionPeriod[]
+  group                 EAjoGroup                @relation(fields: [groupId], references: [id], onDelete: Restrict)
+  user                  User                     @relation(fields: [userId], references: [id], onDelete: Restrict)
+  transactions          Transaction[]
+  contributionPeriods   EAjoContributionPeriod[]
+  guaranteeReservations GuaranteeReservation[]
 
   @@unique([groupId, payoutPosition]) // One member per slot per group
   @@unique([groupId, userId]) // One application per user per group
@@ -909,10 +934,12 @@ model Loan {
   createdAt            DateTime   @default(now())
   updatedAt            DateTime   @updatedAt
 
-  user         User             @relation(fields: [userId], references: [id], onDelete: Restrict)
-  // guarantor  User?            @relation("LoanGuarantor", fields: [guarantorId], references: [id])
-  transactions Transaction[]
-  instalments  LoanInstalment[]
+  user                  User                     @relation(fields: [userId], references: [id], onDelete: Restrict)
+  // guarantor           User?                    @relation("LoanGuarantor", fields: [guarantorId], references: [id])
+  transactions          Transaction[]
+  instalments           LoanInstalment[]
+  guaranteeReservations GuaranteeReservation[]
+  offerAcceptance       BorrowerOfferAcceptance?
 
   @@index([userId])
   @@index([guarantorId])
@@ -959,6 +986,72 @@ model LoanPenaltyAccrual {
 
   @@unique([loanInstalmentId, penaltyDate])
   @@map("loan_penalty_accruals")
+}
+
+model GuaranteeReservation {
+  id                         String         @id @default(uuid())
+  guaranteeType              GuaranteeType
+  guarantorId                String
+  applicantId                String
+  loanId                     String?
+  eajoMemberId               String?
+  requestedAmount            Decimal        @db.Decimal(15, 2)
+  consentedAmount            Decimal        @default(0) @db.Decimal(15, 2)
+  reservedAmount             Decimal        @default(0) @db.Decimal(15, 2)
+  state                      GuaranteeState @default(PENDING)
+  termMonths                 Int?
+  monthlyInterestRate        Decimal?       @db.Decimal(7, 4)
+  penaltyTerms               String?
+  termsVersion               Int            @default(1)
+  consentedAt                DateTime?
+  decisionReason             String?
+  withdrawnAt                DateTime?
+  replacedAt                 DateTime?
+  replacementGuaranteeId     String?
+  releasedAt                 DateTime?
+  evidenceCloudinaryPublicId String?
+  evidenceDocumentId         String?
+  evidenceSha256             String?
+  createdAt                  DateTime       @default(now())
+  updatedAt                  DateTime       @updatedAt
+
+  guarantor                  User           @relation("GuarantorReservations", fields: [guarantorId], references: [id], onDelete: Restrict)
+  applicant                  User           @relation("ApplicantReservations", fields: [applicantId], references: [id], onDelete: Restrict)
+  loan                       Loan?          @relation(fields: [loanId], references: [id], onDelete: Restrict)
+  eajoMember                 EAjoMember?    @relation(fields: [eajoMemberId], references: [id], onDelete: Restrict)
+
+  @@unique([loanId, guarantorId])
+  @@unique([eajoMemberId, guarantorId])
+  @@index([guarantorId, state])
+  @@index([applicantId, state])
+  @@index([loanId, state])
+  @@index([eajoMemberId, state])
+  @@map("guarantee_reservations")
+}
+
+model BorrowerOfferAcceptance {
+  id                         String                @id @default(uuid())
+  loanId                     String                @unique
+  borrowerId                 String
+  decision                   BorrowerOfferDecision @default(PENDING)
+  offeredPrincipal           Decimal               @db.Decimal(15, 2)
+  offeredTermMonths          Int
+  offeredMonthlyInterestRate Decimal               @db.Decimal(7, 4)
+  totalScheduledRepayment    Decimal               @db.Decimal(15, 2)
+  monthlyInstalment          Decimal               @db.Decimal(15, 2)
+  termsVersion               Int                   @default(1)
+  decidedAt                  DateTime?
+  evidenceCloudinaryPublicId String?
+  evidenceDocumentId         String?
+  evidenceSha256             String?
+  createdAt                  DateTime              @default(now())
+  updatedAt                  DateTime              @updatedAt
+
+  loan                       Loan                  @relation(fields: [loanId], references: [id], onDelete: Restrict)
+  borrower                   User                  @relation(fields: [borrowerId], references: [id], onDelete: Restrict)
+
+  @@index([borrowerId, decision])
+  @@map("borrower_offer_acceptances")
 }
 
 model LoanSettings {
