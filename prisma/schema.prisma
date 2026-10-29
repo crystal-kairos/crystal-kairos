@@ -199,6 +199,25 @@ enum GuaranteeType {
   EAJO
 }
 
+enum PenaltyCapType {
+  PERCENT_OF_PRINCIPAL
+  FIXED_AMOUNT
+}
+
+enum PolicyUpdateStatus {
+  DRAFT
+  SENT
+  DISCARDED
+}
+
+enum EAjoPayoutStatus {
+  NOT_ELIGIBLE
+  ELIGIBLE
+  APPROVED
+  PAID
+  CANCELLED
+}
+
 enum BorrowerOfferDecision {
   PENDING
   ACCEPTED
@@ -323,6 +342,8 @@ model User {
   transactionsRecorded    Transaction[]          @relation("TransactionRecorder")
   transactionsProcessed   Transaction[]          @relation("TransactionProcessor")
   createdSavingsProducts  SavingsProduct[]       @relation("SavingsProductCreator")
+  createdLoanTermRates    LoanTermRate[]         @relation("LoanTermRateCreator")
+  createdEAjoSlotPolicies EAjoSlotPolicy[]       @relation("EAjoSlotPolicyCreator")
   guaranteesProvided      GuaranteeReservation[]    @relation("GuarantorReservations")
   guaranteesReceived      GuaranteeReservation[]    @relation("ApplicantReservations")
   borrowerOfferAcceptances BorrowerOfferAcceptance[]
@@ -633,64 +654,113 @@ model EAjo {
 // ============================================
 
 model EAjoGroup {
-  id                 String        @id @default(uuid())
-  title              String
-  description        String?
-  contributionAmount Decimal       @db.Decimal(15, 2)
-  frequency          EAjoFrequency
-  duration           EAjoDuration
-  totalSlots         Int // Number of positions (4, 6, or 12)
-  filledSlots        Int           @default(0)
-  status             EAjoStatus    @default(PENDING)
-  startDate          DateTime?     @db.Date
-  endDate            DateTime?     @db.Date
-  createdBy          String // Admin User ID
-  createdAt          DateTime      @default(now())
-  updatedAt          DateTime      @updatedAt
+  id                      String           @id @default(uuid())
+  title                   String
+  description             String?
+  contributionAmount      Decimal          @db.Decimal(15, 2)
+  frequency               EAjoFrequency
+  duration                EAjoDuration
+  totalSlots              Int // Number of positions (4, 6, or 12)
+  filledSlots             Int              @default(0)
+  status                  EAjoStatus       @default(PENDING)
+  startDate               DateTime?        @db.Date
+  endDate                 DateTime?        @db.Date
+  createdBy               String // Admin User ID
+  latePenaltyDailyPercent Decimal?         @db.Decimal(7, 4)
+  penaltyCapType          PenaltyCapType?
+  penaltyCapValue         Decimal?         @db.Decimal(15, 4)
+  maxMembersPerSlot       Int?
+  contributionFrequency   String           @default("MONTHLY")
+  durationMonths          Int?
+  createdAt               DateTime         @default(now())
+  updatedAt               DateTime         @updatedAt
 
-  createdByUser User         @relation("EAjoGroupCreator", fields: [createdBy], references: [id])
+  createdByUser User             @relation("EAjoGroupCreator", fields: [createdBy], references: [id])
   members       EAjoMember[]
+  slotPolicies  EAjoSlotPolicy[]
 
   @@index([status])
   @@map("e_ajo_groups")
 }
 
+model EAjoSlotPolicy {
+  id                      String    @id @default(uuid())
+  groupId                 String
+  slotNumber              Int
+  earlySlotPenaltyPercent Decimal   @db.Decimal(7, 4) // % of the amount the cooperative advances for this slot
+  createdById             String
+  createdAt               DateTime  @default(now())
+
+  group                   EAjoGroup @relation(fields: [groupId], references: [id], onDelete: Restrict)
+  createdByUser           User      @relation("EAjoSlotPolicyCreator", fields: [createdById], references: [id], onDelete: Restrict)
+
+  @@unique([groupId, slotNumber])
+  @@map("e_ajo_slot_policies")
+}
+
 model EAjoMember {
-  id                   String           @id @default(uuid())
-  groupId              String
-  userId               String
-  payoutPosition       Int // Requested/assigned slot number (1 to totalSlots)
-  feePercentage        Decimal          @default(0) @db.Decimal(7, 4)
-  feeAmount            Decimal          @default(0) @db.Decimal(15, 2)
-  totalExpectedPayout  Decimal          @default(0) @db.Decimal(15, 2)
-  netPayoutAmount      Decimal          @default(0) @db.Decimal(15, 2)
-  guarantorName        String
-  guarantorPhoneNumber String
-  bankName             String
-  accountNumber        String
-  accountName          String
-  currentBalance       Decimal          @default(0) @db.Decimal(15, 2)
-  totalContributed     Decimal          @default(0) @db.Decimal(15, 2)
-  hasReceivedPayout    Boolean          @default(false)
-  payoutDate           DateTime?        @db.Date
-  status               EAjoMemberStatus @default(PENDING)
-  approvedAt           DateTime?
-  approvedBy           String? // Admin User ID
-  rejectionReason      String?
-  createdAt            DateTime         @default(now())
-  updatedAt            DateTime         @updatedAt
+  id                      String           @id @default(uuid())
+  groupId                 String
+  userId                  String
+  payoutPosition          Int // Requested/assigned slot number (1 to totalSlots)
+  feePercentage           Decimal          @default(0) @db.Decimal(7, 4)
+  feeAmount               Decimal          @default(0) @db.Decimal(15, 2)
+  totalExpectedPayout     Decimal          @default(0) @db.Decimal(15, 2)
+  netPayoutAmount         Decimal          @default(0) @db.Decimal(15, 2)
+  earlySlotPenaltyPercent Decimal?         @db.Decimal(7, 4)
+  latePenaltyDailyPercent Decimal?         @db.Decimal(7, 4)
+  penaltyCapType          PenaltyCapType?
+  penaltyCapValue         Decimal?         @db.Decimal(15, 4)
+  guarantorName           String
+  guarantorPhoneNumber    String
+  bankName                String
+  accountNumber           String
+  accountName             String
+  currentBalance          Decimal          @default(0) @db.Decimal(15, 2)
+  totalContributed        Decimal          @default(0) @db.Decimal(15, 2)
+  hasReceivedPayout       Boolean          @default(false)
+  payoutDate              DateTime?        @db.Date
+  status                  EAjoMemberStatus @default(PENDING)
+  approvedAt              DateTime?
+  approvedBy              String? // Admin User ID
+  rejectionReason         String?
+  createdAt               DateTime         @default(now())
+  updatedAt               DateTime         @updatedAt
 
   group                 EAjoGroup                @relation(fields: [groupId], references: [id], onDelete: Restrict)
   user                  User                     @relation(fields: [userId], references: [id], onDelete: Restrict)
   transactions          Transaction[]
   contributionPeriods   EAjoContributionPeriod[]
   guaranteeReservations GuaranteeReservation[]
+  payout                EAjoPayout?
 
   @@unique([groupId, payoutPosition]) // One member per slot per group
   @@unique([groupId, userId]) // One application per user per group
   @@index([userId])
   @@index([groupId])
   @@map("e_ajo_members")
+}
+
+model EAjoPayout {
+  id                      String           @id @default(uuid())
+  eajoMemberId            String           @unique
+  expectedPayout          Decimal          @db.Decimal(15, 2)
+  advanceAmount           Decimal          @db.Decimal(15, 2)
+  earlySlotPenaltyPercent Decimal          @db.Decimal(7, 4)
+  earlySlotPenalty        Decimal          @db.Decimal(15, 2)
+  netPayout               Decimal          @db.Decimal(15, 2)
+  status                  EAjoPayoutStatus @default(NOT_ELIGIBLE)
+  approvedAt              DateTime?
+  approvedById            String?
+  disbursedAt             DateTime?        @db.Date
+  disbursementReference   String?
+  disbursementEvidenceUrl String?
+  createdAt               DateTime         @default(now())
+  updatedAt               DateTime         @updatedAt
+
+  eajoMember              EAjoMember       @relation(fields: [eajoMemberId], references: [id], onDelete: Restrict)
+
+  @@map("e_ajo_payouts")
 }
 
 model EAjoContributionPeriod {
@@ -817,47 +887,72 @@ model Transaction {
 // ============================================
 
 model SavingsProduct {
-  id                   String      @id @default(uuid())
+  id                   String                   @id @default(uuid())
   type                 SavingsType // (FIXED, REGULAR, STAGGERED)
   title                String
   description          String
-  rates                String // e.g. "12% (6 Months) / 36% (1 Year)"
+  rates                String                   @default("Flexible Rates") // Generated e.g. "12% (6 Months) / 36% (1 Year)"
   badge                String // e.g. "High Yield"
   icon                 String // Name of the lucide icon, e.g. "Lock", "PiggyBank"
-  interestRate1Month   Decimal?    @db.Decimal(7, 4)
-  interestRate3Months  Decimal?    @db.Decimal(7, 4)
-  interestRate6Months  Decimal?    @db.Decimal(7, 4)
-  interestRate12Months Decimal?    @db.Decimal(7, 4)
-  isActive             Boolean     @default(true)
+  interestRate1Month   Decimal?                 @db.Decimal(7, 4)
+  interestRate3Months  Decimal?                 @db.Decimal(7, 4)
+  interestRate6Months  Decimal?                 @db.Decimal(7, 4)
+  interestRate12Months Decimal?                 @db.Decimal(7, 4)
+  isActive             Boolean                  @default(true)
   createdBy            String // Admin userId
-  createdAt            DateTime    @default(now())
-  updatedAt            DateTime    @updatedAt
+  createdAt            DateTime                 @default(now())
+  updatedAt            DateTime                 @updatedAt
 
-  createdByUser User      @relation("SavingsProductCreator", fields: [createdBy], references: [id])
+  createdByUser User                     @relation("SavingsProductCreator", fields: [createdBy], references: [id])
   savings       Savings[]
+  termRates     SavingsProductTermRate[]
 
   @@map("savings_products")
 }
 
+model SavingsProductTermRate {
+  id             String         @id @default(uuid())
+  productId      String
+  durationMonths Int            // 1..12
+  ratePercent    Decimal        @db.Decimal(7, 4) // simple interest percentage for full term
+  version        Int            @default(1)
+  isActive       Boolean        @default(true)
+  effectiveFrom  DateTime       @default(now()) @db.Date
+  effectiveTo    DateTime?      @db.Date
+  createdById    String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  product        SavingsProduct @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@unique([productId, durationMonths, version])
+  @@index([productId, isActive])
+  @@map("savings_product_term_rates")
+}
+
 model Savings {
-  id                     String           @id @default(uuid())
-  userId                 String
-  productId              String?
-  savingsType            SavingsType
-  targetAmount           Decimal?         @db.Decimal(15, 2) // For FIXED, the bulk amount; For REGULAR, amount per period
-  frequency              SavingsFrequency
-  maturity               SavingsMaturity
-  interestRate           Decimal          @db.Decimal(7, 4) // Snapshotted simple interest rate
-  bankName               String
-  accountNumber          String
-  accountName            String
-  currentBalance         Decimal          @default(0) @db.Decimal(15, 2)
-  accruedInterest        Decimal          @default(0) @db.Decimal(15, 2)
-  totalDeposited         Decimal          @default(0) @db.Decimal(15, 2)
-  expectedMaturityAmount Decimal?         @db.Decimal(15, 2)
-  isAnonymousRequest     Boolean          @default(false) // True if submitted via public form with membership ID
-  status                 SavingsStatus    @default(PENDING)
-  approvedAt             DateTime?
+  id                            String           @id @default(uuid())
+  userId                        String
+  productId                     String?
+  savingsType                   SavingsType
+  targetAmount                  Decimal?         @db.Decimal(15, 2) // For FIXED, the bulk amount; For REGULAR, amount per period
+  frequency                     SavingsFrequency
+  maturity                      SavingsMaturity
+  interestRate                  Decimal          @db.Decimal(7, 4) // Snapshotted simple interest rate
+  durationMonths                Int?
+  ratePercent                   Decimal?         @db.Decimal(7, 4)
+  interestCalculationMethod     String           @default("SIMPLE_INTEREST_HELD_FRACTION")
+  savingsProductTermRateVersion Int?
+  bankName                      String
+  accountNumber                 String
+  accountName                   String
+  currentBalance                Decimal          @default(0) @db.Decimal(15, 2)
+  accruedInterest               Decimal          @default(0) @db.Decimal(15, 2)
+  totalDeposited                Decimal          @default(0) @db.Decimal(15, 2)
+  expectedMaturityAmount        Decimal?         @db.Decimal(15, 2)
+  isAnonymousRequest            Boolean          @default(false) // True if submitted via public form with membership ID
+  status                        SavingsStatus    @default(PENDING)
+  approvedAt                    DateTime?
   approvedBy             String?
   rejectionReason        String?
   startDate              DateTime?        @db.Date
@@ -903,13 +998,19 @@ model SavingsPeriod {
 // ============================================
 
 model Loan {
-  id                   String     @id @default(uuid())
-  userId               String
-  // applicantType        LoanApplicantType
-  requestedAmount      Decimal    @db.Decimal(15, 2)
-  approvedAmount       Decimal?   @db.Decimal(15, 2)
-  interestRate         Decimal    @db.Decimal(7, 4) // Flat monthly percentage on original principal
-  duration             Int // In months (max 6)
+  id                         String          @id @default(uuid())
+  userId                     String
+  // applicantType           LoanApplicantType
+  requestedAmount            Decimal         @db.Decimal(15, 2)
+  approvedAmount             Decimal?        @db.Decimal(15, 2)
+  interestRate               Decimal         @db.Decimal(7, 4) // Flat monthly percentage on original principal
+  monthlyInterestRatePercent Decimal?        @db.Decimal(7, 4)
+  interestCalculationMethod  String          @default("FLAT_MONTHLY_ON_ORIGINAL_PRINCIPAL")
+  latePenaltyDailyPercent    Decimal?        @db.Decimal(7, 4)
+  penaltyCapType             PenaltyCapType?
+  penaltyCapValue            Decimal?        @db.Decimal(15, 4)
+  loanTermRateVersion        Int?
+  duration                   Int // In months (1..12)
   purpose              String
   guarantorId          String? // Another User ID (must be Crystal member)
   guarantorName        String?
@@ -1052,6 +1153,41 @@ model BorrowerOfferAcceptance {
 
   @@index([borrowerId, decision])
   @@map("borrower_offer_acceptances")
+}
+
+model LoanTermRate {
+  id                      String         @id @default(uuid())
+  durationMonths          Int            // 1..12
+  monthlyInterestPercent  Decimal        @db.Decimal(7, 4) // flat, per month, on original principal (§2.9)
+  latePenaltyDailyPercent Decimal        @db.Decimal(7, 4) // % of original principal per overdue instalment per day
+  penaltyCapType          PenaltyCapType // required
+  penaltyCapValue         Decimal        @db.Decimal(15, 4) // % or naira depending on type; must be > 0
+  version                 Int
+  effectiveFrom           DateTime       @db.Date
+  effectiveTo             DateTime?      @db.Date
+  createdById             String
+  createdAt               DateTime       @default(now())
+
+  createdByUser           User           @relation("LoanTermRateCreator", fields: [createdById], references: [id], onDelete: Restrict)
+
+  @@unique([durationMonths, version])
+  @@index([durationMonths, effectiveFrom])
+  @@map("loan_term_rates")
+}
+
+model PolicyUpdateDraft {
+  id             String             @id @default(uuid())
+  status         PolicyUpdateStatus @default(DRAFT)
+  title          String
+  bodyHtml       String             // editable copy generated from the changes
+  changes        Json               // [{kind, productOrTerm, old, new, effectiveFrom}]
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+  sentAt         DateTime?
+  sentById       String?
+  recipientCount Int?
+
+  @@map("policy_update_drafts")
 }
 
 model LoanSettings {

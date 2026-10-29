@@ -47,24 +47,43 @@ export const createSavingsPlanAction = async (
     const validatedTargetAmount = validateAmount(data.targetAmount, 'targetAmount')
 
     let interestRate = 0
+    const maturityMonthsMap: Record<SavingsMaturity, number> = {
+      [SavingsMaturity.ONE_MONTH]: 1,
+      [SavingsMaturity.THREE_MONTHS]: 3,
+      [SavingsMaturity.SIX_MONTHS]: 6,
+      [SavingsMaturity.TWELVE_MONTHS]: 12,
+    }
+    const durationMonths = (data as any).durationMonths ?? maturityMonthsMap[data.maturity] ?? 6
+    let termRateVersion = 1
+
     if (data.productId) {
-      const product = await prisma.savingsProduct.findUnique({
-        where: { id: data.productId },
+      const termRate = await prisma.savingsProductTermRate.findFirst({
+        where: { productId: data.productId, durationMonths, isActive: true },
+        orderBy: { version: 'desc' },
       })
-      if (product) {
-        switch (data.maturity) {
-          case SavingsMaturity.ONE_MONTH:
-            interestRate = Number(product.interestRate1Month || 0)
-            break
-          case SavingsMaturity.THREE_MONTHS:
-            interestRate = Number(product.interestRate3Months || 0)
-            break
-          case SavingsMaturity.SIX_MONTHS:
-            interestRate = Number(product.interestRate6Months || 0)
-            break
-          case SavingsMaturity.TWELVE_MONTHS:
-            interestRate = Number(product.interestRate12Months || 0)
-            break
+
+      if (termRate) {
+        interestRate = Number(termRate.ratePercent)
+        termRateVersion = termRate.version
+      } else {
+        const product = await prisma.savingsProduct.findUnique({
+          where: { id: data.productId },
+        })
+        if (product) {
+          switch (data.maturity) {
+            case SavingsMaturity.ONE_MONTH:
+              interestRate = Number(product.interestRate1Month || 0)
+              break
+            case SavingsMaturity.THREE_MONTHS:
+              interestRate = Number(product.interestRate3Months || 0)
+              break
+            case SavingsMaturity.SIX_MONTHS:
+              interestRate = Number(product.interestRate6Months || 0)
+              break
+            case SavingsMaturity.TWELVE_MONTHS:
+              interestRate = Number(product.interestRate12Months || 0)
+              break
+          }
         }
       }
     } else {
@@ -90,6 +109,10 @@ export const createSavingsPlanAction = async (
         targetAmount: validatedTargetAmount,
         frequency: data.frequency,
         maturity: data.maturity,
+        durationMonths,
+        ratePercent: new Prisma.Decimal(interestRate.toString()),
+        interestCalculationMethod: 'SIMPLE_INTEREST_HELD_FRACTION',
+        savingsProductTermRateVersion: termRateVersion,
         interestRate: new Prisma.Decimal(interestRate.toString()),
         bankName: data.bankName,
         accountNumber: data.accountNumber,

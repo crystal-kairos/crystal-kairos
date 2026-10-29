@@ -19,6 +19,14 @@ import {
 } from '@/lib/authz/guards'
 import { toActionErrorResult } from '@/lib/errors/to-action-result'
 import { validateAmount } from '@/lib/validation/money'
+import { setSavingsProductTermRates } from '@/lib/services/rate-policy.service'
+import { formatSavingsProductRatesDisplay } from '@/lib/domain/rate-policy'
+
+export interface SavingsTermRateInput {
+  durationMonths: number
+  ratePercent: number
+  isActive?: boolean
+}
 
 export interface CreateSavingsProductPayload {
   type: 'FIXED' | 'REGULAR' | 'STAGGERED'
@@ -31,6 +39,7 @@ export interface CreateSavingsProductPayload {
   interestRate3Months?: number
   interestRate6Months?: number
   interestRate12Months?: number
+  termRates?: SavingsTermRateInput[]
 }
 
 export const createSavingsProductAction = async (
@@ -66,6 +75,26 @@ export const createSavingsProductAction = async (
         createdBy: actor.id,
       },
     })
+
+    const derivedRates: SavingsTermRateInput[] = data.termRates ? [...data.termRates] : []
+    if (derivedRates.length === 0) {
+      if (data.interestRate1Month !== undefined && data.interestRate1Month > 0) {
+        derivedRates.push({ durationMonths: 1, ratePercent: data.interestRate1Month })
+      }
+      if (data.interestRate3Months !== undefined && data.interestRate3Months > 0) {
+        derivedRates.push({ durationMonths: 3, ratePercent: data.interestRate3Months })
+      }
+      if (data.interestRate6Months !== undefined && data.interestRate6Months > 0) {
+        derivedRates.push({ durationMonths: 6, ratePercent: data.interestRate6Months })
+      }
+      if (data.interestRate12Months !== undefined && data.interestRate12Months > 0) {
+        derivedRates.push({ durationMonths: 12, ratePercent: data.interestRate12Months })
+      }
+    }
+
+    if (derivedRates.length > 0) {
+      await setSavingsProductTermRates(actor.id, newProduct.id, derivedRates)
+    }
 
     try {
       revalidatePath('/admin/savings')
@@ -123,7 +152,7 @@ export const updateSavingsProductAction = async (
   data: Partial<CreateSavingsProductPayload>,
 ) => {
   try {
-    await requirePermission(AdminPermission.SAVINGS_MANAGE)
+    const actor = await requirePermission(AdminPermission.SAVINGS_MANAGE)
 
     const ratesParts: string[] = []
     if (data.interestRate1Month)
@@ -146,10 +175,32 @@ export const updateSavingsProductAction = async (
       data.rates = 'Flexible Rates'
     }
 
+    const { termRates, ...updateFields } = data
+
     const updated = await prisma.savingsProduct.update({
       where: { id },
-      data,
+      data: updateFields,
     })
+
+    const derivedRates: SavingsTermRateInput[] = termRates ? [...termRates] : []
+    if (derivedRates.length === 0) {
+      if (data.interestRate1Month !== undefined) {
+        derivedRates.push({ durationMonths: 1, ratePercent: data.interestRate1Month, isActive: data.interestRate1Month > 0 })
+      }
+      if (data.interestRate3Months !== undefined) {
+        derivedRates.push({ durationMonths: 3, ratePercent: data.interestRate3Months, isActive: data.interestRate3Months > 0 })
+      }
+      if (data.interestRate6Months !== undefined) {
+        derivedRates.push({ durationMonths: 6, ratePercent: data.interestRate6Months, isActive: data.interestRate6Months > 0 })
+      }
+      if (data.interestRate12Months !== undefined) {
+        derivedRates.push({ durationMonths: 12, ratePercent: data.interestRate12Months, isActive: data.interestRate12Months > 0 })
+      }
+    }
+
+    if (derivedRates.length > 0) {
+      await setSavingsProductTermRates(actor.id, id, derivedRates)
+    }
 
     try {
       revalidatePath('/admin/savings')
@@ -306,19 +357,36 @@ export const createSavingsForMemberAction = async (data: {
     }
 
     let interestRate = 0
-    switch (maturity) {
-      case SavingsMaturity.ONE_MONTH:
-        interestRate = Number(product.interestRate1Month || 0)
-        break
-      case SavingsMaturity.THREE_MONTHS:
-        interestRate = Number(product.interestRate3Months || 0)
-        break
-      case SavingsMaturity.SIX_MONTHS:
-        interestRate = Number(product.interestRate6Months || 0)
-        break
-      case SavingsMaturity.TWELVE_MONTHS:
-        interestRate = Number(product.interestRate12Months || 0)
-        break
+    const maturityMonthsMap: Record<SavingsMaturity, number> = {
+      [SavingsMaturity.ONE_MONTH]: 1,
+      [SavingsMaturity.THREE_MONTHS]: 3,
+      [SavingsMaturity.SIX_MONTHS]: 6,
+      [SavingsMaturity.TWELVE_MONTHS]: 12,
+    }
+    const durationMonths = maturityMonthsMap[maturity] ?? 6
+
+    const termRate = await prisma.savingsProductTermRate.findFirst({
+      where: { productId, durationMonths, isActive: true },
+      orderBy: { version: 'desc' },
+    })
+
+    if (termRate) {
+      interestRate = Number(termRate.ratePercent)
+    } else {
+      switch (maturity) {
+        case SavingsMaturity.ONE_MONTH:
+          interestRate = Number(product.interestRate1Month || 0)
+          break
+        case SavingsMaturity.THREE_MONTHS:
+          interestRate = Number(product.interestRate3Months || 0)
+          break
+        case SavingsMaturity.SIX_MONTHS:
+          interestRate = Number(product.interestRate6Months || 0)
+          break
+        case SavingsMaturity.TWELVE_MONTHS:
+          interestRate = Number(product.interestRate12Months || 0)
+          break
+      }
     }
 
     const savingsType = SavingsType.REGULAR
@@ -365,6 +433,10 @@ export const createSavingsForMemberAction = async (data: {
           targetAmount: validatedTargetAmount,
           frequency,
           maturity,
+          durationMonths,
+          ratePercent: new Prisma.Decimal(interestRate),
+          interestCalculationMethod: 'SIMPLE_INTEREST_HELD_FRACTION',
+          savingsProductTermRateVersion: termRate ? termRate.version : 1,
           interestRate: new Prisma.Decimal(interestRate),
           bankName: defaultBank.bankName,
           accountNumber: defaultBank.accountNumber,

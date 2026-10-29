@@ -14,11 +14,12 @@ const AdminLoanSettingsPage = async () => {
   }
 
   const settingsRes = await getLoanSettingsAction()
-  const initialRate = settingsRes.success && settingsRes.data ? settingsRes.data.interestRate : 5.0
+  const initialRates = settingsRes.success && settingsRes.data?.rates ? settingsRes.data.rates : []
+  const openDraft = settingsRes.success && settingsRes.data?.openDraft ? settingsRes.data.openDraft : null
 
   return (
     <div className='p-6 w-full'>
-      <AdminLoanSettingsClient initialRate={initialRate} />
+      <AdminLoanSettingsClient initialRates={initialRates} openDraft={openDraft} />
     </div>
   )
 }

@@ -13,7 +13,10 @@ import {
   NotificationEventType,
   PasswordSetupTokenPurpose,
   UserRole,
+  PenaltyCapType,
+  EAjoPayoutStatus,
 } from '@/generated/prisma/enums'
+import { Prisma } from '@/generated/prisma/client'
 import { sendEmail } from '@/features/notification'
 import { assignMembershipNumberWithRetry } from '@/lib/membership-number'
 import { issuePasswordSetupToken } from '@/lib/authz/tokens'
@@ -24,6 +27,9 @@ import {
 } from '@/lib/authz/guards'
 import { ALL_ADMIN_PERMISSIONS } from '@/lib/authz/permissions'
 import { toActionErrorResult } from '@/lib/errors/to-action-result'
+import { AppError } from '@/lib/errors/app-error'
+import { createEAjoSlotPolicies } from '@/lib/services/rate-policy.service'
+import { calculateEAjoPayout } from '@/lib/domain/eajo-payout'
 
 const validPermissionSet = new Set<string>(ALL_ADMIN_PERMISSIONS)
 
@@ -238,6 +244,11 @@ const durationToSlots: Record<EAjoDuration, number> = {
   [EAjoDuration.TWELVE_MONTHS]: 12,
 }
 
+export interface CreateEAjoSlotPolicyInput {
+  slotNumber: number
+  earlySlotPenaltyPercent: number
+}
+
 /**
  * Admin creates a new eAjo group pool
  */
@@ -248,25 +259,71 @@ export const createEAjoGroupAction = async (formData: {
   frequency: EAjoFrequency
   duration: EAjoDuration
   startDate?: string
+  latePenaltyDailyPercent?: number
+  penaltyCapType?: PenaltyCapType
+  penaltyCapValue?: number
+  maxMembersPerSlot?: number
+  slotPolicies?: CreateEAjoSlotPolicyInput[]
 }) => {
   try {
     const actor = await requirePermission(AdminPermission.EAJO_MANAGE)
 
+    if (formData.frequency !== EAjoFrequency.MONTHLY) {
+      throw new AppError(
+        'VALIDATION_ERROR',
+        'Contribution frequency is fixed to MONTHLY in this build (ASSUMPTION A-09). Other frequencies are not supported.',
+        { statusCode: 422 },
+      )
+    }
+
     const totalSlots = durationToSlots[formData.duration]
 
-    const group = await prisma.eAjoGroup.create({
-      data: {
-        title: formData.title,
-        description: formData.description,
-        contributionAmount: formData.contributionAmount,
-        frequency: formData.frequency,
-        duration: formData.duration,
+    if (!formData.slotPolicies || formData.slotPolicies.length !== totalSlots) {
+      throw new AppError(
+        'VALIDATION_ERROR',
+        `A slot policy is mandatory for EVERY slot 1..${totalSlots} at group creation (received ${formData.slotPolicies?.length ?? 0}) (§2.8, A-09).`,
+        { statusCode: 422 },
+      )
+    }
+
+    const latePenaltyDailyPercent = formData.latePenaltyDailyPercent ?? 0.5
+    const penaltyCapType = formData.penaltyCapType ?? PenaltyCapType.PERCENT_OF_PRINCIPAL
+    const penaltyCapValue = formData.penaltyCapValue ?? 10.0
+
+    if (penaltyCapValue <= 0) {
+      throw new AppError('VALIDATION_ERROR', 'penaltyCapValue must be strictly greater than 0', { statusCode: 422 })
+    }
+
+    const group = await prisma.$transaction(async (tx) => {
+      const createdGroup = await tx.eAjoGroup.create({
+        data: {
+          title: formData.title,
+          description: formData.description,
+          contributionAmount: formData.contributionAmount,
+          frequency: formData.frequency,
+          duration: formData.duration,
+          durationMonths: totalSlots,
+          contributionFrequency: 'MONTHLY',
+          latePenaltyDailyPercent,
+          penaltyCapType,
+          penaltyCapValue,
+          maxMembersPerSlot: formData.maxMembersPerSlot ?? null,
+          totalSlots,
+          filledSlots: 0,
+          status: EAjoStatus.PENDING,
+          startDate: formData.startDate ? new Date(formData.startDate) : null,
+          createdBy: actor.id,
+        },
+      })
+
+      await createEAjoSlotPolicies(tx, {
+        groupId: createdGroup.id,
         totalSlots,
-        filledSlots: 0,
-        status: EAjoStatus.PENDING,
-        startDate: formData.startDate ? new Date(formData.startDate) : null,
-        createdBy: actor.id,
-      },
+        slotPolicies: formData.slotPolicies!,
+        createdById: actor.id,
+      })
+
+      return createdGroup
     })
 
     try {
@@ -358,26 +415,80 @@ export const updateEAjoGroupAction = async (
 }
 
 /**
- * Admin activates an eAjo group — sets status to ACTIVE, promotes approved members to ACTIVE
+ * Admin activates an eAjo group — sets status to ACTIVE, promotes approved members to ACTIVE, snapshots slot policy & late terms, and persists EAjoPayout records (§2.8, A-09).
  */
 export const activateEAjoGroupAction = async (groupId: string) => {
   try {
     await requirePermission(AdminPermission.EAJO_MANAGE)
 
-    const group = await prisma.eAjoGroup.findUnique({ where: { id: groupId } })
-    if (!group) return { success: false, error: 'Group not found.' }
+    const updated = await prisma.$transaction(async (tx) => {
+      const group = await tx.eAjoGroup.findUnique({
+        where: { id: groupId },
+        include: {
+          slotPolicies: true,
+          members: {
+            where: { status: EAjoMemberStatus.APPROVED },
+          },
+        },
+      })
+      if (!group) throw new AppError('NOT_FOUND', 'Group not found.', { statusCode: 404 })
 
-    const updated = await prisma.eAjoGroup.update({
-      where: { id: groupId },
-      data: {
-        status: EAjoStatus.ACTIVE,
-        startDate: group.startDate ?? new Date(),
-      },
-    })
+      const startDate = group.startDate ?? new Date()
+      const updatedGroup = await tx.eAjoGroup.update({
+        where: { id: groupId },
+        data: {
+          status: EAjoStatus.ACTIVE,
+          startDate,
+        },
+      })
 
-    await prisma.eAjoMember.updateMany({
-      where: { groupId, status: EAjoMemberStatus.APPROVED },
-      data: { status: EAjoMemberStatus.ACTIVE },
+      // Snapshot terms onto each participant and create EAjoPayout record (§2.8, A-09)
+      for (const m of group.members) {
+        const policy = group.slotPolicies.find((p) => p.slotNumber === m.payoutPosition)
+        const earlySlotPenaltyPercent = policy
+          ? Number(policy.earlySlotPenaltyPercent)
+          : 0
+
+        await tx.eAjoMember.update({
+          where: { id: m.id },
+          data: {
+            status: EAjoMemberStatus.ACTIVE,
+            earlySlotPenaltyPercent: new Prisma.Decimal(earlySlotPenaltyPercent),
+            latePenaltyDailyPercent: group.latePenaltyDailyPercent,
+            penaltyCapType: group.penaltyCapType,
+            penaltyCapValue: group.penaltyCapValue,
+          },
+        })
+
+        const payoutCalc = calculateEAjoPayout({
+          monthlyContribution: group.contributionAmount,
+          totalSlots: group.totalSlots,
+          slotNumber: m.payoutPosition,
+          earlySlotPenaltyPercent,
+        })
+
+        await tx.eAjoPayout.upsert({
+          where: { eajoMemberId: m.id },
+          create: {
+            eajoMemberId: m.id,
+            expectedPayout: payoutCalc.expectedPayout,
+            advanceAmount: payoutCalc.advanceAmount,
+            earlySlotPenaltyPercent: new Prisma.Decimal(earlySlotPenaltyPercent),
+            earlySlotPenalty: payoutCalc.earlySlotPenalty,
+            netPayout: payoutCalc.netPayout,
+            status: EAjoPayoutStatus.NOT_ELIGIBLE,
+          },
+          update: {
+            expectedPayout: payoutCalc.expectedPayout,
+            advanceAmount: payoutCalc.advanceAmount,
+            earlySlotPenaltyPercent: new Prisma.Decimal(earlySlotPenaltyPercent),
+            earlySlotPenalty: payoutCalc.earlySlotPenalty,
+            netPayout: payoutCalc.netPayout,
+          },
+        })
+      }
+
+      return updatedGroup
     })
 
     try {

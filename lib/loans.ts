@@ -1,5 +1,11 @@
 import { addMonthsClamped } from '@/lib/domain/dates'
 import { generateLoanSchedule } from '@/lib/domain/loan-schedule'
+import { PenaltyCapType } from '@/generated/prisma/enums'
+import {
+  calculateDailyPenaltyAccrual,
+  deriveUnaccruedPenaltyDates,
+} from '@/lib/domain/penalty-calculation'
+import { roundMoney } from '@/lib/domain/money'
 
 interface Installment {
   installmentNumber: number
@@ -86,28 +92,45 @@ export const calculateRepaymentSchedule = (
 }
 
 /**
- * Calculates a dynamic daily penalty fee for an overdue loan.
- * Applies a small daily percentage (e.g., 0.5%) on the total approved amount 
- * for every day past the due date after the 3-day grace period.
+ * Calculates late penalty fee for an overdue loan obligation based on snapshotted rate parameters (§2.2, D-05).
+ * Due date is Day 0. Grace period is Days 1..7. First penalty day is Day +8.
+ * Daily penalty = original principal * dailyPercent / 100, subject to mandatory cap.
  */
 export const calculateLoanPenaltyAmount = (
   approvedAmount: number,
   repaymentEndDate: Date | null,
   currentDate: Date = new Date(),
   dailyPenaltyPct: number = 0.5,
-  gracePeriodDays: number = 3
+  gracePeriodDays: number = 7,
+  penaltyCapType: PenaltyCapType = PenaltyCapType.PERCENT_OF_PRINCIPAL,
+  penaltyCapValue: number = 10,
+  penaltiesAssessedNet: number = 0
 ): number => {
   if (!repaymentEndDate || approvedAmount <= 0) return 0
 
-  const graceLimit = new Date(repaymentEndDate)
-  graceLimit.setDate(graceLimit.getDate() + gracePeriodDays)
+  const unaccruedDates = deriveUnaccruedPenaltyDates({
+    dueDate: repaymentEndDate,
+    evaluationDate: currentDate,
+  })
 
-  if (currentDate <= graceLimit) return 0
+  if (unaccruedDates.length === 0) return 0
 
-  const diffTime = Math.abs(currentDate.getTime() - graceLimit.getTime())
-  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24))
+  let totalAccrued = penaltiesAssessedNet
+  let newPenaltyAccrued = 0
 
-  // Calculate penalty: daily % of the total approved loan amount
-  const penalty = (approvedAmount * (dailyPenaltyPct / 100)) * diffDays
-  return penalty
+  for (const _d of unaccruedDates) {
+    const res = calculateDailyPenaltyAccrual({
+      base: approvedAmount,
+      latePenaltyDailyPercent: dailyPenaltyPct,
+      penaltyCapType,
+      penaltyCapValue,
+      penaltiesAssessedNet: totalAccrued,
+    })
+
+    const dayAmount = res.accrualAmount.toNumber()
+    newPenaltyAccrued += dayAmount
+    totalAccrued += dayAmount
+  }
+
+  return Number(roundMoney(newPenaltyAccrued).toNumber())
 }
