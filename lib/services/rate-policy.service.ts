@@ -1,6 +1,6 @@
 import { prisma } from '@/lib/prisma'
 import { Prisma } from '@/generated/prisma/client'
-import { PenaltyCapType, PolicyUpdateStatus } from '@/generated/prisma/enums'
+import { PenaltyCapType, PolicyUpdateStatus, UserRole } from '@/generated/prisma/enums'
 import {
   validateLoanTermRateInput,
   LoanTermRateInput,
@@ -12,6 +12,7 @@ import {
   toLagosDateString,
   addDays,
 } from '@/lib/domain/dates'
+import { recordAuditEvent, AuditAction, AuditOutcome } from '@/lib/services/audit.service'
 
 export interface PolicyChangeEntry {
   kind: 'LOAN_RATE' | 'SAVINGS_RATE' | 'EAJO_RATE'
@@ -195,6 +196,39 @@ export async function setLoanTermRate(
       tx
     )
 
+    await recordAuditEvent(
+      {
+        actorId,
+        actorRole: UserRole.ADMIN,
+        action: AuditAction.RATE_CHANGED,
+        entityType: 'LoanTermRate',
+        entityId: created.id,
+        outcome: AuditOutcome.SUCCESS,
+        beforeState: currentActive
+          ? {
+              version: currentActive.version,
+              monthlyInterestPercent: Number(currentActive.monthlyInterestPercent),
+              latePenaltyDailyPercent: Number(currentActive.latePenaltyDailyPercent),
+              penaltyCapType: currentActive.penaltyCapType,
+              penaltyCapValue: Number(currentActive.penaltyCapValue),
+            }
+          : null,
+        afterState: {
+          version: created.version,
+          monthlyInterestPercent: Number(created.monthlyInterestPercent),
+          latePenaltyDailyPercent: Number(created.latePenaltyDailyPercent),
+          penaltyCapType: created.penaltyCapType,
+          penaltyCapValue: Number(created.penaltyCapValue),
+        },
+        metadata: {
+          durationMonths: created.durationMonths,
+          oldSummary,
+          newSummary,
+        },
+      },
+      tx
+    )
+
     return created
   })
 }
@@ -309,6 +343,24 @@ export async function setSavingsProductTermRates(
       where: { id: productId },
       data: { rates: ratesDisplay },
     })
+
+    await recordAuditEvent(
+      {
+        actorId,
+        actorRole: UserRole.ADMIN,
+        action: AuditAction.RATE_CHANGED,
+        entityType: 'SavingsProduct',
+        entityId: productId,
+        outcome: AuditOutcome.SUCCESS,
+        metadata: {
+          productId,
+          productTitle: product.title,
+          ratesDisplay,
+          termsCount: termRates.length,
+        },
+      },
+      tx
+    )
 
     return refreshed
   })

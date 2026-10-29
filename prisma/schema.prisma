@@ -320,6 +320,7 @@ model User {
   walletWithdrawals      WalletWithdrawal[]     @relation("MemberWalletWithdrawals")
   walletWithdrawalsApproved WalletWithdrawal[]  @relation("WalletWithdrawalApprover")
   auditEvents            AuditEvent[]           @relation("UserAuditEvents")
+  affectedAuditEvents    AuditEvent[]           @relation("UserAffectedAuditEvents")
   accounts                Account[]
   sessions                Session[]
   userSessions            UserSession[]
@@ -1346,21 +1347,29 @@ model AuditEvent {
   id               String    @id @default(uuid())
   actorId          String?
   actorRole        UserRole?
+  affectedUserId   String?
   action           String
   entityType       String
-  entityId         String
+  entityId         String?
+  outcome          String    @default("SUCCESS")
+  metadata         Json?
   beforeState      Json?
   afterState       Json?
-  metadata         Json?
+  correlationId    String?
   ipHash           String?
   userAgent        String?
   isSingleOperator Boolean   @default(false)
+  createdAt        DateTime  @default(now())
   timestamp        DateTime  @default(now())
 
-  actor User? @relation("UserAuditEvents", fields: [actorId], references: [id], onDelete: Restrict)
+  actor            User?     @relation("UserAuditEvents", fields: [actorId], references: [id], onDelete: Cascade)
+  affectedUser     User?     @relation("UserAffectedAuditEvents", fields: [affectedUserId], references: [id], onDelete: Cascade)
 
-  @@index([entityType, entityId])
-  @@index([actorId, timestamp])
+  @@index([affectedUserId, createdAt])
+  @@index([actorId, createdAt])
+  @@index([entityType, entityId, createdAt])
+  @@index([action, createdAt])
+  @@index([createdAt])
   @@index([timestamp])
   @@map("audit_events")
 }

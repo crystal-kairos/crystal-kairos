@@ -156,7 +156,7 @@ export const AdminDashboardClient = ({ stats, membersChange }: AdminDashboardCli
           <div className="p-4 border-b border-outline-variant/15 flex justify-between items-center bg-surface-container-low/50">
             <h3 className="font-bold text-sm text-primary uppercase tracking-wide">Recent Admin Actions</h3>
             <Button asChild variant="ghost" className="text-xs font-bold text-primary hover:underline hover:bg-transparent flex items-center gap-1 p-0 h-auto cursor-pointer">
-              <Link href="/admin/members">
+              <Link href="/admin/activity">
                 <span>View Full Log</span>
                 <ArrowRight className="w-3.5 h-3.5" />
               </Link>

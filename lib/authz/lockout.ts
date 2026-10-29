@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/prisma'
 import { hashSha256 } from '@/lib/authz/crypto'
 import { UserRole } from '@/generated/prisma/enums'
+import { recordAuditEvent, AuditAction, AuditOutcome } from '@/lib/services/audit.service'
 
 export const LOCKOUT_CONFIG = {
   maxFailures: 5,
@@ -120,6 +121,19 @@ export async function recordLoginAttempt(params: {
         },
       })
     }
+    await recordAuditEvent(
+      {
+        actorId: resolvedUserId ?? null,
+        affectedUserId: resolvedUserId ?? null,
+        action: AuditAction.AUTH_SIGN_IN_SUCCESS,
+        entityType: 'User',
+        entityId: resolvedUserId ?? null,
+        outcome: AuditOutcome.SUCCESS,
+        ipHash,
+        metadata: { email: emailNorm },
+      },
+      db as any,
+    ).catch(() => {})
     return { newlyLocked: false }
   }
 
@@ -150,8 +164,40 @@ export async function recordLoginAttempt(params: {
       },
     })
 
+    await recordAuditEvent(
+      {
+        actorId: resolvedUserId,
+        affectedUserId: resolvedUserId,
+        action: AuditAction.AUTH_LOCKOUT,
+        entityType: 'User',
+        entityId: resolvedUserId,
+        outcome: AuditOutcome.BLOCKED,
+        ipHash,
+        metadata: {
+          email: emailNorm,
+          lockoutCount: nextLockoutCount,
+          lockedUntil: lockedUntil.toISOString(),
+        },
+      },
+      db as any,
+    ).catch(() => {})
+
     return { newlyLocked: true, lockedUntil }
   }
+
+  await recordAuditEvent(
+    {
+      actorId: resolvedUserId ?? null,
+      affectedUserId: resolvedUserId ?? null,
+      action: AuditAction.AUTH_SIGN_IN_FAILURE,
+      entityType: 'User',
+      entityId: resolvedUserId ?? null,
+      outcome: AuditOutcome.FAILURE,
+      ipHash,
+      metadata: { email: emailNorm },
+    },
+    db as any,
+  ).catch(() => {})
 
   return { newlyLocked: false }
 }

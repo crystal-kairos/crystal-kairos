@@ -30,6 +30,7 @@ import { toActionErrorResult } from '@/lib/errors/to-action-result'
 import { AppError } from '@/lib/errors/app-error'
 import { createEAjoSlotPolicies } from '@/lib/services/rate-policy.service'
 import { calculateEAjoPayout } from '@/lib/domain/eajo-payout'
+import { recordAuditEvent, AuditAction, AuditOutcome } from '@/lib/services/audit.service'
 
 const validPermissionSet = new Set<string>(ALL_ADMIN_PERMISSIONS)
 
@@ -95,6 +96,24 @@ export const createAdminStaffAction = async (formData: {
           })),
         })
       }
+
+      await recordAuditEvent(
+        {
+          actorId: owner.id,
+          actorRole: owner.role,
+          affectedUserId: created.id,
+          action: AuditAction.STAFF_CREATED,
+          entityType: 'User',
+          entityId: created.id,
+          outcome: AuditOutcome.SUCCESS,
+          metadata: {
+            email: created.email,
+            role: created.role,
+            initialPermissionsCount: uniqueGrants.length,
+          },
+        },
+        tx
+      )
 
       return created
     })
@@ -204,6 +223,23 @@ export const setAdminPermissionsAction = async (
           sessionVersion: { increment: 1 },
         },
       })
+
+      await recordAuditEvent(
+        {
+          actorId: owner.id,
+          actorRole: owner.role,
+          affectedUserId: targetUser.id,
+          action: AuditAction.ADMIN_PERMISSION_GRANTED,
+          entityType: 'User',
+          entityId: targetUser.id,
+          outcome: AuditOutcome.SUCCESS,
+          metadata: {
+            permissions: sanitizedPermissions,
+            adminUserId: targetUser.id,
+          },
+        },
+        tx
+      )
     })
 
     try {
@@ -322,6 +358,24 @@ export const createEAjoGroupAction = async (formData: {
         slotPolicies: formData.slotPolicies!,
         createdById: actor.id,
       })
+
+      await recordAuditEvent(
+        {
+          actorId: actor.id,
+          actorRole: actor.role,
+          action: AuditAction.EAJO_GROUP_CREATED,
+          entityType: 'EAjoGroup',
+          entityId: createdGroup.id,
+          outcome: AuditOutcome.SUCCESS,
+          metadata: {
+            description: createdGroup.description,
+            totalSlots,
+            contributionAmount: Number(createdGroup.contributionAmount),
+            durationMonths: createdGroup.durationMonths,
+          },
+        },
+        tx
+      )
 
       return createdGroup
     })

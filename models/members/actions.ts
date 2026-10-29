@@ -14,6 +14,7 @@ import {
 } from '@/lib/authz/guards'
 import { toActionErrorResult } from '@/lib/errors/to-action-result'
 import { assertMockSessionAllowed } from '@/lib/authz/mock-session-guard'
+import { recordAuditEvent, AuditAction, AuditOutcome } from '@/lib/services/audit.service'
 
 assertMockSessionAllowed()
 
@@ -391,6 +392,23 @@ export const deactivateUserAction = async (data: {
         data: { revokedAt: new Date() },
       })
 
+      await recordAuditEvent(
+        {
+          actorId: actor.id,
+          actorRole: actor.role,
+          affectedUserId: data.userId,
+          action: AuditAction.MEMBER_DEACTIVATED,
+          entityType: 'User',
+          entityId: data.userId,
+          outcome: AuditOutcome.SUCCESS,
+          metadata: {
+            reason: data.reason,
+            notes: data.notes,
+          },
+        },
+        tx
+      )
+
       return user
     })
 
@@ -449,6 +467,18 @@ export const reactivateUserAction = async (data: { userId: string }) => {
         sessionVersion: { increment: 1 },
       },
     })
+
+    await recordAuditEvent({
+      actorId: data.userId,
+      affectedUserId: data.userId,
+      action: AuditAction.MEMBER_REACTIVATED,
+      entityType: 'User',
+      entityId: data.userId,
+      outcome: AuditOutcome.SUCCESS,
+      metadata: {
+        userId: data.userId,
+      },
+    }).catch(() => {})
 
     try {
       revalidatePath(`/admin/members/${data.userId}`)

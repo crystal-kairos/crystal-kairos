@@ -2,6 +2,7 @@ import { FacebookIcon, InstagramIcon, TwitterIcon } from './Icons'
 import {
   Banknote,
   Handshake,
+  History,
   LayoutDashboard,
   Users,
   Wallet,
@@ -132,6 +133,12 @@ export const adminNavItems = [
     label: 'layout.sidebar.menu-items.eajo',
     href: '/eajo',
     icon: Handshake,
+  },
+  {
+    id: 'activity',
+    label: 'layout.sidebar.menu-items.activity',
+    href: '/activity',
+    icon: History,
   },
 ]
 

@@ -23,6 +23,7 @@ import {
   requirePermission,
 } from '@/lib/authz/guards'
 import { MembersLoansQueryParams } from '@/types/loans.interface'
+import { logStaffSensitiveDataView, queryMemberAuditEvents } from '@/lib/services/audit.service'
 
 export const getAllMembers = async (filters: AllMembersQueryParams) => {
   try {
@@ -223,7 +224,7 @@ export const getPendingApprovalsCount = async () => {
 
 export const getMemberById = async (memberId: string) => {
   try {
-    await requireMemberOrStaffWithPermission(memberId, [
+    const actor = await requireMemberOrStaffWithPermission(memberId, [
       AdminPermission.MEMBERS_READ,
       AdminPermission.MEMBERS_APPROVE,
       AdminPermission.MEMBERS_CREATE,
@@ -250,6 +251,26 @@ export const getMemberById = async (memberId: string) => {
         nextOfKin: true,
       },
     })
+
+    if (actor.id !== memberId && member) {
+      if (member.bankAccounts && member.bankAccounts.length > 0) {
+        await logStaffSensitiveDataView({
+          staffId: actor.id,
+          staffRole: actor.role,
+          memberId: member.id,
+          dataType: 'BANK_DETAILS',
+        }).catch(() => {})
+      }
+      if (member.nextOfKin) {
+        await logStaffSensitiveDataView({
+          staffId: actor.id,
+          staffRole: actor.role,
+          memberId: member.id,
+          dataType: 'NEXT_OF_KIN',
+        }).catch(() => {})
+      }
+    }
+
     return { success: true, data: member }
   } catch (error) {
     return { success: false, data: null, error: error as Error }
@@ -476,5 +497,31 @@ export const getEAjoRecordsCount = async (userId: string) => {
     return { success: true, data: eajoRecordsCount }
   } catch (error) {
     return { success: false, data: 0, error: error as Error }
+  }
+}
+
+/**
+ * Retrieves activity events visible to the specific member (PR P2-06).
+ * Enforces member data isolation.
+ */
+export const getMemberAuditEventsQuery = async (
+  userId: string,
+  params: { page?: number; pageSize?: number } = {},
+) => {
+  try {
+    await requireMemberOrStaffWithPermission(userId, [
+      AdminPermission.MEMBERS_READ,
+      AdminPermission.AUDIT_READ,
+    ])
+
+    const result = await queryMemberAuditEvents({
+      memberId: userId,
+      page: params.page,
+      pageSize: params.pageSize,
+    })
+
+    return { success: true, data: result }
+  } catch (error) {
+    return { success: false, data: null, error: error as Error }
   }
 }
