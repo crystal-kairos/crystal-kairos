@@ -321,6 +321,16 @@ model User {
   walletWithdrawalsApproved WalletWithdrawal[]  @relation("WalletWithdrawalApprover")
   auditEvents            AuditEvent[]           @relation("UserAuditEvents")
   affectedAuditEvents    AuditEvent[]           @relation("UserAffectedAuditEvents")
+  paymentSubmissions     PaymentSubmission[]    @relation("MemberPaymentSubmissions")
+  confirmedSubmissions   PaymentSubmission[]    @relation("PaymentSubmissionConfirmer")
+  payments               Payment[]              @relation("MemberPayments")
+  confirmedPayments      Payment[]              @relation("PaymentConfirmer")
+  reversedPayments       Payment[]              @relation("PaymentReverser")
+  disbursementsReceived  Disbursement[]         @relation("DisbursementRecipient")
+  disbursementsRequested Disbursement[]         @relation("DisbursementRequester")
+  disbursementsApproved  Disbursement[]         @relation("DisbursementApprover")
+  disbursementsPaid      Disbursement[]         @relation("DisbursementDisburser")
+  feeAssessments         FeeAssessment[]        @relation("MemberFeeAssessments")
   accounts                Account[]
   sessions                Session[]
   userSessions            UserSession[]
@@ -437,6 +447,7 @@ model StoredFile {
 
   uploadedBy       User     @relation("UploadedFiles", fields: [uploadedById], references: [id], onDelete: Restrict)
   ownerUser        User?    @relation("OwnedFiles", fields: [ownerUserId], references: [id], onDelete: SetNull)
+  receiptPaymentSubmissions PaymentSubmission[] @relation("ReceiptStoredFile")
 
   @@index([ownerUserId])
   @@index([uploadedById])
@@ -471,6 +482,7 @@ model SocietyBankAccount {
   updatedAt     DateTime @updatedAt
 
   createdByUser User     @relation("SocietyBankAccountCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  receivedPaymentSubmissions PaymentSubmission[]
 
   @@index([isActive])
   @@map("society_bank_accounts")
@@ -506,6 +518,7 @@ model BankAccount {
   user          User          @relation(fields: [userId], references: [id], onDelete: Restrict)
   transactions  Transaction[]
   walletWithdrawals WalletWithdrawal[]
+  disbursements Disbursement[]
 
   @@unique([userId, bankCode, accountNumber])
   @@index([bankCode, accountNumber])
@@ -1294,6 +1307,8 @@ model JournalEntry {
   reversalOf JournalEntry? @relation("JournalReversal", fields: [reversalOfId], references: [id], onDelete: Restrict)
   reversedBy JournalEntry? @relation("JournalReversal")
   lines      JournalLine[]
+  paymentAllocations PaymentAllocation[]
+  disbursements Disbursement[]
 
   @@index([sourceType, sourceId])
   @@index([effectiveDate])
@@ -1372,4 +1387,239 @@ model AuditEvent {
   @@index([createdAt])
   @@index([timestamp])
   @@map("audit_events")
+}
+
+// ---------------------------------------------------------
+// PR P2-07: Payment Submissions, Payments, Allocations & Disbursements (§2.10, §2.11, §2.12)
+// ---------------------------------------------------------
+
+enum SubmissionPurpose {
+  SAVINGS_FIRST_DEPOSIT
+  SAVINGS_PERIOD
+  SAVINGS_DEPOSIT
+  LOAN_REPAYMENT
+  LOAN_SETTLEMENT
+  EAJO_CONTRIBUTION
+  WALLET_TOPUP
+  FEE
+}
+
+enum PaymentSubmissionStatus {
+  SUBMITTED
+  CONFIRMED
+  REJECTED
+  CANCELLED
+}
+
+enum PaymentStatus {
+  CONFIRMED
+  REVERSED
+}
+
+enum PaymentSource {
+  RECEIPT
+  WALLET
+  RECOVERY
+  SUSPENSE_MATCH
+}
+
+enum AllocationTargetType {
+  SAVINGS
+  LOAN
+  EAJO
+  WALLET
+  FEE
+}
+
+enum PaymentComponentType {
+  PENALTY
+  INTEREST
+  PRINCIPAL
+  CONTRIBUTION
+  WALLET_TOPUP
+  FEE
+}
+
+enum AllocationStatus {
+  ACTIVE
+  REVERSED
+}
+
+enum DisbursementPurpose {
+  LOAN_DISBURSEMENT
+  SAVINGS_PAYOUT
+  EAJO_PAYOUT
+  WALLET_WITHDRAWAL
+  MEMBER_SETTLEMENT
+}
+
+enum DisbursementStatus {
+  REQUESTED
+  APPROVED
+  PAID
+  FAILED
+  CANCELLED
+}
+
+enum FeeType {
+  LOAN_APPLICATION
+  MEMBERSHIP
+}
+
+enum FeeStatus {
+  PENDING
+  PAID
+  WAIVED
+}
+
+model PaymentSubmission {
+  id                     String                  @id @default(uuid())
+  submissionNumber       String                  @unique
+  memberId               String
+  purpose                SubmissionPurpose?
+  receivingBankAccountId String?
+  claimedAmount          Decimal                 @db.Decimal(15, 2)
+  paidOn                 DateTime                @db.Date
+  bankReference          String?
+  payerAccountName       String?
+  receiptFileId          String?
+  fileHash               String?
+  narration              String?
+  status                 PaymentSubmissionStatus @default(SUBMITTED)
+  rejectionReason        String?
+  resubmissionOfId       String?
+  submittedAt            DateTime                @default(now())
+  confirmedAt            DateTime?
+  confirmedById          String?
+  valueDate              DateTime?               @db.Date
+
+  member               User                    @relation("MemberPaymentSubmissions", fields: [memberId], references: [id], onDelete: Restrict)
+  receivingBankAccount SocietyBankAccount?     @relation(fields: [receivingBankAccountId], references: [id], onDelete: Restrict)
+  receiptFile          StoredFile?             @relation("ReceiptStoredFile", fields: [receiptFileId], references: [id], onDelete: Restrict)
+  confirmedBy          User?                   @relation("PaymentSubmissionConfirmer", fields: [confirmedById], references: [id], onDelete: Restrict)
+  resubmissionOf       PaymentSubmission?      @relation("SubmissionResubmissions", fields: [resubmissionOfId], references: [id], onDelete: Restrict)
+  resubmissions        PaymentSubmission[]     @relation("SubmissionResubmissions")
+  targets              SubmissionTarget[]
+  payment              Payment?
+
+  @@index([memberId, status])
+  @@index([paidOn])
+  @@index([fileHash])
+  @@index([bankReference, claimedAmount, paidOn])
+  @@map("payment_submissions")
+}
+
+model SubmissionTarget {
+  id              String               @id @default(uuid())
+  submissionId    String
+  targetType      AllocationTargetType
+  targetId        String
+  targetPeriodId  String?
+  requestedAmount Decimal              @db.Decimal(15, 2)
+
+  submission      PaymentSubmission    @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@index([submissionId])
+  @@index([targetType, targetId])
+  @@map("submission_targets")
+}
+
+model Payment {
+  id                   String            @id @default(uuid())
+  paymentNumber        String            @unique
+  source               PaymentSource     @default(RECEIPT)
+  submissionId         String?           @unique
+  memberId             String
+  totalConfirmedAmount Decimal           @db.Decimal(15, 2)
+  valueDate            DateTime          @db.Date
+  status               PaymentStatus     @default(CONFIRMED)
+  confirmedAt          DateTime          @default(now())
+  confirmedById        String
+  reversedAt           DateTime?
+  reversedById         String?
+  reversalReason       String?
+  idempotencyKey       String            @unique
+
+  submission   PaymentSubmission?  @relation(fields: [submissionId], references: [id], onDelete: Restrict)
+  member       User                @relation("MemberPayments", fields: [memberId], references: [id], onDelete: Restrict)
+  confirmedBy  User                @relation("PaymentConfirmer", fields: [confirmedById], references: [id], onDelete: Restrict)
+  reversedBy   User?               @relation("PaymentReverser", fields: [reversedById], references: [id], onDelete: Restrict)
+  allocations  PaymentAllocation[]
+
+  @@index([memberId, valueDate])
+  @@index([valueDate])
+  @@index([status])
+  @@map("payments")
+}
+
+model PaymentAllocation {
+  id             String               @id @default(uuid())
+  paymentId      String
+  targetType     AllocationTargetType
+  targetId       String
+  periodId       String?
+  componentType  PaymentComponentType
+  amount         Decimal              @db.Decimal(15, 2)
+  status         AllocationStatus     @default(ACTIVE)
+  reversedAt     DateTime?
+  journalEntryId String?
+  createdAt      DateTime             @default(now())
+
+  payment        Payment              @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  journalEntry   JournalEntry?        @relation(fields: [journalEntryId], references: [id], onDelete: Restrict)
+  feeAssessments FeeAssessment[]
+
+  @@index([paymentId])
+  @@index([targetType, targetId, periodId])
+  @@index([status])
+  @@map("payment_allocations")
+}
+
+model Disbursement {
+  id                 String              @id @default(uuid())
+  disbursementNumber String              @unique
+  recipientUserId    String
+  purpose            DisbursementPurpose
+  amount             Decimal             @db.Decimal(15, 2)
+  bankAccountId      String
+  bankReference      String?
+  valueDate          DateTime            @db.Date
+  status             DisbursementStatus  @default(REQUESTED)
+  requestedById      String
+  approvedById       String?
+  disbursedById      String?
+  disbursedAt        DateTime?
+  rejectionReason    String?
+  journalEntryId     String?
+  idempotencyKey     String              @unique
+  createdAt          DateTime            @default(now())
+
+  recipient    User          @relation("DisbursementRecipient", fields: [recipientUserId], references: [id], onDelete: Restrict)
+  bankAccount  BankAccount   @relation(fields: [bankAccountId], references: [id], onDelete: Restrict)
+  requestedBy  User          @relation("DisbursementRequester", fields: [requestedById], references: [id], onDelete: Restrict)
+  approvedBy   User?         @relation("DisbursementApprover", fields: [approvedById], references: [id], onDelete: Restrict)
+  disbursedBy  User?         @relation("DisbursementDisburser", fields: [disbursedById], references: [id], onDelete: Restrict)
+  journalEntry JournalEntry? @relation(fields: [journalEntryId], references: [id], onDelete: Restrict)
+
+  @@index([recipientUserId, status])
+  @@index([valueDate])
+  @@map("disbursements")
+}
+
+model FeeAssessment {
+  id                  String             @id @default(uuid())
+  memberId            String
+  feeType             FeeType
+  targetId            String
+  amount              Decimal            @db.Decimal(15, 2)
+  status              FeeStatus          @default(PENDING)
+  paymentAllocationId String?
+  assessedAt          DateTime           @default(now())
+
+  member     User               @relation("MemberFeeAssessments", fields: [memberId], references: [id], onDelete: Restrict)
+  allocation PaymentAllocation? @relation(fields: [paymentAllocationId], references: [id], onDelete: Restrict)
+
+  @@index([memberId, status])
+  @@index([feeType, targetId])
+  @@map("fee_assessments")
 }
