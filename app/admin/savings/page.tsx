@@ -5,7 +5,10 @@ import { auth } from '@/auth'
 
 const SavingsPage = async () => {
   const session = await auth()
-  if (!session || (session.user.role !== 'ADMIN' && session.user.role !== 'OWNER')) {
+  if (!session) {
+    redirect('/login')
+  }
+  if (session.user.role !== 'ADMIN' && session.user.role !== 'OWNER') {
     redirect('/unauthorized')
   }
 

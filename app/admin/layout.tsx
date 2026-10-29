@@ -3,13 +3,19 @@ import MobileBottomBar from '@/components/layout/MobileBottomBar'
 import AdminSidebar from '@/components/layout/AdminSidebar'
 import { ReactNode } from 'react'
 import { redirect } from 'next/navigation'
-import { requireStaffSession } from '@/lib/authz/guards'
+import { AuthzError, requireStaffSession } from '@/lib/authz/guards'
 
 const Layout = async ({ children }: { children: ReactNode }) => {
   let actor
   try {
     actor = await requireStaffSession()
-  } catch {
+  } catch (error) {
+    if (error instanceof AuthzError && error.code === 'UNAUTHENTICATED') {
+      redirect('/login')
+    }
+    if (error instanceof AuthzError && error.code === 'MFA_REQUIRED') {
+      redirect('/security?reason=mfa_required&callbackUrl=/admin')
+    }
     redirect('/unauthorized')
   }
 
