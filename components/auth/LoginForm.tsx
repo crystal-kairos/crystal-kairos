@@ -12,8 +12,8 @@ import { Button } from '../ui/button'
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { BankIcon, LoginFoot, ShieldIcon } from './login-icons'
-import { signIn, useSession } from 'next-auth/react'
-import { useRouter } from 'next/navigation'
+import { signIn, signOut, useSession } from 'next-auth/react'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { toast } from 'sonner'
 import { Spinner } from '../ui/spinner'
 
@@ -30,7 +30,27 @@ const LoginForm = () => {
   const [showPassword, setShowPassword] = useState(false)
   const session = useSession()
   const router = useRouter()
+  const searchParams = useSearchParams()
+  const isSwitching = searchParams.get('switch') === 'true'
+  const sessionError = searchParams.get('error')
   const [loading, setLoading] = useState(false)
+  const [justLoggedIn, setJustLoggedIn] = useState(false)
+
+  useEffect(() => {
+    if (isSwitching && session.data) {
+      signOut({ redirect: false })
+    }
+  }, [isSwitching, session.data])
+
+  useEffect(() => {
+    if (sessionError === 'session_expired') {
+      toast.error(
+        t('login.errors.session_expired', {
+          defaultValue: 'Your session has expired. Please sign in again.',
+        }),
+      )
+    }
+  }, [sessionError, t])
 
   const { control, handleSubmit } = useForm<z.infer<typeof loginSchema>>({
     resolver: standardSchemaResolver(loginSchema),
@@ -53,20 +73,24 @@ const LoginForm = () => {
       toast.error(
         t(ERROR_MESSAGES[result.code ?? ''] ?? ERROR_MESSAGES.default),
       )
+      setLoading(false)
+      return
     }
 
-    setLoading(false)
+    setJustLoggedIn(true)
+    window.location.href = '/'
   }
 
   useEffect(() => {
-    if (session.data) {
+    if (isSwitching) return
+    if ((justLoggedIn || session.status === 'authenticated') && session.data?.user) {
       if (session.data.user.role === 'USER') {
         router.replace(`/dashboard/${session.data.user.id}`)
       } else {
         router.replace('/admin')
       }
     }
-  }, [session])
+  }, [justLoggedIn, session, isSwitching, router])
 
   return (
     <div className='w-full max-w-110 mx-auto flex justify-center items-center'>

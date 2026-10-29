@@ -1,8 +1,10 @@
-import Link from 'next/link'
-import { ShieldAlert, ArrowLeft } from 'lucide-react'
-import { Button } from '@/components/ui/button'
+import { ShieldAlert } from 'lucide-react'
+import { auth } from '@/auth'
+import { UnauthorizedActions } from '@/components/auth/UnauthorizedActions'
 
-const UnauthorizedPage = () => {
+const UnauthorizedPage = async () => {
+  const session = await auth()
+
   return (
     <div className='min-h-screen flex items-center justify-center bg-surface-container-lowest p-6 relative overflow-hidden'>
       {/* Background Decorative Gradients */}
@@ -18,22 +20,20 @@ const UnauthorizedPage = () => {
           <h1 className='font-heading font-bold text-2xl md:text-3xl text-primary mb-3'>
             Access Denied
           </h1>
-          <p className='text-muted-foreground text-sm md:text-base mb-8'>
+          <p className='text-muted-foreground text-sm md:text-base mb-6'>
             You don't have the required permissions to view this page. Please log in with an authorized account or return to the dashboard.
           </p>
           
-          <div className='flex flex-col sm:flex-row gap-4 w-full'>
-            <Button asChild className='w-full py-6 font-bold shadow-md hover:-translate-y-0.5 active:scale-[0.98] transition-all' variant='secondary'>
-              <Link href='/login'>
-                Switch Account
-              </Link>
-            </Button>
-            <Button asChild className='w-full py-6 font-bold hover:-translate-y-0.5 active:scale-[0.98] transition-all' variant='outline'>
-              <Link href='/'>
-                <ArrowLeft className='w-4 h-4 mr-2' /> Go Back
-              </Link>
-            </Button>
-          </div>
+          <UnauthorizedActions
+            user={
+              session?.user
+                ? {
+                    id: session.user.id as string,
+                    role: session.user.role as string,
+                  }
+                : null
+            }
+          />
         </div>
       </div>
     </div>

@@ -1,3 +1,4 @@
+import { Suspense } from 'react'
 import { AuthShowcase } from '@/components/auth/AuthShowcase'
 import LoginForm from '@/components/auth/LoginForm'
 
@@ -7,7 +8,9 @@ const LoginPage = () => {
       <AuthShowcase />
 
       <div className='flex items-center justify-center p-6 sm:p-12'>
-        <LoginForm />
+        <Suspense fallback={null}>
+          <LoginForm />
+        </Suspense>
       </div>
     </div>
   )
