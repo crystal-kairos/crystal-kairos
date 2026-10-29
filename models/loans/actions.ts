@@ -7,6 +7,7 @@ import {
   TransactionType,
   TransactionStatus,
   UserRole,
+  PenaltyCapType,
 } from '@/generated/prisma/enums'
 import { revalidatePath } from 'next/cache'
 import { serializeLoan, serializeTransaction } from '@/lib/loans'
@@ -25,6 +26,8 @@ import {
   requestLoanGuarantor,
   withdrawGuarantorConsent,
 } from '@/lib/services/guarantees.service'
+import { getActiveLoanRateForDuration } from '@/lib/services/rate-policy.service'
+import { getSocietySetting } from '@/lib/services/society-settings.service'
 
 /**
  * Searches for an active cooperative member by email to nominate as a guarantor.
@@ -125,16 +128,15 @@ export const applyForLoanAction = async (
       }
     }
 
-    // 3. Fetch global loan interest rate
-    let interestRate = 5 // Fallback
-    const settings = await prisma.loanSettings.findUnique({
-      where: { id: 'global' },
-    })
-    if (settings) {
-      interestRate = Number(settings.interestRate)
-    }
+    // 3. Resolve active loan rate for duration (§2.9, D-05)
+    const activeRate = await getActiveLoanRateForDuration(data.duration)
+    const interestRate = activeRate ? Number(activeRate.monthlyInterestPercent) : 5.0
+    const latePenaltyDailyPercent = activeRate ? activeRate.latePenaltyDailyPercent : new Prisma.Decimal('0.5')
+    const penaltyCapType = activeRate ? activeRate.penaltyCapType : PenaltyCapType.PERCENT_OF_PRINCIPAL
+    const penaltyCapValue = activeRate ? activeRate.penaltyCapValue : new Prisma.Decimal('10.0')
+    const rateVersion = activeRate ? activeRate.version : 1
 
-    const applicationFee = 2000 // Standard form/application fee
+    const applicationFee = await getSocietySetting('loanApplicationFee', 0)
 
     // 4. Resolve guarantor details
     let guarantorId: string | null = null
@@ -161,6 +163,12 @@ export const applyForLoanAction = async (
           userId: actor.id,
           requestedAmount: validatedRequestedAmount,
           interestRate: new Prisma.Decimal(interestRate.toString()),
+          monthlyInterestRatePercent: new Prisma.Decimal(interestRate.toString()),
+          interestCalculationMethod: 'FLAT_MONTHLY_ON_ORIGINAL_PRINCIPAL',
+          latePenaltyDailyPercent,
+          penaltyCapType,
+          penaltyCapValue,
+          loanTermRateVersion: rateVersion,
           duration: data.duration,
           purpose: data.purpose,
           guarantorId,
@@ -180,6 +188,8 @@ export const applyForLoanAction = async (
           requestedAmount: validatedRequestedAmount,
           termMonths: data.duration,
           monthlyInterestRate: interestRate,
+          penaltyTerms: `Daily penalty ${latePenaltyDailyPercent}% (cap: ${penaltyCapValue} ${penaltyCapType})`,
+          termsVersion: rateVersion,
         })
       }
 

@@ -10,7 +10,7 @@ import {
   TransactionStatus,
   UserRole,
 } from '@/generated/prisma/enums'
-import { EAjoMember, Transaction } from '@/generated/prisma/client'
+import { EAjoMember, Transaction, Prisma } from '@/generated/prisma/client'
 import { revalidatePath } from 'next/cache'
 import { uploadReceipt } from '@/lib/upload'
 import { bindStoredFileToRecord } from '@/lib/storage/cloudinary'
@@ -24,6 +24,7 @@ import {
   requireMemberOrStaffWithPermission,
 } from '@/lib/authz/guards'
 import { validateAmount } from '@/lib/validation/money'
+import { calculateEAjoPayout } from '@/lib/domain/eajo-payout'
 import { toActionErrorResult } from '@/lib/errors/to-action-result'
 
 const serializeMember = (m: EAjoMember) => ({
@@ -105,37 +106,40 @@ export const applyToEAjoGroupAction = async (
       }
     }
 
-    // Fetch fee config for position
-    const durationMonthsMap: Record<string, number> = {
-      FOUR_MONTHS: 4,
-      SIX_MONTHS: 6,
-      TWELVE_MONTHS: 12,
-    }
-    const months = durationMonthsMap[group.duration]
-    const feeConfig = await prisma.ajoFeeConfig.findUnique({
+    // Fetch slot policy for position (§2.8, A-09)
+    const slotPolicy = await prisma.eAjoSlotPolicy.findUnique({
       where: {
-        durationMonths_pickPosition: {
-          durationMonths: months,
-          pickPosition: formData.payoutPosition,
+        groupId_slotNumber: {
+          groupId,
+          slotNumber: formData.payoutPosition,
         },
       },
     })
 
-    const feePercentage = feeConfig ? Number(feeConfig.feePercentage) : 0
-    const totalExpectedPayout =
-      Number(group.contributionAmount) * group.totalSlots
-    const feeAmount = (totalExpectedPayout * feePercentage) / 100
-    const netPayoutAmount = totalExpectedPayout - feeAmount
+    const earlySlotPenaltyPercent = slotPolicy
+      ? Number(slotPolicy.earlySlotPenaltyPercent)
+      : 0
+
+    const payoutCalc = calculateEAjoPayout({
+      monthlyContribution: group.contributionAmount,
+      totalSlots: group.totalSlots,
+      slotNumber: formData.payoutPosition,
+      earlySlotPenaltyPercent,
+    })
 
     const newMember = await prisma.eAjoMember.create({
       data: {
         groupId,
         userId: targetUserId,
         payoutPosition: formData.payoutPosition,
-        feePercentage,
-        feeAmount,
-        totalExpectedPayout,
-        netPayoutAmount,
+        feePercentage: earlySlotPenaltyPercent,
+        feeAmount: payoutCalc.earlySlotPenalty,
+        totalExpectedPayout: payoutCalc.expectedPayout,
+        netPayoutAmount: payoutCalc.netPayout,
+        earlySlotPenaltyPercent: new Prisma.Decimal(earlySlotPenaltyPercent),
+        latePenaltyDailyPercent: group.latePenaltyDailyPercent,
+        penaltyCapType: group.penaltyCapType,
+        penaltyCapValue: group.penaltyCapValue,
         guarantorName: formData.guarantorName,
         guarantorPhoneNumber: formData.guarantorPhoneNumber,
         bankName: formData.bankName,

@@ -10,8 +10,10 @@ import {
   TransactionCategory,
   TransactionStatus,
   TransactionType,
+  PenaltyCapType,
 } from '@/generated/prisma/enums'
 import { Prisma } from '@/generated/prisma/client'
+import { getActiveLoanRateForDuration } from '@/lib/services/rate-policy.service'
 import {
   assertTargetUserIsMember,
   enforceDualControl,
@@ -482,13 +484,13 @@ export const createLoanForMemberAction = async (data: {
       }
     }
 
-    // Fetch Global Loan Interest Rate
-    const loanSettings = await prisma.loanSettings.findUnique({
-      where: { id: 'global' },
-    })
-    const interestRate = loanSettings?.interestRate
-      ? Number(loanSettings.interestRate)
-      : 10
+    // Fetch Active Loan Rate for duration (§2.9, D-05)
+    const activeRate = await getActiveLoanRateForDuration(duration)
+    const interestRate = activeRate ? Number(activeRate.monthlyInterestPercent) : 5.0
+    const latePenaltyDailyPercent = activeRate ? activeRate.latePenaltyDailyPercent : new Prisma.Decimal('0.5')
+    const penaltyCapType = activeRate ? activeRate.penaltyCapType : PenaltyCapType.PERCENT_OF_PRINCIPAL
+    const penaltyCapValue = activeRate ? activeRate.penaltyCapValue : new Prisma.Decimal('10.0')
+    const rateVersion = activeRate ? activeRate.version : 1
 
     const actualApprovedAmount = validatedApprovedAmount
       ? validatedApprovedAmount.toNumber()
@@ -521,6 +523,12 @@ export const createLoanForMemberAction = async (data: {
             : null,
         outstandingBalance: new Prisma.Decimal(outstandingBalance),
         interestRate: new Prisma.Decimal(interestRate),
+        monthlyInterestRatePercent: new Prisma.Decimal(interestRate),
+        interestCalculationMethod: 'FLAT_MONTHLY_ON_ORIGINAL_PRINCIPAL',
+        latePenaltyDailyPercent,
+        penaltyCapType,
+        penaltyCapValue,
+        loanTermRateVersion: rateVersion,
         duration,
         status,
         repaymentEndDate: new Date(
