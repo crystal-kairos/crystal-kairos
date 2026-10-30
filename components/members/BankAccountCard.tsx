@@ -1,4 +1,4 @@
-import { Landmark, Trash2 } from 'lucide-react'
+import { Landmark, Trash2, ShieldCheck } from 'lucide-react'
 import { Card, CardContent } from '../ui/card'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
@@ -8,6 +8,7 @@ interface BankAccountCardProps {
   accountNumber: string
   accountName: string
   isPrimary?: boolean
+  isVerified?: boolean
   onMakePrimary?: () => void
   onDelete?: () => void
 }
@@ -17,6 +18,7 @@ export const BankAccountCard = ({
   accountNumber,
   accountName,
   isPrimary = false,
+  isVerified = true,
   onMakePrimary,
   onDelete,
 }: BankAccountCardProps) => {
@@ -30,6 +32,11 @@ export const BankAccountCard = ({
         <div className='flex-1 flex flex-col gap-1 min-w-0'>
           <div className='flex items-center gap-2 flex-wrap'>
             <h4 className='font-semibold text-sm truncate'>{bankName}</h4>
+            {isVerified && (
+              <Badge variant='outline' className='text-[10px] text-success border-success/30 px-1.5 py-0 h-4.5 flex items-center gap-0.5 rounded-full'>
+                <ShieldCheck className='w-3 h-3' /> Verified
+              </Badge>
+            )}
             {isPrimary && (
               <Badge className='bg-success-container/30 text-on-success border-0 px-2 py-0 h-5 text-[10px] font-semibold rounded-full select-none'>
                 Primary

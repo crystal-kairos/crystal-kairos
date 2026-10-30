@@ -17,7 +17,7 @@ const Layout = async ({ children, params }: MemberDashboardLayoutProps) => {
     await requireMemberSession(resolvedParams.users)
   } catch (error) {
     if (error instanceof AuthzError && error.code === 'UNAUTHENTICATED') {
-      redirect('/login')
+      redirect('/login?error=session_expired')
     }
     redirect('/unauthorized')
   }

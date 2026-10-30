@@ -7,6 +7,7 @@ const SERVER_ONLY_SECRET_PATTERNS = [
   'DATABASE_URL',
   'API_KEY',
   'ENCRYPTION_KEY',
+  'PAYSTACK',
 ]
 
 const cleanValue = (raw: string | undefined): string => {

@@ -143,6 +143,9 @@ export const getAdminDashboardStats = async () => {
       },
     }
   } catch (error) {
+    if (error instanceof AuthzError) {
+      return { success: false, error: error.message }
+    }
     console.error('Error fetching admin dashboard stats:', error)
     return {
       success: false,

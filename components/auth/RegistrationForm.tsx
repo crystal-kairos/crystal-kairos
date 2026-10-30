@@ -294,7 +294,9 @@ const RegistrationForm = () => {
           {currentStep === 1 && (
             <PersonalInfo control={control} onDateSelected={setValue} />
           )}
-          {currentStep === 2 && <BankingDetails control={control} />}
+          {currentStep === 2 && (
+            <BankingDetails control={control} setValue={setValue} />
+          )}
           {currentStep === 3 && <NextOfKin control={control} />}
           {currentStep === 4 && <Interests control={control} />}
           {currentStep === 5 && <Review control={control} />}

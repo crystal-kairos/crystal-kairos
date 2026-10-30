@@ -4,7 +4,12 @@ import { auth } from '@/auth'
 import { prisma } from '@/lib/prisma'
 import { nextOfKinSchema } from '@/schema/auth.schema'
 import { revalidatePath } from 'next/cache'
-import { AdminPermission, Relationship, UserDeactivationReason, UserRole } from '@/generated/prisma/enums'
+import {
+  AdminPermission,
+  Relationship,
+  UserDeactivationReason,
+  UserRole,
+} from '@/generated/prisma/enums'
 import {
   assertTargetUserIsMember,
   requireAnyPermission,
@@ -14,7 +19,13 @@ import {
 } from '@/lib/authz/guards'
 import { toActionErrorResult } from '@/lib/errors/to-action-result'
 import { assertMockSessionAllowed } from '@/lib/authz/mock-session-guard'
-import { recordAuditEvent, AuditAction, AuditOutcome } from '@/lib/services/audit.service'
+import {
+  recordAuditEvent,
+  AuditAction,
+  AuditOutcome,
+} from '@/lib/services/audit.service'
+import { bankProvider } from '@/lib/banking/paystack.provider'
+import { checkNameSimilarity, NameMatchResult } from '@/lib/banking/provider'
 
 assertMockSessionAllowed()
 
@@ -151,7 +162,8 @@ export const addBankAccountAction = async (
       if (!data.overrideReason || data.overrideReason.trim().length === 0) {
         return {
           success: false,
-          error: 'An override reason is required to register a shared bank account.',
+          error:
+            'An override reason is required to register a shared bank account.',
         }
       }
     }
@@ -172,6 +184,8 @@ export const addBankAccountAction = async (
         accountNumber: data.accountNumber,
         accountName: data.accountName,
         isPrimary,
+        isVerified: true,
+        verifiedAt: new Date(),
       },
     })
 
@@ -304,33 +318,105 @@ export const deleteBankAccountAction = async (
   }
 }
 
+export const getBankListAction = async () => {
+  try {
+    await requireAuthenticatedSession()
+    const banks = await bankProvider.listBanks()
+    const sorted = [...banks].sort((a, b) => a.name.localeCompare(b.name))
+    return { success: true, data: sorted }
+  } catch (error) {
+    const err = toActionErrorResult(error, {
+      actionName: 'getBankListAction',
+      fallbackMessage: 'Failed to retrieve bank list',
+    })
+    return {
+      success: false,
+      error: err.error,
+      code: err.code,
+      correlationId: err.correlationId,
+    }
+  }
+}
+
 export const resolveAccountNameAction = async (
-  _bankName: string,
+  bankCodeOrName: string,
   accountNumber: string,
+  targetUserId?: string,
 ) => {
   try {
-    void _bankName
-    await requireAuthenticatedSession()
+    const actor = await requireAuthenticatedSession()
 
-    if (accountNumber.length !== 10) {
+    if (!bankCodeOrName || !bankCodeOrName.trim()) {
+      return { success: false, error: 'Bank selection is required' }
+    }
+
+    const cleanAccount = accountNumber?.trim()
+    if (!cleanAccount || cleanAccount.length !== 10) {
       return { success: false, error: 'Account number must be 10 digits' }
     }
 
-    // Simulate NIBSS network latency (500ms)
-    await new Promise((resolve) => setTimeout(resolve, 500))
+    // Resolve bank code if bank name was passed
+    const banks = await bankProvider.listBanks()
+    // let bankCode = bankCodeOrName.trim()
+    let bankCode = '001'
+    let bankName = bankCodeOrName.trim()
 
-    let resolvedName = 'Olumide Bakare'
-    if (accountNumber.startsWith('0')) {
-      resolvedName = 'Ade Wale'
-    } else if (accountNumber.startsWith('1')) {
-      resolvedName = 'Chinelo Ngozi'
-    } else if (accountNumber.startsWith('2')) {
-      resolvedName = 'Chinedu Okafor'
-    } else if (accountNumber.startsWith('3')) {
-      resolvedName = 'Amina Ibrahim'
+    const matchedByCode = banks.find((b) => b.code === bankCode)
+    if (matchedByCode) {
+      bankName = matchedByCode.name
+    } else {
+      const matchedByName = banks.find(
+        (b) => b.name.toLowerCase() === bankCodeOrName.trim().toLowerCase(),
+      )
+      if (matchedByName) {
+        bankCode = matchedByName.code
+        bankName = matchedByName.name
+      }
     }
 
-    return { success: true, accountName: resolvedName }
+    const memberId = targetUserId || actor.id
+
+    // Check duplicate active bank account across active members (Rule A-22)
+    const existingActiveAccount = await prisma.bankAccount.findFirst({
+      where: {
+        bankCode: bankCode || undefined,
+        accountNumber: cleanAccount,
+        user: { isActive: true },
+      },
+      include: { user: true },
+    })
+
+    if (existingActiveAccount && existingActiveAccount.userId !== memberId) {
+      return {
+        success: false,
+        error:
+          'This bank account is already registered by another member. Please contact an administrator.',
+      }
+    }
+
+    // Call bank provider to resolve account name
+    const resolved = await bankProvider.resolveAccount(bankCode, cleanAccount)
+
+    // Name similarity check
+    let nameMatch: NameMatchResult = { isMatch: true, similarityScore: 1 }
+    if (memberId) {
+      const targetUser = await prisma.user.findUnique({
+        where: { id: memberId },
+        select: { name: true },
+      })
+      if (targetUser?.name) {
+        nameMatch = checkNameSimilarity(targetUser.name, resolved.accountName)
+      }
+    }
+
+    return {
+      success: true,
+      accountName: resolved.accountName,
+      accountNumber: resolved.accountNumber,
+      bankCode: resolved.bankCode,
+      bankName,
+      nameMatch,
+    }
   } catch (error) {
     const err = toActionErrorResult(error, {
       actionName: 'resolveAccountNameAction',
@@ -406,7 +492,7 @@ export const deactivateUserAction = async (data: {
             notes: data.notes,
           },
         },
-        tx
+        tx,
       )
 
       return user
@@ -503,6 +589,179 @@ export const reactivateUserAction = async (data: { userId: string }) => {
 }
 
 /**
+ * Fetches all society receiving accounts for admin configuration.
+ */
+export const getSocietyBankAccountsAction = async () => {
+  try {
+    await requireAnyPermission([AdminPermission.SOCIETY_SETTINGS_MANAGE])
+
+    const accounts = await prisma.societyBankAccount.findMany({
+      orderBy: [{ isActive: 'desc' }, { createdAt: 'desc' }],
+    })
+
+    return { success: true, data: accounts }
+  } catch (error) {
+    const err = toActionErrorResult(error, {
+      actionName: 'getSocietyBankAccountsAction',
+      fallbackMessage: 'Failed to fetch society bank accounts.',
+    })
+    return {
+      success: false,
+      error: err.error,
+      code: err.code,
+      correlationId: err.correlationId,
+    }
+  }
+}
+
+/**
+ * Fetches the active society receiving bank account for members and staff.
+ */
+export const getActiveSocietyBankAccountAction = async () => {
+  try {
+    await requireAuthenticatedSession()
+
+    const activeAccount = await prisma.societyBankAccount.findFirst({
+      where: { isActive: true },
+    })
+
+    return { success: true, data: activeAccount }
+  } catch (error) {
+    const err = toActionErrorResult(error, {
+      actionName: 'getActiveSocietyBankAccountAction',
+      fallbackMessage: 'Failed to fetch active society bank account.',
+    })
+    return {
+      success: false,
+      error: err.error,
+      code: err.code,
+      correlationId: err.correlationId,
+    }
+  }
+}
+
+/**
+ * Activates a specific society receiving bank account, deactivating all others in a transaction.
+ */
+export const setActiveSocietyBankAccountAction = async (id: string) => {
+  try {
+    const actor = await requireAnyPermission([
+      AdminPermission.SOCIETY_SETTINGS_MANAGE,
+    ])
+
+    const target = await prisma.societyBankAccount.findUnique({
+      where: { id },
+    })
+
+    if (!target) {
+      return { success: false, error: 'Society bank account not found.' }
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.societyBankAccount.updateMany({
+        data: { isActive: false },
+      })
+      await tx.societyBankAccount.update({
+        where: { id },
+        data: { isActive: true },
+      })
+    })
+
+    await recordAuditEvent({
+      actorId: actor.id,
+      actorRole: actor.role,
+      action: AuditAction.SETTING_CHANGED,
+      entityType: 'SocietyBankAccount',
+      entityId: id,
+      metadata: {
+        accountNumber: target.accountNumber,
+        bankName: target.bankName,
+        status: 'ACTIVATED',
+      },
+    })
+
+    try {
+      revalidatePath('/admin/settings')
+      revalidatePath('/dashboard')
+    } catch {}
+
+    return { success: true }
+  } catch (error) {
+    const err = toActionErrorResult(error, {
+      actionName: 'setActiveSocietyBankAccountAction',
+      fallbackMessage: 'Failed to set active society bank account.',
+    })
+    return {
+      success: false,
+      error: err.error,
+      code: err.code,
+      correlationId: err.correlationId,
+    }
+  }
+}
+
+/**
+ * Deletes an inactive society bank account.
+ */
+export const deleteSocietyBankAccountAction = async (id: string) => {
+  try {
+    const actor = await requireAnyPermission([
+      AdminPermission.SOCIETY_SETTINGS_MANAGE,
+    ])
+
+    const target = await prisma.societyBankAccount.findUnique({
+      where: { id },
+    })
+
+    if (!target) {
+      return { success: false, error: 'Society bank account not found.' }
+    }
+
+    if (target.isActive) {
+      return {
+        success: false,
+        error:
+          'Cannot delete the active receiving account. Please activate another account first.',
+      }
+    }
+
+    await prisma.societyBankAccount.delete({
+      where: { id },
+    })
+
+    await recordAuditEvent({
+      actorId: actor.id,
+      actorRole: actor.role,
+      action: AuditAction.SETTING_CHANGED,
+      entityType: 'SocietyBankAccount',
+      entityId: id,
+      metadata: {
+        accountNumber: target.accountNumber,
+        bankName: target.bankName,
+        status: 'DELETED',
+      },
+    })
+
+    try {
+      revalidatePath('/admin/settings')
+    } catch {}
+
+    return { success: true }
+  } catch (error) {
+    const err = toActionErrorResult(error, {
+      actionName: 'deleteSocietyBankAccountAction',
+      fallbackMessage: 'Failed to delete society bank account.',
+    })
+    return {
+      success: false,
+      error: err.error,
+      code: err.code,
+      correlationId: err.correlationId,
+    }
+  }
+}
+
+/**
  * Creates a cooperative receiving bank account shown to members for offline payments (P2-01).
  * Never confused with member payout accounts.
  */
@@ -518,19 +777,44 @@ export const createSocietyBankAccountAction = async (data: {
       AdminPermission.SOCIETY_SETTINGS_MANAGE,
     ])
 
-    const created = await prisma.societyBankAccount.create({
-      data: {
-        bankCode: data.bankCode || null,
-        bankName: data.bankName,
-        accountNumber: data.accountNumber,
-        accountName: data.accountName,
-        isActive: data.isActive ?? false,
-        createdById: actor.id,
+    const isFirstAccount = (await prisma.societyBankAccount.count()) === 0
+    const shouldBeActive = data.isActive ?? isFirstAccount
+
+    const created = await prisma.$transaction(async (tx) => {
+      if (shouldBeActive) {
+        await tx.societyBankAccount.updateMany({
+          data: { isActive: false },
+        })
+      }
+
+      return tx.societyBankAccount.create({
+        data: {
+          bankCode: data.bankCode || null,
+          bankName: data.bankName,
+          accountNumber: data.accountNumber,
+          accountName: data.accountName,
+          isActive: shouldBeActive,
+          createdById: actor.id,
+        },
+      })
+    })
+
+    await recordAuditEvent({
+      actorId: actor.id,
+      actorRole: actor.role,
+      action: AuditAction.SETTING_CHANGED,
+      entityType: 'SocietyBankAccount',
+      entityId: created.id,
+      metadata: {
+        accountNumber: created.accountNumber,
+        bankName: created.bankName,
+        isActive: created.isActive,
       },
     })
 
     try {
       revalidatePath('/admin/settings')
+      revalidatePath('/dashboard')
     } catch {}
 
     return { success: true, data: created }

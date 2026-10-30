@@ -16,23 +16,17 @@ import {
 import { Button } from '../ui/button'
 import { Field, FieldError, FieldLabel } from '../ui/field'
 import { Input } from '../ui/input'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select'
-import { addBankAccountAction, resolveAccountNameAction } from '@/models/members/actions'
+import { BankSelectCombobox } from '@/components/banking/BankSelectCombobox'
+import {
+  addBankAccountAction,
+  getBankListAction,
+  resolveAccountNameAction,
+} from '@/models/members/actions'
 import { toast } from 'sonner'
-import { Plus, Loader2 } from 'lucide-react'
+import { Plus, Loader2, ShieldCheck, AlertTriangle } from 'lucide-react'
+import { Bank } from '@/lib/banking/provider'
 
 type BankFormValues = z.infer<typeof bankInfoSchema>
-
-const SUPPORTED_BANKS = [
-  'Access Bank',
-  'Guaranty Trust Bank (GTBank)',
-  'United Bank for Africa (UBA)',
-  'Zenith Bank',
-  'First Bank of Nigeria',
-  'Wema Bank',
-  'Sterling Bank',
-  'Kuda Bank',
-]
 
 interface AddBankAccountDialogProps {
   userId: string
@@ -43,6 +37,9 @@ export const AddBankAccountDialog = ({ userId, onSuccess }: AddBankAccountDialog
   const [open, setOpen] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [isResolving, setIsResolving] = useState(false)
+  const [banks, setBanks] = useState<Bank[]>([])
+  const [selectedBankCode, setSelectedBankCode] = useState<string>('')
+  const [nameMatchWarning, setNameMatchWarning] = useState<string | null>(null)
 
   const { control, handleSubmit, watch, setValue, formState: { errors }, reset } = useForm<BankFormValues>({
     resolver: standardSchemaResolver(bankInfoSchema),
@@ -54,21 +51,34 @@ export const AddBankAccountDialog = ({ userId, onSuccess }: AddBankAccountDialog
     },
   })
 
-  const bankNameValue = watch('bankName')
+  useEffect(() => {
+    const fetchBanks = async () => {
+      const res = await getBankListAction()
+      if (res.success && res.data) {
+        setBanks(res.data)
+      }
+    }
+    fetchBanks()
+  }, [])
+
   const accountNumberValue = watch('accountNumber')
 
-  // Trigger NIBSS mock lookup when bankName and accountNumber (10 digits) are entered
+  // Trigger account resolution when bank and 10-digit account number are provided
   useEffect(() => {
     const resolveName = async () => {
-      if (bankNameValue && accountNumberValue && accountNumberValue.length === 10) {
+      if (selectedBankCode && accountNumberValue && accountNumberValue.length === 10) {
         setIsResolving(true)
+        setNameMatchWarning(null)
         setValue('accountName', '') // Reset previous resolved name
 
-        const result = await resolveAccountNameAction(bankNameValue, accountNumberValue)
+        const result = await resolveAccountNameAction(selectedBankCode, accountNumberValue, userId)
         setIsResolving(false)
 
         if (result.success && result.accountName) {
           setValue('accountName', result.accountName, { shouldValidate: true })
+          if (result.nameMatch && !result.nameMatch.isMatch) {
+            setNameMatchWarning(result.nameMatch.reason || 'Account name does not match registered profile name.')
+          }
           toast.success(`Account resolved: ${result.accountName}`)
         } else {
           toast.error(result.error || 'Failed to resolve account number. Verify details.')
@@ -77,17 +87,22 @@ export const AddBankAccountDialog = ({ userId, onSuccess }: AddBankAccountDialog
     }
 
     resolveName()
-  }, [bankNameValue, accountNumberValue, setValue])
+  }, [selectedBankCode, accountNumberValue, setValue, userId])
 
   const onSubmit = async (data: BankFormValues) => {
     setIsSubmitting(true)
-    const result = await addBankAccountAction(userId, data)
+    const result = await addBankAccountAction(userId, {
+      ...data,
+      bankCode: selectedBankCode,
+    })
     setIsSubmitting(false)
 
     if (result.success) {
       toast.success('Bank account added successfully.')
       setOpen(false)
       reset()
+      setSelectedBankCode('')
+      setNameMatchWarning(null)
       if (onSuccess) onSuccess()
     } else {
       toast.error(result.error || 'Failed to add bank account.')
@@ -97,7 +112,11 @@ export const AddBankAccountDialog = ({ userId, onSuccess }: AddBankAccountDialog
   return (
     <Dialog open={open} onOpenChange={(val) => {
       setOpen(val)
-      if (!val) reset()
+      if (!val) {
+        reset()
+        setSelectedBankCode('')
+        setNameMatchWarning(null)
+      }
     }}>
       <DialogTrigger asChild>
         <Button className="cursor-pointer rounded-sm text-on-primary flex items-center gap-1.5 h-10">
@@ -120,18 +139,17 @@ export const AddBankAccountDialog = ({ userId, onSuccess }: AddBankAccountDialog
             render={({ field, fieldState }) => (
               <Field>
                 <FieldLabel htmlFor="bank-select">Select Bank</FieldLabel>
-                <Select onValueChange={field.onChange} value={field.value}>
-                  <SelectTrigger id="bank-select" className="rounded-sm h-11">
-                    <SelectValue placeholder="Select Bank" />
-                  </SelectTrigger>
-                  <SelectContent className="rounded-sm">
-                    {SUPPORTED_BANKS.map((bank) => (
-                      <SelectItem key={bank} value={bank}>
-                        {bank}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <BankSelectCombobox
+                  id="bank-select"
+                  banks={banks}
+                  selectedBankCode={selectedBankCode}
+                  selectedBankName={field.value}
+                  onSelectBank={(bank) => {
+                    setSelectedBankCode(bank.code)
+                    field.onChange(bank.name)
+                  }}
+                  placeholder="Search bank name or code..."
+                />
                 {fieldState.invalid && <FieldError errors={[fieldState.error]} />}
               </Field>
             )}
@@ -149,7 +167,8 @@ export const AddBankAccountDialog = ({ userId, onSuccess }: AddBankAccountDialog
                     id="account-num-input"
                     maxLength={10}
                     placeholder="10-digit Account Number"
-                    className="rounded-sm h-11 font-mono tracking-wider pr-10"
+                    className="rounded-sm h-11 font-mono tracking-wider pr-10 text-xs"
+                    onChange={(e) => field.onChange(e.target.value.replace(/\D/g, '').slice(0, 10))}
                   />
                   {isResolving && (
                     <div className="absolute right-3 top-1/2 -translate-y-1/2">
@@ -172,10 +191,20 @@ export const AddBankAccountDialog = ({ userId, onSuccess }: AddBankAccountDialog
                   {...field}
                   id="account-name-input"
                   readOnly
-                  placeholder={isResolving ? 'Resolving name...' : 'Auto-populated on account entry'}
-                  className="rounded-sm h-11 bg-surface-container-low border-outline-variant/35 font-semibold text-primary/80 read-only:cursor-not-allowed"
+                  placeholder={isResolving ? 'Resolving name via NUBAN provider...' : 'Auto-populated on account entry'}
+                  className="rounded-sm h-11 bg-surface-container-low border-outline-variant/35 font-semibold text-primary/80 read-only:cursor-not-allowed uppercase text-xs"
                 />
                 {fieldState.invalid && <FieldError errors={[fieldState.error]} />}
+                {field.value && !nameMatchWarning && (
+                  <span className="text-[11px] text-success flex items-center gap-1 font-medium mt-1">
+                    <ShieldCheck className="w-3.5 h-3.5" /> Account name verified
+                  </span>
+                )}
+                {nameMatchWarning && (
+                  <span className="text-[11px] text-amber-600 dark:text-amber-400 flex items-center gap-1 font-medium mt-1">
+                    <AlertTriangle className="w-3.5 h-3.5" /> {nameMatchWarning}
+                  </span>
+                )}
               </Field>
             )}
           />
@@ -185,14 +214,14 @@ export const AddBankAccountDialog = ({ userId, onSuccess }: AddBankAccountDialog
               type="button"
               variant="ghost"
               onClick={() => setOpen(false)}
-              className="cursor-pointer rounded-sm h-10"
+              className="cursor-pointer rounded-sm h-10 text-xs"
             >
               Cancel
             </Button>
             <Button
               type="submit"
               disabled={isSubmitting || isResolving || !watch('accountName')}
-              className="cursor-pointer rounded-sm text-on-primary h-10 px-5"
+              className="cursor-pointer rounded-sm text-on-primary h-10 px-5 text-xs"
             >
               {isSubmitting ? 'Saving...' : 'Add Account'}
             </Button>
