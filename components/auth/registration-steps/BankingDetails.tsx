@@ -1,5 +1,6 @@
 'use client'
 
+import React, { useState, useEffect } from 'react'
 import {
   Combobox,
   ComboboxContent,
@@ -17,15 +18,44 @@ import {
 import { Input } from '@/components/ui/input'
 import banksList from '@/data/bank-list.json'
 import { RegistrationFormValues } from '@/types/register.interface'
-import { Control, Controller } from 'react-hook-form'
+import { Control, Controller, useWatch, UseFormSetValue } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
+import { resolveAccountNameAction } from '@/models/members/actions'
+import { Loader2, ShieldCheck } from 'lucide-react'
+import { toast } from 'sonner'
 
-const BankingDetails = ({
-  control,
-}: {
+interface BankingDetailsProps {
   control: Control<RegistrationFormValues>
-}) => {
+  setValue?: UseFormSetValue<RegistrationFormValues>
+}
+
+const BankingDetails = ({ control, setValue }: BankingDetailsProps) => {
   const { t } = useTranslation('auth')
+  const [isResolving, setIsResolving] = useState(false)
+
+  const bankName = useWatch({ control, name: 'bankName' })
+  const accountNumber = useWatch({ control, name: 'accountNumber' })
+
+  useEffect(() => {
+    if (!setValue) return
+
+    const resolve = async () => {
+      if (bankName && accountNumber && accountNumber.trim().length === 10) {
+        setIsResolving(true)
+        const res = await resolveAccountNameAction(bankName, accountNumber.trim())
+        setIsResolving(false)
+
+        if (res.success && res.accountName) {
+          setValue('accountName', res.accountName, { shouldValidate: true })
+          toast.success(`Account resolved: ${res.accountName}`)
+        } else if (res.error) {
+          toast.error(res.error)
+        }
+      }
+    }
+
+    resolve()
+  }, [bankName, accountNumber, setValue])
 
   return (
     <FieldGroup>
@@ -41,6 +71,7 @@ const BankingDetails = ({
                 </FieldLabel>
                 <Combobox
                   items={banksList}
+                  itemToStringLabel={(item: any) => item?.name || ''}
                   name={field.name}
                   value={field.value}
                   onValueChange={field.onChange}
@@ -54,7 +85,10 @@ const BankingDetails = ({
                     </ComboboxEmpty>
                     <ComboboxList>
                       {(item) => (
-                        <ComboboxItem key={item.id} value={item.name}>
+                        <ComboboxItem
+                          key={`${item.id ?? ''}-${item.code ?? ''}-${item.name}`}
+                          value={item.name}
+                        >
                           {item.name}
                         </ComboboxItem>
                       )}
@@ -78,13 +112,20 @@ const BankingDetails = ({
                 <FieldLabel>
                   {t('register.form.banking_details.account_number')}
                 </FieldLabel>
-                <Input
-                  {...field}
-                  className='rounded-sm'
-                  placeholder={t(
-                    'register.form.banking_details.account_number',
+                <div className='relative'>
+                  <Input
+                    {...field}
+                    maxLength={10}
+                    className='rounded-sm font-mono tracking-wider pr-9'
+                    placeholder={t(
+                      'register.form.banking_details.account_number',
+                    )}
+                    onChange={(e) => field.onChange(e.target.value.replace(/\D/g, '').slice(0, 10))}
+                  />
+                  {isResolving && (
+                    <Loader2 className='w-4 h-4 animate-spin text-primary absolute right-3 top-2.5' />
                   )}
-                />
+                </div>
                 {fieldState.invalid && (
                   <FieldError errors={[fieldState.error]} />
                 )}
@@ -106,11 +147,16 @@ const BankingDetails = ({
                 </FieldLabel>
                 <Input
                   {...field}
-                  className='rounded-sm'
-                  placeholder={t('register.form.banking_details.account_name')}
+                  className='rounded-sm uppercase'
+                  placeholder={isResolving ? 'Resolving account name...' : t('register.form.banking_details.account_name')}
                 />
                 {fieldState.invalid && (
                   <FieldError errors={[fieldState.error]} />
+                )}
+                {field.value && !isResolving && (
+                  <span className='text-[11px] text-success flex items-center gap-1 font-medium mt-1'>
+                    <ShieldCheck className='w-3.5 h-3.5' /> Account name verified
+                  </span>
                 )}
               </Field>
             )

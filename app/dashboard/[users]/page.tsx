@@ -4,7 +4,9 @@ import { getMemberById, getEarningRecords } from '@/models/members/query'
 import { getUserLedgerBalances, getUserTransactions } from '@/models/transactions/actions'
 import { MemberDashboardBento } from '@/components/members/MemberDashboardBento'
 import { ProfileCompletionCard } from '@/components/members/ProfileCompletionCard'
+import { SocietyAccountBanner } from '@/components/payments/SocietyAccountBanner'
 import { getProfileCompletion } from '@/lib/services/profile.service'
+import { getActiveSocietyBankAccountAction } from '@/models/members/actions'
 import { ShieldAlert } from 'lucide-react'
 
 interface PageProps {
@@ -35,19 +37,21 @@ const UserPage = async ({ params }: PageProps) => {
     )
   }
 
-  // Fetch member info, earnings, ledger balances, transactions, and profile completion concurrently
+  // Fetch member info, earnings, ledger balances, transactions, profile completion, and active society bank account concurrently
   const [
     memberResult,
     earningResult,
     balancesResult,
     transactionsResult,
     profileCompletionReport,
+    societyAccountResult,
   ] = await Promise.all([
     getMemberById(profileId),
     getEarningRecords(profileId),
     getUserLedgerBalances(profileId),
     getUserTransactions(profileId),
     getProfileCompletion(profileId),
+    getActiveSocietyBankAccountAction(),
   ])
 
   if (!memberResult.success || !memberResult.data) {
@@ -87,6 +91,10 @@ const UserPage = async ({ params }: PageProps) => {
 
   return (
     <div className="w-[95%] sm:w-[90%] mx-auto py-6 max-w-5xl">
+      <SocietyAccountBanner
+        societyAccount={societyAccountResult.success && societyAccountResult.data ? societyAccountResult.data : null}
+        membershipNumber={member.membership?.membershipNumber}
+      />
       <ProfileCompletionCard report={profileCompletionReport} userId={profileId} />
       <MemberDashboardBento
         userId={profileId}

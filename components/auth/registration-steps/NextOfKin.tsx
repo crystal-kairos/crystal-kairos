@@ -186,6 +186,7 @@ const NextOfKin = ({
                 </FieldLabel>
                 <Combobox
                   items={banksList}
+                  itemToStringLabel={(item: any) => item?.name || ''}
                   name={field.name}
                   value={field.value}
                   onValueChange={field.onChange}
@@ -199,7 +200,10 @@ const NextOfKin = ({
                     </ComboboxEmpty>
                     <ComboboxList>
                       {(item) => (
-                        <ComboboxItem key={item.id} value={item.name}>
+                        <ComboboxItem
+                          key={`${item.id ?? ''}-${item.code ?? ''}-${item.name}`}
+                          value={item.name}
+                        >
                           {item.name}
                         </ComboboxItem>
                       )}

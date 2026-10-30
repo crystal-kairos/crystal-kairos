@@ -27,6 +27,7 @@ import { toast } from 'sonner'
 import { useRouter } from 'next/navigation'
 import { AdminPermission } from '@/generated/prisma/enums'
 import { AdminPermissionsEditor } from './AdminPermissionsEditor'
+import { SocietyBankAccountsManager } from './SocietyBankAccountsManager'
 import Link from 'next/link'
 
 interface StaffMember {
@@ -51,7 +52,7 @@ export const AdminSettingsClient = ({
   const router = useRouter()
   const isOwner = actorRole === 'OWNER'
   const [activeTab, setActiveTab] = useState<
-    'users' | 'permissions' | 'notifications'
+    'users' | 'permissions' | 'notifications' | 'society-accounts'
   >('users')
 
   // User Management States
@@ -171,6 +172,16 @@ export const AdminSettingsClient = ({
         >
           Notification Preferences
         </button>
+        <button
+          onClick={() => setActiveTab('society-accounts')}
+          className={`pb-2 text-xs font-bold uppercase tracking-wider transition-colors border-b-2 ${
+            activeTab === 'society-accounts'
+              ? 'text-primary border-primary'
+              : 'text-muted-foreground border-transparent hover:text-primary'
+          }`}
+        >
+          Receiving Accounts
+        </button>
       </div>
 
       {/* Tab Content: User Management */}
@@ -190,7 +201,7 @@ export const AdminSettingsClient = ({
                     <span>Add Staff</span>
                   </Button>
                 </DialogTrigger>
-                <DialogContent className='sm:max-w-[425px]'>
+                <DialogContent className='sm:max-w-106.25'>
                   <form onSubmit={handleAddStaffSubmit}>
                     <DialogHeader>
                       <DialogTitle className='text-primary font-heading font-bold text-base'>
@@ -367,7 +378,9 @@ export const AdminSettingsClient = ({
                 key={member.id}
                 type='button'
                 size='sm'
-                variant={selectedStaff?.id === member.id ? 'default' : 'outline'}
+                variant={
+                  selectedStaff?.id === member.id ? 'default' : 'outline'
+                }
                 onClick={() => setSelectedStaffId(member.id)}
                 className='text-xs h-8'
               >
@@ -429,7 +442,7 @@ export const AdminSettingsClient = ({
                       }
                       className='sr-only peer'
                     />
-                    <div className="w-9 h-5 bg-surface-variant peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary" />
+                    <div className="w-9 h-5 bg-surface-variant peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary" />
                   </label>
                 </div>
                 <div className='flex justify-between items-center'>
@@ -450,7 +463,7 @@ export const AdminSettingsClient = ({
                       }
                       className='sr-only peer'
                     />
-                    <div className="w-9 h-5 bg-surface-variant peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary" />
+                    <div className="w-9 h-5 bg-surface-variant peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary" />
                   </label>
                 </div>
               </div>
@@ -483,7 +496,7 @@ export const AdminSettingsClient = ({
                       }
                       className='sr-only peer'
                     />
-                    <div className="w-9 h-5 bg-surface-variant peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary" />
+                    <div className="w-9 h-5 bg-surface-variant peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary" />
                   </label>
                 </div>
                 <div className='flex justify-between items-center'>
@@ -507,7 +520,7 @@ export const AdminSettingsClient = ({
                       }
                       className='sr-only peer'
                     />
-                    <div className="w-9 h-5 bg-surface-variant peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary" />
+                    <div className="w-9 h-5 bg-surface-variant peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary" />
                   </label>
                 </div>
               </div>
@@ -523,6 +536,13 @@ export const AdminSettingsClient = ({
               <span>Save Preferences</span>
             </Button>
           </div>
+        </div>
+      )}
+
+      {/* Tab Content: Society Receiving Accounts */}
+      {activeTab === 'society-accounts' && (
+        <div className='space-y-4 animate-in fade-in duration-200'>
+          <SocietyBankAccountsManager />
         </div>
       )}
     </div>

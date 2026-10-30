@@ -11,7 +11,7 @@ const Layout = async ({ children }: { children: ReactNode }) => {
     actor = await requireStaffSession()
   } catch (error) {
     if (error instanceof AuthzError && error.code === 'UNAUTHENTICATED') {
-      redirect('/login')
+      redirect('/login?error=session_expired')
     }
     if (error instanceof AuthzError && error.code === 'MFA_REQUIRED') {
       redirect('/security?reason=mfa_required&callbackUrl=/admin')

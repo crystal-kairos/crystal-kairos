@@ -51,7 +51,31 @@ export const proxy = auth(async (req) => {
         (sessionUser.sessionVersion === undefined ||
           dbUser.sessionVersion === sessionUser.sessionVersion)
       ) {
-        isSessionValid = true
+        // If session carries sid, also verify sid validity (idle/absolute expiration or revocation)
+        if (sessionUser.sid) {
+          const userSession = await prisma.userSession.findUnique({
+            where: { id: sessionUser.sid },
+            select: {
+              id: true,
+              expiresAt: true,
+              idleExpiresAt: true,
+              revokedAt: true,
+            },
+          })
+          const now = new Date()
+          if (
+            userSession &&
+            !userSession.revokedAt &&
+            userSession.expiresAt > now &&
+            userSession.idleExpiresAt > now
+          ) {
+            isSessionValid = true
+          } else {
+            isSessionValid = false
+          }
+        } else {
+          isSessionValid = true
+        }
       }
     } catch {
       isSessionValid = false
@@ -71,8 +95,10 @@ export const proxy = auth(async (req) => {
       clearAuthCookies(res)
       return res
     }
-    // If attempting to access any protected route with an invalid session, bounce to login with cleared cookies
-    const redirectRes = NextResponse.redirect(new URL('/login', req.url))
+    // If attempting to access any protected route with an invalid session, bounce to login with cleared cookies and error flag
+    const loginUrl = new URL('/login', req.url)
+    loginUrl.searchParams.set('error', 'session_expired')
+    const redirectRes = NextResponse.redirect(loginUrl)
     clearAuthCookies(redirectRes)
     return redirectRes
   }
