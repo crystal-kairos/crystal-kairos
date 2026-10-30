@@ -3,6 +3,8 @@ import { redirect } from 'next/navigation'
 import { getMemberById, getEarningRecords } from '@/models/members/query'
 import { getUserLedgerBalances, getUserTransactions } from '@/models/transactions/actions'
 import { MemberDashboardBento } from '@/components/members/MemberDashboardBento'
+import { ProfileCompletionCard } from '@/components/members/ProfileCompletionCard'
+import { getProfileCompletion } from '@/lib/services/profile.service'
 import { ShieldAlert } from 'lucide-react'
 
 interface PageProps {
@@ -33,12 +35,19 @@ const UserPage = async ({ params }: PageProps) => {
     )
   }
 
-  // Fetch member info, earnings, ledger balances, and transactions concurrently
-  const [memberResult, earningResult, balancesResult, transactionsResult] = await Promise.all([
+  // Fetch member info, earnings, ledger balances, transactions, and profile completion concurrently
+  const [
+    memberResult,
+    earningResult,
+    balancesResult,
+    transactionsResult,
+    profileCompletionReport,
+  ] = await Promise.all([
     getMemberById(profileId),
     getEarningRecords(profileId),
     getUserLedgerBalances(profileId),
     getUserTransactions(profileId),
+    getProfileCompletion(profileId),
   ])
 
   if (!memberResult.success || !memberResult.data) {
@@ -78,6 +87,7 @@ const UserPage = async ({ params }: PageProps) => {
 
   return (
     <div className="w-[95%] sm:w-[90%] mx-auto py-6 max-w-5xl">
+      <ProfileCompletionCard report={profileCompletionReport} userId={profileId} />
       <MemberDashboardBento
         userId={profileId}
         memberName={member.name}

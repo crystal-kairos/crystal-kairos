@@ -82,6 +82,8 @@ export const searchMemberByEmailAction = async (email: string) => {
   }
 }
 
+import { assertProductEligibility } from '@/lib/services/profile.service'
+
 /**
  * Apply for a loan, dynamically calculating interest rates and fees.
  */
@@ -97,6 +99,8 @@ export const applyForLoanAction = async (
 ) => {
   try {
     const actor = await requireMemberSession(userId)
+    await assertProductEligibility(actor.id, 'LOAN')
+
     const validatedRequestedAmount = validateAmount(
       data.requestedAmount,
       'requestedAmount',

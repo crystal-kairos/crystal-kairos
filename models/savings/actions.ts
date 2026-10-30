@@ -27,6 +27,8 @@ import { lockMembers } from '@/lib/db/concurrency'
 import { assertSavingsWithdrawalAllowed } from '@/lib/services/guarantees.service'
 import { recordAuditEvent, AuditAction, AuditOutcome } from '@/lib/services/audit.service'
 
+import { assertProductEligibility } from '@/lib/services/profile.service'
+
 /**
  * Creates a new savings plan in PENDING status.
  */
@@ -45,6 +47,8 @@ export const createSavingsPlanAction = async (
 ) => {
   try {
     const actor = await requireMemberSession(userId)
+    await assertProductEligibility(actor.id, 'SAVINGS')
+
     const validatedTargetAmount = validateAmount(data.targetAmount, 'targetAmount')
 
     let interestRate = 0

@@ -218,6 +218,11 @@ export function normalizePhoneNumber(phoneNumber: string): string {
     return `+234${cleaned.slice(1)}`
   }
 
+  // Nigerian format with country code but missing leading plus e.g. 2348012345678
+  if (/^234\d{10}$/.test(cleaned)) {
+    return `+${cleaned}`
+  }
+
   // E.164 format e.g. +2348012345678
   if (/^\+\d{11,15}$/.test(cleaned)) {
     return cleaned

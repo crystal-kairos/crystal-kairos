@@ -42,6 +42,8 @@ const serializeTransaction = (tx: Transaction) => ({
   amount: Number(tx.amount),
 })
 
+import { assertProductEligibility } from '@/lib/services/profile.service'
+
 /**
  * User applies to join an eAjo group slot
  */
@@ -65,6 +67,7 @@ export const applyToEAjoGroupAction = async (
       actor.role === UserRole.USER ? actor.id : userId
 
     await assertTargetUserIsMember(targetUserId)
+    await assertProductEligibility(targetUserId, 'EAJO')
 
     // Verify the group exists and is PENDING (accepting applications)
     const group = await prisma.eAjoGroup.findUnique({ where: { id: groupId } })

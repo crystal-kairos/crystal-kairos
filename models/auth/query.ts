@@ -31,28 +31,38 @@ import { toActionErrorResult } from '@/lib/errors/to-action-result'
 import { normalizePhoneNumber } from '@/lib/domain/eligibility'
 
 export const register = async (
-  personalInfo: Step1State['data'],
-  bankInfo: Step2State['data'],
-  nextOfKin: Step3State['data'],
-  membershipInfo: Step4State['data'],
-  reviewAndSubmit: Step5State['data'],
+  personalInfo: Partial<Step1State['data']> & {
+    name: string
+    email: string
+    phoneNumber: string
+    address?: string
+    dateOfBirth?: Date | string
+    gender?: any
+    occupation?: string
+    privacyConsent?: boolean
+  },
+  bankInfo?: Partial<Step2State['data']> | null,
+  nextOfKin?: Partial<Step3State['data']> | null,
+  membershipInfo?: Partial<Step4State['data']> | null,
+  reviewAndSubmit?: Partial<Step5State['data']> | null,
 ) => {
   try {
-    // Validations
-    const parsedPersonalInfo = personalInfoSchema.parse({
-      ...personalInfo,
-      dateOfBirth: new Date(personalInfo.dateOfBirth),
-    })
-    const parsedBankInfo = bankInfoSchema.parse(bankInfo)
-    const parsedNextOfKin = nextOfKinSchema.parse(nextOfKin)
-    membershipInfoSchema.parse(membershipInfo)
-    reviewAndSubmitSchema.parse(reviewAndSubmit)
+    if (!personalInfo?.name || !personalInfo?.email || !personalInfo?.phoneNumber) {
+      return {
+        success: false,
+        error: 'Full name, email address, and phone number are required for registration.',
+      }
+    }
+
+    const email = personalInfo.email.trim().toLowerCase()
+    const name = personalInfo.name.trim()
+
+    // Normalise and check phone number uniqueness (A-22)
+    const normalizedPhone = normalizePhoneNumber(personalInfo.phoneNumber)
 
     // Check if user already exists
     const existingUser = await prisma.user.findUnique({
-      where: {
-        email: personalInfo.email,
-      },
+      where: { email },
     })
     if (existingUser) {
       return {
@@ -61,8 +71,6 @@ export const register = async (
       }
     }
 
-    // Normalise and check phone number uniqueness (A-22)
-    const normalizedPhone = normalizePhoneNumber(parsedPersonalInfo.phoneNumber)
     const existingPhone = await prisma.userInfo.findFirst({
       where: { phoneNumber: normalizedPhone },
     })
@@ -74,18 +82,35 @@ export const register = async (
       }
     }
 
-    // Check duplicate active bank account across active members (A-22)
-    const existingBank = await prisma.bankAccount.findFirst({
-      where: {
-        accountNumber: parsedBankInfo.accountNumber,
-        user: { isActive: true },
-      },
-    })
-    if (existingBank) {
-      return {
-        success: false,
-        error:
-          'This bank account is already registered by another member. Please contact an administrator.',
+    // Check optional bank account if provided
+    const hasBankDetails = Boolean(
+      bankInfo?.bankName &&
+      bankInfo?.accountNumber &&
+      bankInfo?.accountName,
+    )
+
+    if (hasBankDetails && bankInfo?.accountNumber) {
+      const existingBank = await prisma.bankAccount.findFirst({
+        where: {
+          accountNumber: bankInfo.accountNumber.trim(),
+          user: { isActive: true },
+        },
+      })
+      if (existingBank) {
+        return {
+          success: false,
+          error:
+            'This bank account is already registered by another member. Please contact an administrator.',
+        }
+      }
+    }
+
+    // Parse date of birth if present
+    let dob: Date | null = null
+    if (personalInfo.dateOfBirth) {
+      const parsed = new Date(personalInfo.dateOfBirth)
+      if (!isNaN(parsed.getTime())) {
+        dob = parsed
       }
     }
 
@@ -93,52 +118,63 @@ export const register = async (
     const { user } = await prisma.$transaction(async (tx) => {
       const newUser = await tx.user.create({
         data: {
-          email: parsedPersonalInfo.email,
-          name: parsedPersonalInfo.name,
+          email,
+          name,
         },
       })
 
       await tx.userInfo.create({
         data: {
           userId: newUser.id,
-          address: parsedPersonalInfo.address,
-          dateOfBirth: parsedPersonalInfo.dateOfBirth,
-          gender: parsedPersonalInfo.gender,
-          occupation: parsedPersonalInfo.occupation,
+          address: personalInfo.address?.trim() || null,
+          dateOfBirth: dob,
+          gender: personalInfo.gender || null,
+          occupation: personalInfo.occupation?.trim() || null,
           phoneNumber: normalizedPhone,
         },
       })
 
-      await tx.bankAccount.create({
-        data: {
-          userId: newUser.id,
-          bankName: parsedBankInfo.bankName,
-          accountNumber: parsedBankInfo.accountNumber,
-          accountName: parsedBankInfo.accountName,
-        },
-      })
+      if (hasBankDetails && bankInfo) {
+        await tx.bankAccount.create({
+          data: {
+            userId: newUser.id,
+            bankName: bankInfo.bankName!.trim(),
+            accountNumber: bankInfo.accountNumber!.trim(),
+            accountName: bankInfo.accountName!.trim(),
+            isPrimary: true,
+          },
+        })
+      }
 
-      await tx.nextOfKin.create({
-        data: {
-          userId: newUser.id,
-          name: parsedNextOfKin.name,
-          phoneNumber: parsedNextOfKin.phoneNumber,
-          relationship: parsedNextOfKin.relationship,
-          occupation: parsedNextOfKin.occupation,
-          address: parsedNextOfKin.address,
-          bankName: parsedNextOfKin.bankName,
-          accountNumber: parsedNextOfKin.accountNumber,
-          accountName: parsedNextOfKin.accountName,
-        },
-      })
+      const hasNextOfKinDetails = Boolean(
+        nextOfKin?.name &&
+        nextOfKin?.phoneNumber &&
+        nextOfKin?.relationship,
+      )
+
+      if (hasNextOfKinDetails && nextOfKin) {
+        await tx.nextOfKin.create({
+          data: {
+            userId: newUser.id,
+            name: nextOfKin.name!.trim(),
+            phoneNumber: nextOfKin.phoneNumber!.trim(),
+            relationship: nextOfKin.relationship!,
+            occupation: nextOfKin.occupation?.trim() || 'Not Specified',
+            address: nextOfKin.address?.trim() || 'Not Specified',
+            bankName: nextOfKin.bankName?.trim() || 'Not Specified',
+            accountNumber: nextOfKin.accountNumber?.trim() || 'Not Specified',
+            accountName: nextOfKin.accountName?.trim() || 'Not Specified',
+          },
+        })
+      }
 
       await tx.membership.create({
         data: {
           userId: newUser.id,
-          interests: membershipInfo.interests,
-          referralName: membershipInfo.referralName,
-          referralPhoneNumber: membershipInfo.referralPhoneNumber,
-          assumptions: membershipInfo.assumptions,
+          interests: membershipInfo?.interests || [],
+          referralName: membershipInfo?.referralName?.trim() || null,
+          referralPhoneNumber: membershipInfo?.referralPhoneNumber?.trim() || null,
+          assumptions: membershipInfo?.assumptions || [],
         },
       })
 

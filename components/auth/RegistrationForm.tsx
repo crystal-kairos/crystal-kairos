@@ -204,6 +204,49 @@ const RegistrationForm = () => {
     }
   }
 
+  const onQuickRegister = async (formData: RegistrationFormValues) => {
+    switchStepsValues(formData)
+    setLoading(true)
+    const step1Data = getValues(formData, step1.data) as typeof step1.data
+    const response = await register(step1Data)
+    setLoading(false)
+
+    if (!response.success || response.error) {
+      toast.error(response.error)
+    } else {
+      toast.success('Registration successful')
+      setTimeout(() => {
+        router.replace('/register/success')
+      }, REDIRECT_DELAY)
+    }
+  }
+
+  const handleSkipStep = () => {
+    if (currentStep < 5) {
+      dispatch(setCurrentStep(currentStep + 1))
+    }
+  }
+
+  const handleCompleteLater = async () => {
+    setLoading(true)
+    const response = await register(
+      step1.data,
+      step2.data,
+      step3.data,
+      step4.data,
+    )
+    setLoading(false)
+
+    if (!response.success || response.error) {
+      toast.error(response.error)
+    } else {
+      toast.success('Registration successful')
+      setTimeout(() => {
+        router.replace('/register/success')
+      }, REDIRECT_DELAY)
+    }
+  }
+
   const onSubmit = async (formData: RegistrationFormValues) => {
     if (isValid) {
       switchStepsValues(formData)
@@ -257,29 +300,72 @@ const RegistrationForm = () => {
           {currentStep === 5 && <Review control={control} />}
         </CardContent>
 
-        <CardFooter className='flex justify-between'>
-          <Button
-            type='button'
-            variant='ghost'
-            className='cursor-pointer disabled:opacity-0'
-            disabled={currentStep === 1}
-            onClick={() => dispatch(setCurrentStep(currentStep - 1))}
-          >
-            <MoveLeft /> {t('register.form.buttons.back')}
-          </Button>
-          <Button
-            type='submit'
-            className='rounded-sm text-on-primary cursor-pointer'
-          >
-            {t(
-              currentStep === 5
-                ? loading
-                  ? 'register.form.buttons.loading'
-                  : 'register.form.buttons.submit'
-                : 'register.form.buttons.continue',
-            )}{' '}
-            <MoveRight />
-          </Button>
+        <CardFooter className='flex flex-col sm:flex-row justify-between gap-3'>
+          <div className='flex items-center gap-2'>
+            <Button
+              type='button'
+              variant='ghost'
+              className='cursor-pointer disabled:opacity-0'
+              disabled={currentStep === 1}
+              onClick={() => dispatch(setCurrentStep(currentStep - 1))}
+            >
+              <MoveLeft className='w-4 h-4 mr-1' /> {t('register.form.buttons.back')}
+            </Button>
+            {currentStep > 1 && currentStep < 5 && (
+              <Button
+                type='button'
+                variant='ghost'
+                className='text-muted-foreground hover:text-foreground text-xs cursor-pointer'
+                onClick={handleSkipStep}
+                disabled={loading}
+              >
+                {t('register.form.buttons.skip_step')}
+              </Button>
+            )}
+          </div>
+
+          <div className='flex items-center gap-2'>
+            {currentStep === 1 && (
+              <Button
+                type='button'
+                variant='outline'
+                className='cursor-pointer text-xs'
+                onClick={handleSubmit(onQuickRegister)}
+                disabled={loading}
+              >
+                {loading
+                  ? t('register.form.buttons.loading')
+                  : t('register.form.buttons.quick_register')}
+              </Button>
+            )}
+            {currentStep > 1 && currentStep < 5 && (
+              <Button
+                type='button'
+                variant='outline'
+                className='cursor-pointer text-xs'
+                onClick={handleCompleteLater}
+                disabled={loading}
+              >
+                {loading
+                  ? t('register.form.buttons.loading')
+                  : t('register.form.buttons.complete_later')}
+              </Button>
+            )}
+            <Button
+              type='submit'
+              className='rounded-sm text-on-primary cursor-pointer'
+              disabled={loading}
+            >
+              {t(
+                currentStep === 5
+                  ? loading
+                    ? 'register.form.buttons.loading'
+                    : 'register.form.buttons.submit'
+                  : 'register.form.buttons.continue',
+              )}{' '}
+              <MoveRight className='w-4 h-4 ml-1' />
+            </Button>
+          </div>
         </CardFooter>
       </form>
     </RegistrationFormWrapper>

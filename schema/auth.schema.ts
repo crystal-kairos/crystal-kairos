@@ -19,6 +19,22 @@ export const personalInfoSchema = z.object({
   gender: z.enum(Object.values(Gender)),
   phoneNumber: z.string().trim().min(1, 'Phone number is required'),
   occupation: z.string().trim().min(1, 'Occupation is required'),
+  privacyConsent: z.boolean().optional(),
+})
+
+export const simplifiedRegistrationSchema = z.object({
+  name: z.string().trim().min(1, 'Full name is required'),
+  email: z.email('Invalid email address'),
+  phoneNumber: z.string().trim().min(1, 'Phone number is required'),
+  privacyConsent: z.boolean().refine((val) => val === true, {
+    message: 'You must accept the privacy policy to register.',
+  }),
+  address: z.string().trim().optional(),
+  dateOfBirth: z.date().optional(),
+  gender: z.enum(Object.values(Gender)).optional(),
+  occupation: z.string().trim().optional(),
+  referralName: z.string().trim().optional(),
+  referralPhoneNumber: z.string().trim().optional(),
 })
 
 export const bankInfoSchema = z.object({
