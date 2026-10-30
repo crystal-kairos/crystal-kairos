@@ -25,9 +25,9 @@ import {
   SelectValue,
 } from '../ui/select'
 import { Textarea } from '../ui/textarea'
-import { updateNextOfKinAction } from '@/models/members/actions'
+import { requestNextOfKinChangeAction } from '@/models/members/profile-change-actions'
 import { toast } from 'sonner'
-import { Pencil } from 'lucide-react'
+import { Pencil, ShieldAlert } from 'lucide-react'
 
 type NextOfKinFormValues = z.infer<typeof nextOfKinSchema>
 
@@ -35,12 +35,14 @@ interface EditNextOfKinDialogProps {
   userId: string
   defaultValues?: Partial<NextOfKinFormValues> | null
   onSuccess?: () => void
+  isPendingReview?: boolean
 }
 
 export const EditNextOfKinDialog = ({
   userId,
   defaultValues,
   onSuccess,
+  isPendingReview = false,
 }: EditNextOfKinDialogProps) => {
   const [open, setOpen] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -62,15 +64,17 @@ export const EditNextOfKinDialog = ({
 
   const onSubmit = async (data: NextOfKinFormValues) => {
     setIsSubmitting(true)
-    const result = await updateNextOfKinAction(userId, data)
+    const result = await requestNextOfKinChangeAction(userId, data)
     setIsSubmitting(false)
 
     if (result.success) {
-      toast.success('Next of Kin details updated successfully.')
+      toast.success(
+        'Next of Kin update request submitted. An administrator will review your changes before they take effect.',
+      )
       setOpen(false)
       if (onSuccess) onSuccess()
     } else {
-      toast.error(result.error || 'Failed to update details.')
+      toast.error(result.error || 'Failed to submit update request.')
     }
   }
 
@@ -83,19 +87,32 @@ export const EditNextOfKinDialog = ({
           className='cursor-pointer flex items-center gap-1.5'
         >
           <Pencil className='w-3.5 h-3.5' />
-          <span>Edit Next of Kin</span>
+          <span>
+            {isPendingReview ? 'Modify Pending Request' : 'Edit Next of Kin'}
+          </span>
         </Button>
       </DialogTrigger>
       <DialogContent className='max-w-lg max-h-[90vh] overflow-y-auto rounded-md'>
         <DialogHeader>
-          <DialogTitle className='font-semibold text-lg'>
-            Update Next of Kin
+          <DialogTitle className='font-semibold text-lg flex items-center gap-2'>
+            <span>Update Next of Kin</span>
           </DialogTitle>
           <DialogDescription className='text-muted-foreground text-sm'>
-            Enter the contact details and payout routing options for your
-            cooperative next of kin.
+            Enter updated contact details and payout routing options. To protect
+            your cooperative assets, changes to Next of Kin require
+            administrator approval before becoming active.
           </DialogDescription>
         </DialogHeader>
+
+        {isPendingReview && (
+          <div className='bg-amber-500/10 border border-amber-500/30 text-amber-700 dark:text-amber-400 p-3 rounded text-xs flex items-center gap-2'>
+            <ShieldAlert className='w-4 h-4 shrink-0' />
+            <span>
+              You currently have an update request under review. Submitting a
+              new change will replace your previous pending request.
+            </span>
+          </div>
+        )}
 
         <form
           onSubmit={handleSubmit(onSubmit)}
@@ -203,7 +220,7 @@ export const EditNextOfKinDialog = ({
                   {...field}
                   id='nok-address'
                   placeholder='Residential Address'
-                  className='rounded-sm min-h-[60px]'
+                  className='rounded-sm min-h-15'
                 />
                 {fieldState.invalid && (
                   <FieldError errors={[fieldState.error]} />
@@ -295,7 +312,7 @@ export const EditNextOfKinDialog = ({
               disabled={isSubmitting}
               className='cursor-pointer rounded-sm text-on-primary h-10'
             >
-              {isSubmitting ? 'Saving...' : 'Save Changes'}
+              {isSubmitting ? 'Submitting...' : 'Submit for Approval'}
             </Button>
           </div>
         </form>

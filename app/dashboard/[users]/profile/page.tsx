@@ -4,6 +4,8 @@ import { getMemberById } from '@/models/members/query'
 import { StatusPill } from '@/components/ui/StatusPill'
 import { NextOfKinCard } from '@/components/members/NextOfKinCard'
 import { EditNextOfKinDialog } from '@/components/members/EditNextOfKinDialog'
+import { getMemberPendingProfileChangesAction } from '@/models/members/profile-change-actions'
+import { ProfileChangeType } from '@/generated/prisma/enums'
 import {
   Card,
   CardContent,
@@ -66,6 +68,15 @@ export default async function ProfilePage({ params }: PageProps) {
   const member = memberResult.data
   const info = member.userInfo
   const membership = member.membership
+
+  const pendingChangesRes = await getMemberPendingProfileChangesAction(member.id)
+  const isNokPending =
+    pendingChangesRes.success &&
+    Boolean(
+      pendingChangesRes.data?.some(
+        (r) => r.changeType === ProfileChangeType.NEXT_OF_KIN,
+      ),
+    )
 
   return (
     <div className='w-[90%] mx-auto py-8 max-w-4xl flex flex-col gap-8'>
@@ -247,6 +258,7 @@ export default async function ProfilePage({ params }: PageProps) {
                 <EditNextOfKinDialog
                   userId={member.id}
                   defaultValues={member.nextOfKin}
+                  isPendingReview={isNokPending}
                 />
               )}
             </div>
@@ -261,6 +273,7 @@ export default async function ProfilePage({ params }: PageProps) {
                 bankName={member.nextOfKin.bankName}
                 accountNumber={member.nextOfKin.accountNumber}
                 accountName={member.nextOfKin.accountName}
+                isPendingReview={isNokPending}
               />
             ) : (
               <div className='p-6 bg-surface-container rounded-md border border-dashed border-outline-variant text-center flex flex-col gap-2'>

@@ -234,6 +234,12 @@ export const AdminDashboardClient = ({ stats, membersChange }: AdminDashboardCli
                 <span className="text-[11px] font-semibold text-on-primary-container/80">Payment Receipts</span>
                 <span className="text-sm font-bold text-warning-amber font-mono">{stats.pendingReceiptsCount}</span>
               </div>
+              <div className="flex justify-between items-center bg-white/5 p-2.5 rounded border border-white/10 backdrop-blur-sm">
+                <span className="text-[11px] font-semibold text-on-primary-container/80">Profile Changes</span>
+                <Link href="/admin/profile-changes" className="text-xs font-bold text-secondary hover:underline">
+                  Review &rarr;
+                </Link>
+              </div>
             </div>
 
             <Button asChild className="w-full mt-4 bg-on-primary text-primary hover:bg-surface-bright py-2 h-9 text-xs font-bold rounded-sm relative z-10 cursor-pointer shadow-sm">

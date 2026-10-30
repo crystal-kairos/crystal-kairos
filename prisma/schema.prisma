@@ -239,6 +239,19 @@ enum TransactionType {
   REFUND
 }
 
+enum ProfileChangeStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum ProfileChangeType {
+  BANK_DETAILS
+  PRIMARY_BANK
+  NEXT_OF_KIN
+}
+
 // ============================================
 // CORE USER MODELS
 // ============================================
@@ -283,24 +296,24 @@ enum AdminPermission {
 }
 
 model User {
-  id                     String         @id @default(uuid())
-  email                  String         @unique
-  username               String         @unique @default(uuid())
+  id                     String                  @id @default(uuid())
+  email                  String                  @unique
+  username               String                  @unique @default(uuid())
   name                   String
   passwordHash           String? // Optional: null until user sets password
   photoUrl               String?
-  role                   UserRole       @default(USER)
+  role                   UserRole                @default(USER)
   emailVerified          DateTime? // For email verification
-  hasSetPassword         Boolean        @default(false) // Track if user has activated account
-  sessionVersion         Int            @default(0)
+  hasSetPassword         Boolean                 @default(false) // Track if user has activated account
+  sessionVersion         Int                     @default(0)
   lastLoginAt            DateTime?
-  mfaEnabled             Boolean        @default(false)
+  mfaEnabled             Boolean                 @default(false)
   mfaSecret              String? // AES-256-GCM encrypted TOTP secret
   mfaBackupCodes         Json? // Array of { hash: string, usedAt?: string }
   mfaEnrolledAt          DateTime?
   mfaResetAt             DateTime?
   lockedUntil            DateTime?
-  lockoutCount           Int            @default(0)
+  lockoutCount           Int                     @default(0)
   isActive               Boolean                 @default(true)
   deactivatedAt          DateTime?
   deactivatedById        String?
@@ -311,53 +324,55 @@ model User {
   triggeredNotifications Notification[]          @relation("TriggeredNotifications")
 
   // Relations
-  deactivatedBy          User?                  @relation("UserDeactivations", fields: [deactivatedById], references: [id], onDelete: Restrict)
-  deactivatedUsers       User[]                 @relation("UserDeactivations")
-  privacyConsents        PrivacyConsent[]
-  societyBankAccountsCreated SocietyBankAccount[] @relation("SocietyBankAccountCreator")
-  journalEntriesPosted   JournalEntry[]         @relation("JournalEntryPoster")
-  journalLines           JournalLine[]          @relation("JournalLineMember")
-  walletWithdrawals      WalletWithdrawal[]     @relation("MemberWalletWithdrawals")
-  walletWithdrawalsApproved WalletWithdrawal[]  @relation("WalletWithdrawalApprover")
-  auditEvents            AuditEvent[]           @relation("UserAuditEvents")
-  affectedAuditEvents    AuditEvent[]           @relation("UserAffectedAuditEvents")
-  paymentSubmissions     PaymentSubmission[]    @relation("MemberPaymentSubmissions")
-  confirmedSubmissions   PaymentSubmission[]    @relation("PaymentSubmissionConfirmer")
-  payments               Payment[]              @relation("MemberPayments")
-  confirmedPayments      Payment[]              @relation("PaymentConfirmer")
-  reversedPayments       Payment[]              @relation("PaymentReverser")
-  disbursementsReceived  Disbursement[]         @relation("DisbursementRecipient")
-  disbursementsRequested Disbursement[]         @relation("DisbursementRequester")
-  disbursementsApproved  Disbursement[]         @relation("DisbursementApprover")
-  disbursementsPaid      Disbursement[]         @relation("DisbursementDisburser")
-  feeAssessments         FeeAssessment[]        @relation("MemberFeeAssessments")
-  accounts                Account[]
-  sessions                Session[]
-  userSessions            UserSession[]
-  loginAttempts           LoginAttempt[]
-  passwordSetupTokens     PasswordSetupToken[]
-  adminPermissionGrants   AdminPermissionGrant[] @relation("AdminPermissionGrants")
-  createdPermissionGrants AdminPermissionGrant[] @relation("PermissionGrantCreator")
-  uploadedFiles           StoredFile[]           @relation("UploadedFiles")
-  ownedFiles              StoredFile[]           @relation("OwnedFiles")
-  userInfo                UserInfo?
-  bankAccounts            BankAccount[]
-  nextOfKin               NextOfKin?
-  membership              Membership?
-  eAjo                    EAjo[]
-  eAjoGroups              EAjoGroup[]            @relation("EAjoGroupCreator")
-  eAjoMembers             EAjoMember[]
-  savings                 Savings[]
-  loans                   Loan[]
-  transactions            Transaction[]          @relation("TransactionOwner")
-  transactionsRecorded    Transaction[]          @relation("TransactionRecorder")
-  transactionsProcessed   Transaction[]          @relation("TransactionProcessor")
-  createdSavingsProducts  SavingsProduct[]       @relation("SavingsProductCreator")
-  createdLoanTermRates    LoanTermRate[]         @relation("LoanTermRateCreator")
-  createdEAjoSlotPolicies EAjoSlotPolicy[]       @relation("EAjoSlotPolicyCreator")
-  guaranteesProvided      GuaranteeReservation[]    @relation("GuarantorReservations")
-  guaranteesReceived      GuaranteeReservation[]    @relation("ApplicantReservations")
-  borrowerOfferAcceptances BorrowerOfferAcceptance[]
+  deactivatedBy              User?                     @relation("UserDeactivations", fields: [deactivatedById], references: [id], onDelete: Restrict)
+  deactivatedUsers           User[]                    @relation("UserDeactivations")
+  privacyConsents            PrivacyConsent[]
+  societyBankAccountsCreated SocietyBankAccount[]      @relation("SocietyBankAccountCreator")
+  journalEntriesPosted       JournalEntry[]            @relation("JournalEntryPoster")
+  journalLines               JournalLine[]             @relation("JournalLineMember")
+  walletWithdrawals          WalletWithdrawal[]        @relation("MemberWalletWithdrawals")
+  walletWithdrawalsApproved  WalletWithdrawal[]        @relation("WalletWithdrawalApprover")
+  auditEvents                AuditEvent[]              @relation("UserAuditEvents")
+  affectedAuditEvents        AuditEvent[]              @relation("UserAffectedAuditEvents")
+  paymentSubmissions         PaymentSubmission[]       @relation("MemberPaymentSubmissions")
+  confirmedSubmissions       PaymentSubmission[]       @relation("PaymentSubmissionConfirmer")
+  payments                   Payment[]                 @relation("MemberPayments")
+  confirmedPayments          Payment[]                 @relation("PaymentConfirmer")
+  reversedPayments           Payment[]                 @relation("PaymentReverser")
+  disbursementsReceived      Disbursement[]            @relation("DisbursementRecipient")
+  disbursementsRequested     Disbursement[]            @relation("DisbursementRequester")
+  disbursementsApproved      Disbursement[]            @relation("DisbursementApprover")
+  disbursementsPaid          Disbursement[]            @relation("DisbursementDisburser")
+  feeAssessments             FeeAssessment[]           @relation("MemberFeeAssessments")
+  accounts                   Account[]
+  sessions                   Session[]
+  userSessions               UserSession[]
+  loginAttempts              LoginAttempt[]
+  passwordSetupTokens        PasswordSetupToken[]
+  adminPermissionGrants      AdminPermissionGrant[]    @relation("AdminPermissionGrants")
+  createdPermissionGrants    AdminPermissionGrant[]    @relation("PermissionGrantCreator")
+  uploadedFiles              StoredFile[]              @relation("UploadedFiles")
+  ownedFiles                 StoredFile[]              @relation("OwnedFiles")
+  userInfo                   UserInfo?
+  bankAccounts               BankAccount[]
+  nextOfKin                  NextOfKin?
+  membership                 Membership?
+  eAjo                       EAjo[]
+  eAjoGroups                 EAjoGroup[]               @relation("EAjoGroupCreator")
+  eAjoMembers                EAjoMember[]
+  savings                    Savings[]
+  loans                      Loan[]
+  transactions               Transaction[]             @relation("TransactionOwner")
+  transactionsRecorded       Transaction[]             @relation("TransactionRecorder")
+  transactionsProcessed      Transaction[]             @relation("TransactionProcessor")
+  createdSavingsProducts     SavingsProduct[]          @relation("SavingsProductCreator")
+  createdLoanTermRates       LoanTermRate[]            @relation("LoanTermRateCreator")
+  createdEAjoSlotPolicies    EAjoSlotPolicy[]          @relation("EAjoSlotPolicyCreator")
+  guaranteesProvided         GuaranteeReservation[]    @relation("GuarantorReservations")
+  guaranteesReceived         GuaranteeReservation[]    @relation("ApplicantReservations")
+  borrowerOfferAcceptances   BorrowerOfferAcceptance[]
+  profileChangeRequests      ProfileChangeRequest[]    @relation("MemberProfileChangeRequests")
+  reviewedProfileChanges     ProfileChangeRequest[]    @relation("ReviewedProfileChangeRequests")
 
   @@map("users")
 }
@@ -397,16 +412,16 @@ model Session {
 }
 
 model PasswordSetupToken {
-  id            String                    @id @default(uuid())
-  userId        String
-  tokenHash     String                    @unique
-  purpose       PasswordSetupTokenPurpose @default(SET_PASSWORD)
-  expiresAt     DateTime
-  usedAt        DateTime?
-  requestedIp   String?
-  createdById   String?
-  createdAt     DateTime                  @default(now())
-  user          User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id          String                    @id @default(uuid())
+  userId      String
+  tokenHash   String                    @unique
+  purpose     PasswordSetupTokenPurpose @default(SET_PASSWORD)
+  expiresAt   DateTime
+  usedAt      DateTime?
+  requestedIp String?
+  createdById String?
+  createdAt   DateTime                  @default(now())
+  user        User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, purpose, createdAt])
   @@index([requestedIp, createdAt])
@@ -445,8 +460,8 @@ model StoredFile {
   associatedId     String?
   createdAt        DateTime @default(now())
 
-  uploadedBy       User     @relation("UploadedFiles", fields: [uploadedById], references: [id], onDelete: Restrict)
-  ownerUser        User?    @relation("OwnedFiles", fields: [ownerUserId], references: [id], onDelete: SetNull)
+  uploadedBy                User                @relation("UploadedFiles", fields: [uploadedById], references: [id], onDelete: Restrict)
+  ownerUser                 User?               @relation("OwnedFiles", fields: [ownerUserId], references: [id], onDelete: SetNull)
   receiptPaymentSubmissions PaymentSubmission[] @relation("ReceiptStoredFile")
 
   @@index([ownerUserId])
@@ -463,7 +478,7 @@ model PrivacyConsent {
   ipHash        String?
   userAgent     String?
 
-  user          User     @relation(fields: [userId], references: [id], onDelete: Restrict)
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
 
   @@unique([userId, noticeVersion])
   @@index([userId])
@@ -481,7 +496,7 @@ model SocietyBankAccount {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
-  createdByUser User     @relation("SocietyBankAccountCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  createdByUser              User                @relation("SocietyBankAccountCreator", fields: [createdById], references: [id], onDelete: Restrict)
   receivedPaymentSubmissions PaymentSubmission[]
 
   @@index([isActive])
@@ -504,21 +519,21 @@ model UserInfo {
 }
 
 model BankAccount {
-  id            String        @id @default(uuid())
-  bankCode      String?
-  accountNumber String
-  accountName   String
-  bankName      String
-  userId        String
-  isPrimary     Boolean       @default(false) // Mark primary account
-  isVerified    Boolean       @default(false)
-  verifiedAt    DateTime?
-  createdAt     DateTime      @default(now())
-  updatedAt     DateTime      @updatedAt
-  user          User          @relation(fields: [userId], references: [id], onDelete: Restrict)
-  transactions  Transaction[]
+  id                String             @id @default(uuid())
+  bankCode          String?
+  accountNumber     String
+  accountName       String
+  bankName          String
+  userId            String
+  isPrimary         Boolean            @default(false) // Mark primary account
+  isVerified        Boolean            @default(false)
+  verifiedAt        DateTime?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  user              User               @relation(fields: [userId], references: [id], onDelete: Restrict)
+  transactions      Transaction[]
   walletWithdrawals WalletWithdrawal[]
-  disbursements Disbursement[]
+  disbursements     Disbursement[]
 
   @@unique([userId, bankCode, accountNumber])
   @@index([bankCode, accountNumber])
@@ -542,6 +557,27 @@ model NextOfKin {
   user          User         @relation(fields: [userId], references: [id], onDelete: Restrict)
 
   @@map("next_of_kins")
+}
+
+model ProfileChangeRequest {
+  id              String              @id @default(uuid())
+  userId          String
+  user            User                @relation("MemberProfileChangeRequests", fields: [userId], references: [id], onDelete: Cascade)
+  changeType      ProfileChangeType
+  previousValue   Json?
+  proposedValue   Json
+  status          ProfileChangeStatus @default(PENDING)
+  submittedAt     DateTime            @default(now())
+  reviewedAt      DateTime?
+  reviewedById    String?
+  reviewedBy      User?               @relation("ReviewedProfileChangeRequests", fields: [reviewedById], references: [id], onDelete: SetNull)
+  rejectionReason String?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  @@index([userId, submittedAt])
+  @@index([status, submittedAt])
+  @@map("profile_change_requests")
 }
 
 model Membership {
@@ -668,26 +704,26 @@ model EAjo {
 // ============================================
 
 model EAjoGroup {
-  id                      String           @id @default(uuid())
+  id                      String          @id @default(uuid())
   title                   String
   description             String?
-  contributionAmount      Decimal          @db.Decimal(15, 2)
+  contributionAmount      Decimal         @db.Decimal(15, 2)
   frequency               EAjoFrequency
   duration                EAjoDuration
   totalSlots              Int // Number of positions (4, 6, or 12)
-  filledSlots             Int              @default(0)
-  status                  EAjoStatus       @default(PENDING)
-  startDate               DateTime?        @db.Date
-  endDate                 DateTime?        @db.Date
+  filledSlots             Int             @default(0)
+  status                  EAjoStatus      @default(PENDING)
+  startDate               DateTime?       @db.Date
+  endDate                 DateTime?       @db.Date
   createdBy               String // Admin User ID
-  latePenaltyDailyPercent Decimal?         @db.Decimal(7, 4)
+  latePenaltyDailyPercent Decimal?        @db.Decimal(7, 4)
   penaltyCapType          PenaltyCapType?
-  penaltyCapValue         Decimal?         @db.Decimal(15, 4)
+  penaltyCapValue         Decimal?        @db.Decimal(15, 4)
   maxMembersPerSlot       Int?
-  contributionFrequency   String           @default("MONTHLY")
+  contributionFrequency   String          @default("MONTHLY")
   durationMonths          Int?
-  createdAt               DateTime         @default(now())
-  updatedAt               DateTime         @updatedAt
+  createdAt               DateTime        @default(now())
+  updatedAt               DateTime        @updatedAt
 
   createdByUser User             @relation("EAjoGroupCreator", fields: [createdBy], references: [id])
   members       EAjoMember[]
@@ -698,15 +734,15 @@ model EAjoGroup {
 }
 
 model EAjoSlotPolicy {
-  id                      String    @id @default(uuid())
+  id                      String   @id @default(uuid())
   groupId                 String
   slotNumber              Int
-  earlySlotPenaltyPercent Decimal   @db.Decimal(7, 4) // % of the amount the cooperative advances for this slot
+  earlySlotPenaltyPercent Decimal  @db.Decimal(7, 4) // % of the amount the cooperative advances for this slot
   createdById             String
-  createdAt               DateTime  @default(now())
+  createdAt               DateTime @default(now())
 
-  group                   EAjoGroup @relation(fields: [groupId], references: [id], onDelete: Restrict)
-  createdByUser           User      @relation("EAjoSlotPolicyCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  group         EAjoGroup @relation(fields: [groupId], references: [id], onDelete: Restrict)
+  createdByUser User      @relation("EAjoSlotPolicyCreator", fields: [createdById], references: [id], onDelete: Restrict)
 
   @@unique([groupId, slotNumber])
   @@map("e_ajo_slot_policies")
@@ -772,27 +808,27 @@ model EAjoPayout {
   createdAt               DateTime         @default(now())
   updatedAt               DateTime         @updatedAt
 
-  eajoMember              EAjoMember       @relation(fields: [eajoMemberId], references: [id], onDelete: Restrict)
+  eajoMember EAjoMember @relation(fields: [eajoMemberId], references: [id], onDelete: Restrict)
 
   @@map("e_ajo_payouts")
 }
 
 model EAjoContributionPeriod {
-  id               String                 @id @default(uuid())
+  id               String              @id @default(uuid())
   eajoMemberId     String
   periodNumber     Int
-  dueDate          DateTime               @db.Date
-  contributionDue  Decimal                @db.Decimal(15, 2)
-  contributionPaid Decimal                @default(0) @db.Decimal(15, 2)
-  penaltyAssessed  Decimal                @default(0) @db.Decimal(15, 2)
-  penaltyPaid      Decimal                @default(0) @db.Decimal(15, 2)
-  penaltyWaived    Decimal                @default(0) @db.Decimal(15, 2)
-  status           PaymentPeriodStatus    @default(PENDING)
-  createdAt        DateTime               @default(now())
-  updatedAt        DateTime               @updatedAt
+  dueDate          DateTime            @db.Date
+  contributionDue  Decimal             @db.Decimal(15, 2)
+  contributionPaid Decimal             @default(0) @db.Decimal(15, 2)
+  penaltyAssessed  Decimal             @default(0) @db.Decimal(15, 2)
+  penaltyPaid      Decimal             @default(0) @db.Decimal(15, 2)
+  penaltyWaived    Decimal             @default(0) @db.Decimal(15, 2)
+  status           PaymentPeriodStatus @default(PENDING)
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
 
-  eajoMember       EAjoMember             @relation(fields: [eajoMemberId], references: [id], onDelete: Restrict)
-  penalties        EAjoPenaltyAccrual[]
+  eajoMember EAjoMember           @relation(fields: [eajoMemberId], references: [id], onDelete: Restrict)
+  penalties  EAjoPenaltyAccrual[]
 
   @@unique([eajoMemberId, periodNumber])
   @@index([status, dueDate])
@@ -800,16 +836,16 @@ model EAjoContributionPeriod {
 }
 
 model EAjoPenaltyAccrual {
-  id                       String                 @id @default(uuid())
+  id                       String    @id @default(uuid())
   eajoContributionPeriodId String
-  penaltyDate              DateTime               @db.Date
-  amount                   Decimal                @db.Decimal(15, 2)
+  penaltyDate              DateTime  @db.Date
+  amount                   Decimal   @db.Decimal(15, 2)
   reversedAt               DateTime?
   reversalReason           String?
   journalEntryId           String?
-  createdAt                DateTime               @default(now())
+  createdAt                DateTime  @default(now())
 
-  period                   EAjoContributionPeriod @relation(fields: [eajoContributionPeriodId], references: [id], onDelete: Restrict)
+  period EAjoContributionPeriod @relation(fields: [eajoContributionPeriodId], references: [id], onDelete: Restrict)
 
   @@unique([eajoContributionPeriodId, penaltyDate])
   @@map("e_ajo_penalty_accruals")
@@ -901,21 +937,21 @@ model Transaction {
 // ============================================
 
 model SavingsProduct {
-  id                   String                   @id @default(uuid())
+  id                   String      @id @default(uuid())
   type                 SavingsType // (FIXED, REGULAR, STAGGERED)
   title                String
   description          String
-  rates                String                   @default("Flexible Rates") // Generated e.g. "12% (6 Months) / 36% (1 Year)"
+  rates                String      @default("Flexible Rates") // Generated e.g. "12% (6 Months) / 36% (1 Year)"
   badge                String // e.g. "High Yield"
   icon                 String // Name of the lucide icon, e.g. "Lock", "PiggyBank"
-  interestRate1Month   Decimal?                 @db.Decimal(7, 4)
-  interestRate3Months  Decimal?                 @db.Decimal(7, 4)
-  interestRate6Months  Decimal?                 @db.Decimal(7, 4)
-  interestRate12Months Decimal?                 @db.Decimal(7, 4)
-  isActive             Boolean                  @default(true)
+  interestRate1Month   Decimal?    @db.Decimal(7, 4)
+  interestRate3Months  Decimal?    @db.Decimal(7, 4)
+  interestRate6Months  Decimal?    @db.Decimal(7, 4)
+  interestRate12Months Decimal?    @db.Decimal(7, 4)
+  isActive             Boolean     @default(true)
   createdBy            String // Admin userId
-  createdAt            DateTime                 @default(now())
-  updatedAt            DateTime                 @updatedAt
+  createdAt            DateTime    @default(now())
+  updatedAt            DateTime    @updatedAt
 
   createdByUser User                     @relation("SavingsProductCreator", fields: [createdBy], references: [id])
   savings       Savings[]
@@ -925,19 +961,19 @@ model SavingsProduct {
 }
 
 model SavingsProductTermRate {
-  id             String         @id @default(uuid())
+  id             String    @id @default(uuid())
   productId      String
-  durationMonths Int            // 1..12
-  ratePercent    Decimal        @db.Decimal(7, 4) // simple interest percentage for full term
-  version        Int            @default(1)
-  isActive       Boolean        @default(true)
-  effectiveFrom  DateTime       @default(now()) @db.Date
-  effectiveTo    DateTime?      @db.Date
+  durationMonths Int // 1..12
+  ratePercent    Decimal   @db.Decimal(7, 4) // simple interest percentage for full term
+  version        Int       @default(1)
+  isActive       Boolean   @default(true)
+  effectiveFrom  DateTime  @default(now()) @db.Date
+  effectiveTo    DateTime? @db.Date
   createdById    String?
-  createdAt      DateTime       @default(now())
-  updatedAt      DateTime       @updatedAt
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
-  product        SavingsProduct @relation(fields: [productId], references: [id], onDelete: Restrict)
+  product SavingsProduct @relation(fields: [productId], references: [id], onDelete: Restrict)
 
   @@unique([productId, durationMonths, version])
   @@index([productId, isActive])
@@ -967,13 +1003,13 @@ model Savings {
   isAnonymousRequest            Boolean          @default(false) // True if submitted via public form with membership ID
   status                        SavingsStatus    @default(PENDING)
   approvedAt                    DateTime?
-  approvedBy             String?
-  rejectionReason        String?
-  startDate              DateTime?        @db.Date
-  maturityDate           DateTime?        @db.Date
-  earlyWithdrawal        Boolean          @default(false) // If true, no interest
-  createdAt              DateTime         @default(now())
-  updatedAt              DateTime         @updatedAt
+  approvedBy                    String?
+  rejectionReason               String?
+  startDate                     DateTime?        @db.Date
+  maturityDate                  DateTime?        @db.Date
+  earlyWithdrawal               Boolean          @default(false) // If true, no interest
+  createdAt                     DateTime         @default(now())
+  updatedAt                     DateTime         @updatedAt
 
   user         User            @relation(fields: [userId], references: [id], onDelete: Restrict)
   product      SavingsProduct? @relation(fields: [productId], references: [id], onDelete: Restrict)
@@ -998,7 +1034,7 @@ model SavingsPeriod {
   createdAt         DateTime            @default(now())
   updatedAt         DateTime            @updatedAt
 
-  savings           Savings             @relation(fields: [savingsId], references: [id], onDelete: Restrict)
+  savings Savings @relation(fields: [savingsId], references: [id], onDelete: Restrict)
 
   @@unique([savingsId, periodNumber])
   @@index([status, dueDate])
@@ -1025,29 +1061,29 @@ model Loan {
   penaltyCapValue            Decimal?        @db.Decimal(15, 4)
   loanTermRateVersion        Int?
   duration                   Int // In months (1..12)
-  purpose              String
-  guarantorId          String? // Another User ID (must be Crystal member)
-  guarantorName        String?
-  guarantorPhoneNumber String?
-  collateralDetails    String? // For non-members
-  applicationFee       Decimal    @default(0) @db.Decimal(15, 2)
-  outstandingBalance   Decimal    @default(0) @db.Decimal(15, 2)
-  totalRepaid          Decimal    @default(0) @db.Decimal(15, 2)
-  defaultPenalty       Decimal    @default(0) @db.Decimal(15, 2)
-  gracePeriodDays      Int        @default(7)
-  isAnonymousRequest   Boolean    @default(false) // True if submitted via public form with membership ID
-  status               LoanStatus @default(PENDING)
-  requestedAt          DateTime   @default(now())
-  approvedAt           DateTime?
-  approvedBy           String?
-  disbursedAt          DateTime?
-  repaymentStartDate   DateTime?  @db.Date
-  repaymentEndDate     DateTime?  @db.Date
-  actualRepaymentDate  DateTime?  @db.Date
-  rejectionReason      String?
-  isDefaulted          Boolean    @default(false)
-  createdAt            DateTime   @default(now())
-  updatedAt            DateTime   @updatedAt
+  purpose                    String
+  guarantorId                String? // Another User ID (must be Crystal member)
+  guarantorName              String?
+  guarantorPhoneNumber       String?
+  collateralDetails          String? // For non-members
+  applicationFee             Decimal         @default(0) @db.Decimal(15, 2)
+  outstandingBalance         Decimal         @default(0) @db.Decimal(15, 2)
+  totalRepaid                Decimal         @default(0) @db.Decimal(15, 2)
+  defaultPenalty             Decimal         @default(0) @db.Decimal(15, 2)
+  gracePeriodDays            Int             @default(7)
+  isAnonymousRequest         Boolean         @default(false) // True if submitted via public form with membership ID
+  status                     LoanStatus      @default(PENDING)
+  requestedAt                DateTime        @default(now())
+  approvedAt                 DateTime?
+  approvedBy                 String?
+  disbursedAt                DateTime?
+  repaymentStartDate         DateTime?       @db.Date
+  repaymentEndDate           DateTime?       @db.Date
+  actualRepaymentDate        DateTime?       @db.Date
+  rejectionReason            String?
+  isDefaulted                Boolean         @default(false)
+  createdAt                  DateTime        @default(now())
+  updatedAt                  DateTime        @updatedAt
 
   user                  User                     @relation(fields: [userId], references: [id], onDelete: Restrict)
   // guarantor           User?                    @relation("LoanGuarantor", fields: [guarantorId], references: [id])
@@ -1063,24 +1099,24 @@ model Loan {
 }
 
 model LoanInstalment {
-  id                   String               @id @default(uuid())
+  id                   String              @id @default(uuid())
   loanId               String
   instalmentNumber     Int
-  dueDate              DateTime             @db.Date
-  principalDue         Decimal              @db.Decimal(15, 2)
-  interestDue          Decimal              @db.Decimal(15, 2)
-  principalPaid        Decimal              @default(0) @db.Decimal(15, 2)
-  interestPaid         Decimal              @default(0) @db.Decimal(15, 2)
-  penaltyAssessed      Decimal              @default(0) @db.Decimal(15, 2) // net of value-date reversals
-  penaltyPaid          Decimal              @default(0) @db.Decimal(15, 2)
-  penaltyWaived        Decimal              @default(0) @db.Decimal(15, 2)
+  dueDate              DateTime            @db.Date
+  principalDue         Decimal             @db.Decimal(15, 2)
+  interestDue          Decimal             @db.Decimal(15, 2)
+  principalPaid        Decimal             @default(0) @db.Decimal(15, 2)
+  interestPaid         Decimal             @default(0) @db.Decimal(15, 2)
+  penaltyAssessed      Decimal             @default(0) @db.Decimal(15, 2) // net of value-date reversals
+  penaltyPaid          Decimal             @default(0) @db.Decimal(15, 2)
+  penaltyWaived        Decimal             @default(0) @db.Decimal(15, 2)
   interestRecognisedAt DateTime?
-  status               PaymentPeriodStatus  @default(PENDING)
-  createdAt            DateTime             @default(now())
-  updatedAt            DateTime             @updatedAt
+  status               PaymentPeriodStatus @default(PENDING)
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
 
-  loan                 Loan                 @relation(fields: [loanId], references: [id], onDelete: Restrict)
-  penalties            LoanPenaltyAccrual[]
+  loan      Loan                 @relation(fields: [loanId], references: [id], onDelete: Restrict)
+  penalties LoanPenaltyAccrual[]
 
   @@unique([loanId, instalmentNumber])
   @@index([status, dueDate])
@@ -1088,16 +1124,16 @@ model LoanInstalment {
 }
 
 model LoanPenaltyAccrual {
-  id               String         @id @default(uuid())
+  id               String    @id @default(uuid())
   loanInstalmentId String
-  penaltyDate      DateTime       @db.Date
-  amount           Decimal        @db.Decimal(15, 2)
+  penaltyDate      DateTime  @db.Date
+  amount           Decimal   @db.Decimal(15, 2)
   reversedAt       DateTime?
   reversalReason   String?
   journalEntryId   String?
-  createdAt        DateTime       @default(now())
+  createdAt        DateTime  @default(now())
 
-  instalment       LoanInstalment @relation(fields: [loanInstalmentId], references: [id], onDelete: Restrict)
+  instalment LoanInstalment @relation(fields: [loanInstalmentId], references: [id], onDelete: Restrict)
 
   @@unique([loanInstalmentId, penaltyDate])
   @@map("loan_penalty_accruals")
@@ -1130,10 +1166,10 @@ model GuaranteeReservation {
   createdAt                  DateTime       @default(now())
   updatedAt                  DateTime       @updatedAt
 
-  guarantor                  User           @relation("GuarantorReservations", fields: [guarantorId], references: [id], onDelete: Restrict)
-  applicant                  User           @relation("ApplicantReservations", fields: [applicantId], references: [id], onDelete: Restrict)
-  loan                       Loan?          @relation(fields: [loanId], references: [id], onDelete: Restrict)
-  eajoMember                 EAjoMember?    @relation(fields: [eajoMemberId], references: [id], onDelete: Restrict)
+  guarantor  User        @relation("GuarantorReservations", fields: [guarantorId], references: [id], onDelete: Restrict)
+  applicant  User        @relation("ApplicantReservations", fields: [applicantId], references: [id], onDelete: Restrict)
+  loan       Loan?       @relation(fields: [loanId], references: [id], onDelete: Restrict)
+  eajoMember EAjoMember? @relation(fields: [eajoMemberId], references: [id], onDelete: Restrict)
 
   @@unique([loanId, guarantorId])
   @@unique([eajoMemberId, guarantorId])
@@ -1162,8 +1198,8 @@ model BorrowerOfferAcceptance {
   createdAt                  DateTime              @default(now())
   updatedAt                  DateTime              @updatedAt
 
-  loan                       Loan                  @relation(fields: [loanId], references: [id], onDelete: Restrict)
-  borrower                   User                  @relation(fields: [borrowerId], references: [id], onDelete: Restrict)
+  loan     Loan @relation(fields: [loanId], references: [id], onDelete: Restrict)
+  borrower User @relation(fields: [borrowerId], references: [id], onDelete: Restrict)
 
   @@index([borrowerId, decision])
   @@map("borrower_offer_acceptances")
@@ -1171,7 +1207,7 @@ model BorrowerOfferAcceptance {
 
 model LoanTermRate {
   id                      String         @id @default(uuid())
-  durationMonths          Int            // 1..12
+  durationMonths          Int // 1..12
   monthlyInterestPercent  Decimal        @db.Decimal(7, 4) // flat, per month, on original principal (§2.9)
   latePenaltyDailyPercent Decimal        @db.Decimal(7, 4) // % of original principal per overdue instalment per day
   penaltyCapType          PenaltyCapType // required
@@ -1182,7 +1218,7 @@ model LoanTermRate {
   createdById             String
   createdAt               DateTime       @default(now())
 
-  createdByUser           User           @relation("LoanTermRateCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  createdByUser User @relation("LoanTermRateCreator", fields: [createdById], references: [id], onDelete: Restrict)
 
   @@unique([durationMonths, version])
   @@index([durationMonths, effectiveFrom])
@@ -1193,8 +1229,8 @@ model PolicyUpdateDraft {
   id             String             @id @default(uuid())
   status         PolicyUpdateStatus @default(DRAFT)
   title          String
-  bodyHtml       String             // editable copy generated from the changes
-  changes        Json               // [{kind, productOrTerm, old, new, effectiveFrom}]
+  bodyHtml       String // editable copy generated from the changes
+  changes        Json // [{kind, productOrTerm, old, new, effectiveFrom}]
   createdAt      DateTime           @default(now())
   updatedAt      DateTime           @updatedAt
   sentAt         DateTime?
@@ -1210,7 +1246,6 @@ model LoanSettings {
   updatedAt    DateTime @updatedAt
   updatedBy    String?
 }
-
 
 model UserSession {
   id             String    @id @default(uuid())
@@ -1291,24 +1326,24 @@ enum WalletWithdrawalStatus {
 }
 
 model JournalEntry {
-  id             String        @id @default(uuid())
-  sourceType     String        // e.g. TRANSACTION, PAYMENT, DISBURSEMENT, RECOVERY, ACCRUAL
+  id             String   @id @default(uuid())
+  sourceType     String // e.g. TRANSACTION, PAYMENT, DISBURSEMENT, RECOVERY, ACCRUAL
   sourceId       String
-  idempotencyKey String        @unique
+  idempotencyKey String   @unique
   description    String
-  effectiveDate  DateTime      @db.Date
-  postedAt       DateTime      @default(now())
+  effectiveDate  DateTime @db.Date
+  postedAt       DateTime @default(now())
   postedById     String?
-  reversalOfId   String?       @unique
+  reversalOfId   String?  @unique
   reason         String?
-  createdAt      DateTime      @default(now())
+  createdAt      DateTime @default(now())
 
-  postedBy   User?         @relation("JournalEntryPoster", fields: [postedById], references: [id], onDelete: Restrict)
-  reversalOf JournalEntry? @relation("JournalReversal", fields: [reversalOfId], references: [id], onDelete: Restrict)
-  reversedBy JournalEntry? @relation("JournalReversal")
-  lines      JournalLine[]
+  postedBy           User?               @relation("JournalEntryPoster", fields: [postedById], references: [id], onDelete: Restrict)
+  reversalOf         JournalEntry?       @relation("JournalReversal", fields: [reversalOfId], references: [id], onDelete: Restrict)
+  reversedBy         JournalEntry?       @relation("JournalReversal")
+  lines              JournalLine[]
   paymentAllocations PaymentAllocation[]
-  disbursements Disbursement[]
+  disbursements      Disbursement[]
 
   @@index([sourceType, sourceId])
   @@index([effectiveDate])
@@ -1321,7 +1356,7 @@ model JournalLine {
   journalEntryId String
   accountType    LedgerAccountType
   memberId       String?
-  accountRefType String?           // SAVINGS, LOAN, EAJO_MEMBER, WALLET, etc.
+  accountRefType String? // SAVINGS, LOAN, EAJO_MEMBER, WALLET, etc.
   accountRefId   String?
   currency       String            @default("NGN")
   debit          Decimal           @default(0) @db.Decimal(15, 2)
@@ -1350,9 +1385,9 @@ model WalletWithdrawal {
   rejectionReason  String?
   idempotencyKey   String                 @unique
 
-  member        User        @relation("MemberWalletWithdrawals", fields: [memberId], references: [id], onDelete: Restrict)
-  bankAccount   BankAccount @relation(fields: [bankAccountId], references: [id], onDelete: Restrict)
-  approvedBy    User?       @relation("WalletWithdrawalApprover", fields: [approvedById], references: [id], onDelete: Restrict)
+  member      User        @relation("MemberWalletWithdrawals", fields: [memberId], references: [id], onDelete: Restrict)
+  bankAccount BankAccount @relation(fields: [bankAccountId], references: [id], onDelete: Restrict)
+  approvedBy  User?       @relation("WalletWithdrawalApprover", fields: [approvedById], references: [id], onDelete: Restrict)
 
   @@index([memberId, status])
   @@map("wallet_withdrawals")
@@ -1377,8 +1412,8 @@ model AuditEvent {
   createdAt        DateTime  @default(now())
   timestamp        DateTime  @default(now())
 
-  actor            User?     @relation("UserAuditEvents", fields: [actorId], references: [id], onDelete: Cascade)
-  affectedUser     User?     @relation("UserAffectedAuditEvents", fields: [affectedUserId], references: [id], onDelete: Cascade)
+  actor        User? @relation("UserAuditEvents", fields: [actorId], references: [id], onDelete: Cascade)
+  affectedUser User? @relation("UserAffectedAuditEvents", fields: [affectedUserId], references: [id], onDelete: Cascade)
 
   @@index([affectedUserId, createdAt])
   @@index([actorId, createdAt])
@@ -1493,12 +1528,12 @@ model PaymentSubmission {
   confirmedById          String?
   valueDate              DateTime?               @db.Date
 
-  member               User                    @relation("MemberPaymentSubmissions", fields: [memberId], references: [id], onDelete: Restrict)
-  receivingBankAccount SocietyBankAccount?     @relation(fields: [receivingBankAccountId], references: [id], onDelete: Restrict)
-  receiptFile          StoredFile?             @relation("ReceiptStoredFile", fields: [receiptFileId], references: [id], onDelete: Restrict)
-  confirmedBy          User?                   @relation("PaymentSubmissionConfirmer", fields: [confirmedById], references: [id], onDelete: Restrict)
-  resubmissionOf       PaymentSubmission?      @relation("SubmissionResubmissions", fields: [resubmissionOfId], references: [id], onDelete: Restrict)
-  resubmissions        PaymentSubmission[]     @relation("SubmissionResubmissions")
+  member               User                @relation("MemberPaymentSubmissions", fields: [memberId], references: [id], onDelete: Restrict)
+  receivingBankAccount SocietyBankAccount? @relation(fields: [receivingBankAccountId], references: [id], onDelete: Restrict)
+  receiptFile          StoredFile?         @relation("ReceiptStoredFile", fields: [receiptFileId], references: [id], onDelete: Restrict)
+  confirmedBy          User?               @relation("PaymentSubmissionConfirmer", fields: [confirmedById], references: [id], onDelete: Restrict)
+  resubmissionOf       PaymentSubmission?  @relation("SubmissionResubmissions", fields: [resubmissionOfId], references: [id], onDelete: Restrict)
+  resubmissions        PaymentSubmission[] @relation("SubmissionResubmissions")
   targets              SubmissionTarget[]
   payment              Payment?
 
@@ -1517,7 +1552,7 @@ model SubmissionTarget {
   targetPeriodId  String?
   requestedAmount Decimal              @db.Decimal(15, 2)
 
-  submission      PaymentSubmission    @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  submission PaymentSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
 
   @@index([submissionId])
   @@index([targetType, targetId])
@@ -1525,26 +1560,26 @@ model SubmissionTarget {
 }
 
 model Payment {
-  id                   String            @id @default(uuid())
-  paymentNumber        String            @unique
-  source               PaymentSource     @default(RECEIPT)
-  submissionId         String?           @unique
+  id                   String        @id @default(uuid())
+  paymentNumber        String        @unique
+  source               PaymentSource @default(RECEIPT)
+  submissionId         String?       @unique
   memberId             String
-  totalConfirmedAmount Decimal           @db.Decimal(15, 2)
-  valueDate            DateTime          @db.Date
-  status               PaymentStatus     @default(CONFIRMED)
-  confirmedAt          DateTime          @default(now())
+  totalConfirmedAmount Decimal       @db.Decimal(15, 2)
+  valueDate            DateTime      @db.Date
+  status               PaymentStatus @default(CONFIRMED)
+  confirmedAt          DateTime      @default(now())
   confirmedById        String
   reversedAt           DateTime?
   reversedById         String?
   reversalReason       String?
-  idempotencyKey       String            @unique
+  idempotencyKey       String        @unique
 
-  submission   PaymentSubmission?  @relation(fields: [submissionId], references: [id], onDelete: Restrict)
-  member       User                @relation("MemberPayments", fields: [memberId], references: [id], onDelete: Restrict)
-  confirmedBy  User                @relation("PaymentConfirmer", fields: [confirmedById], references: [id], onDelete: Restrict)
-  reversedBy   User?               @relation("PaymentReverser", fields: [reversedById], references: [id], onDelete: Restrict)
-  allocations  PaymentAllocation[]
+  submission  PaymentSubmission?  @relation(fields: [submissionId], references: [id], onDelete: Restrict)
+  member      User                @relation("MemberPayments", fields: [memberId], references: [id], onDelete: Restrict)
+  confirmedBy User                @relation("PaymentConfirmer", fields: [confirmedById], references: [id], onDelete: Restrict)
+  reversedBy  User?               @relation("PaymentReverser", fields: [reversedById], references: [id], onDelete: Restrict)
+  allocations PaymentAllocation[]
 
   @@index([memberId, valueDate])
   @@index([valueDate])
@@ -1565,8 +1600,8 @@ model PaymentAllocation {
   journalEntryId String?
   createdAt      DateTime             @default(now())
 
-  payment        Payment              @relation(fields: [paymentId], references: [id], onDelete: Restrict)
-  journalEntry   JournalEntry?        @relation(fields: [journalEntryId], references: [id], onDelete: Restrict)
+  payment        Payment         @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  journalEntry   JournalEntry?   @relation(fields: [journalEntryId], references: [id], onDelete: Restrict)
   feeAssessments FeeAssessment[]
 
   @@index([paymentId])
@@ -1607,14 +1642,14 @@ model Disbursement {
 }
 
 model FeeAssessment {
-  id                  String             @id @default(uuid())
+  id                  String    @id @default(uuid())
   memberId            String
   feeType             FeeType
   targetId            String
-  amount              Decimal            @db.Decimal(15, 2)
-  status              FeeStatus          @default(PENDING)
+  amount              Decimal   @db.Decimal(15, 2)
+  status              FeeStatus @default(PENDING)
   paymentAllocationId String?
-  assessedAt          DateTime           @default(now())
+  assessedAt          DateTime  @default(now())
 
   member     User               @relation("MemberFeeAssessments", fields: [memberId], references: [id], onDelete: Restrict)
   allocation PaymentAllocation? @relation(fields: [paymentAllocationId], references: [id], onDelete: Restrict)

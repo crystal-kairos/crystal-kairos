@@ -26,6 +26,10 @@ import {
 } from '@/lib/services/audit.service'
 import { bankProvider } from '@/lib/banking/paystack.provider'
 import { checkNameSimilarity, NameMatchResult } from '@/lib/banking/provider'
+import {
+  requestNextOfKinChangeAction,
+  requestPrimaryBankAccountChangeAction,
+} from './profile-change-actions'
 
 assertMockSessionAllowed()
 
@@ -59,11 +63,20 @@ export const updateNextOfKinAction = async (
 ) => {
   try {
     // 1. Authenticate and check permissions + ownership
-    await requireMemberOrStaffWithPermission(userId, [
+    const actor = await requireMemberOrStaffWithPermission(userId, [
       AdminPermission.PROFILE_CHANGES_REVIEW,
       AdminPermission.MEMBERS_APPROVE,
     ])
     await assertTargetUserIsMember(userId)
+
+    // Regular members cannot bypass approval (PR P3-02B)
+    if (actor.role === UserRole.USER) {
+      return {
+        success: false,
+        error:
+          'Direct updates are not permitted. Please submit a Next of Kin change request for administrator approval.',
+      }
+    }
 
     // 2. Validate input schema
     const parsedData = nextOfKinSchema.parse(data)
@@ -216,11 +229,25 @@ export const setPrimaryBankAccountAction = async (
   bankAccountId: string,
 ) => {
   try {
-    await requireMemberOrStaffWithPermission(userId, [
+    const actor = await requireMemberOrStaffWithPermission(userId, [
       AdminPermission.PROFILE_CHANGES_REVIEW,
       AdminPermission.MEMBERS_APPROVE,
     ])
     await assertTargetUserIsMember(userId)
+
+    // Regular members requesting to switch primary bank account must create an approval request (PR P3-02B)
+    if (actor.role === UserRole.USER) {
+      const currentPrimary = await prisma.bankAccount.findFirst({
+        where: { userId, isPrimary: true },
+      })
+      if (currentPrimary && currentPrimary.id !== bankAccountId) {
+        return {
+          success: false,
+          error:
+            'Direct primary bank updates are not permitted. Please submit a primary bank change request for administrator approval.',
+        }
+      }
+    }
 
     const result = await prisma.$transaction(async (tx) => {
       // Unset all other primary accounts
@@ -357,8 +384,8 @@ export const resolveAccountNameAction = async (
 
     // Resolve bank code if bank name was passed
     const banks = await bankProvider.listBanks()
-    // let bankCode = bankCodeOrName.trim()
-    let bankCode = '001'
+    let bankCode = bankCodeOrName.trim()
+    // let bankCode = '001'
     let bankName = bankCodeOrName.trim()
 
     const matchedByCode = banks.find((b) => b.code === bankCode)

@@ -2,6 +2,8 @@ import { auth } from '@/auth'
 import { redirect } from 'next/navigation'
 import { getMemberById } from '@/models/members/query'
 import BanksClient from './BanksClient'
+import { getMemberPendingProfileChangesAction } from '@/models/members/profile-change-actions'
+import { ProfileChangeType } from '@/generated/prisma/enums'
 import { ShieldAlert } from 'lucide-react'
 
 interface PageProps {
@@ -43,5 +45,21 @@ export default async function BanksPage({ params }: PageProps) {
   const member = memberResult.data
   const bankAccounts = member.bankAccounts || []
 
-  return <BanksClient userId={profileId} bankAccounts={bankAccounts} />
+  const pendingRes = await getMemberPendingProfileChangesAction(profileId)
+  const pendingPrimaryAccountId =
+    pendingRes.success && pendingRes.data
+      ? (
+          pendingRes.data.find(
+            (r) => r.changeType === ProfileChangeType.PRIMARY_BANK,
+          )?.proposedValue as any
+        )?.targetBankAccountId || null
+      : null
+
+  return (
+    <BanksClient
+      userId={profileId}
+      bankAccounts={bankAccounts}
+      pendingPrimaryAccountId={pendingPrimaryAccountId}
+    />
+  )
 }

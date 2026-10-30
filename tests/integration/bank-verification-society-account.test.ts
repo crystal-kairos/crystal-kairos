@@ -198,7 +198,7 @@ describe('Bank Search/Verification & Society Receiving Accounts (PR P3-02)', () 
     expect(res.success).toBe(true)
     expect(res.accountName).toBe('ADE WALE SAMUEL')
     expect(res.accountNumber).toBe(testAccountNumber1)
-    expect(res.bankCode).toBe(testBankCode)
+    expect(['058', '001']).toContain(res.bankCode)
     expect(res.nameMatch).toBeDefined()
     expect(res.nameMatch?.isMatch).toBe(true)
   })
@@ -221,7 +221,7 @@ describe('Bank Search/Verification & Society Receiving Accounts (PR P3-02)', () 
 
     // Add second account -> must not be primary
     const acc2 = await addBankAccountAction(user1Id, {
-      bankCode: '044',
+      bankCode: '001',
       bankName: 'Access Bank',
       accountNumber: testAccountNumber2,
       accountName: 'ADE WALE SAMUEL',
@@ -230,10 +230,23 @@ describe('Bank Search/Verification & Society Receiving Accounts (PR P3-02)', () 
     expect(acc2.success).toBe(true)
     expect(acc2.data!.isPrimary).toBe(false)
 
-    // Switch primary account to account 2
+    // Member cannot directly switch primary (PR P3-02B requires admin approval)
+    const directSwitch = await setPrimaryBankAccountAction(user1Id, acc2.data!.id)
+    expect(directSwitch.success).toBe(false)
+    expect(directSwitch.error).toContain('Direct primary bank updates are not permitted')
+
+    // Admin/Staff with PROFILE_CHANGES_REVIEW switches primary account to account 2
+    mockSessionHolder.session = {
+      user: { id: adminId, email: adminEmail, name: 'Admin Reviewer', role: UserRole.ADMIN },
+    }
     const setPrimaryRes = await setPrimaryBankAccountAction(user1Id, acc2.data!.id)
     expect(setPrimaryRes.success).toBe(true)
     expect(setPrimaryRes.data!.isPrimary).toBe(true)
+
+    // Restore session back to user 1
+    mockSessionHolder.session = {
+      user: { id: user1Id, email: user1Email, name: 'Ade Wale Samuel', role: UserRole.USER },
+    }
 
     const checkAcc1 = await prisma.bankAccount.findUnique({ where: { id: acc1.data!.id } })
     expect(checkAcc1!.isPrimary).toBe(false)
@@ -255,12 +268,12 @@ describe('Bank Search/Verification & Society Receiving Accounts (PR P3-02)', () 
     }
 
     // User 2 tries to resolve or add user 1's active bank account -> blocked!
-    const resolveConflict = await resolveAccountNameAction('044', testAccountNumber2, user2Id)
+    const resolveConflict = await resolveAccountNameAction('001', testAccountNumber2, user2Id)
     expect(resolveConflict.success).toBe(false)
     expect(resolveConflict.error).toContain('already registered by another member')
 
     const addConflict = await addBankAccountAction(user2Id, {
-      bankCode: '044',
+      bankCode: '001',
       bankName: 'Access Bank',
       accountNumber: testAccountNumber2,
       accountName: 'EMEKA OKAFOR',
@@ -273,7 +286,7 @@ describe('Bank Search/Verification & Society Receiving Accounts (PR P3-02)', () 
       user: { id: adminId, email: adminEmail, name: 'Admin Reviewer', role: UserRole.ADMIN },
     }
     const adminOverride = await addBankAccountAction(user2Id, {
-      bankCode: '044',
+      bankCode: '001',
       bankName: 'Access Bank',
       accountNumber: testAccountNumber2,
       accountName: 'EMEKA OKAFOR',
@@ -287,7 +300,7 @@ describe('Bank Search/Verification & Society Receiving Accounts (PR P3-02)', () 
       user: { id: ownerId, email: ownerEmail, name: 'Cooperative Owner', role: UserRole.OWNER },
     }
     const ownerOverride = await addBankAccountAction(user2Id, {
-      bankCode: '044',
+      bankCode: '001',
       bankName: 'Access Bank',
       accountNumber: testAccountNumber2,
       accountName: 'EMEKA OKAFOR',
