@@ -1,4 +1,4 @@
-import { Landmark, Trash2, ShieldCheck } from 'lucide-react'
+import { Landmark, Trash2, ShieldCheck, Clock } from 'lucide-react'
 import { Card, CardContent } from '../ui/card'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
@@ -9,6 +9,7 @@ interface BankAccountCardProps {
   accountName: string
   isPrimary?: boolean
   isVerified?: boolean
+  isPendingPrimary?: boolean
   onMakePrimary?: () => void
   onDelete?: () => void
 }
@@ -19,6 +20,7 @@ export const BankAccountCard = ({
   accountName,
   isPrimary = false,
   isVerified = true,
+  isPendingPrimary = false,
   onMakePrimary,
   onDelete,
 }: BankAccountCardProps) => {
@@ -42,6 +44,11 @@ export const BankAccountCard = ({
                 Primary
               </Badge>
             )}
+            {isPendingPrimary && (
+              <Badge variant='outline' className='text-[10px] text-amber-600 dark:text-amber-400 border-amber-500/30 px-1.5 py-0 h-4.5 flex items-center gap-1 rounded-full'>
+                <Clock className='w-3 h-3' /> Primary Switch Pending
+              </Badge>
+            )}
           </div>
 
           <p className='font-mono text-base font-medium tracking-wider text-on-surface-variant'>
@@ -54,7 +61,7 @@ export const BankAccountCard = ({
         </div>
 
         <div className='flex flex-col gap-2 shrink-0'>
-          {!isPrimary && onMakePrimary && (
+          {!isPrimary && !isPendingPrimary && onMakePrimary && (
             <Button
               type='button'
               variant='ghost'
@@ -65,13 +72,18 @@ export const BankAccountCard = ({
               Make Default
             </Button>
           )}
+          {isPendingPrimary && (
+            <span className='text-[11px] text-muted-foreground italic px-2 py-1'>
+              In Review
+            </span>
+          )}
           {onDelete && (
             <Button
               type='button'
               variant='ghost'
               size='icon'
               onClick={onDelete}
-              disabled={isPrimary}
+              disabled={isPrimary || isPendingPrimary}
               className='text-muted-foreground hover:text-error hover:bg-error/10 cursor-pointer w-8 h-8 rounded-full disabled:opacity-30 disabled:pointer-events-none'
             >
               <Trash2 className='w-4 h-4' />

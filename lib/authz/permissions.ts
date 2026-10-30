@@ -348,6 +348,9 @@ export function resolveRequiredPermissionsForAdminPath(
   if (pathname.startsWith('/admin/members/new')) {
     return [AdminPermission.MEMBERS_CREATE]
   }
+  if (pathname.startsWith('/admin/profile-changes')) {
+    return [AdminPermission.PROFILE_CHANGES_REVIEW]
+  }
   if (pathname.startsWith('/admin/members')) {
     return ADMIN_NAV_SECTION_PERMISSIONS.members
   }

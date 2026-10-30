@@ -4,7 +4,8 @@ import React, { useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { BankAccountCard } from '@/components/members/BankAccountCard'
 import { AddBankAccountDialog } from '@/components/members/AddBankAccountDialog'
-import { setPrimaryBankAccountAction, deleteBankAccountAction } from '@/models/members/actions'
+import { deleteBankAccountAction } from '@/models/members/actions'
+import { requestPrimaryBankAccountChangeAction } from '@/models/members/profile-change-actions'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Landmark, ArrowLeft, Star, Trash2 } from 'lucide-react'
@@ -21,21 +22,28 @@ interface BankAccount {
 interface BanksClientProps {
   userId: string
   bankAccounts: BankAccount[]
+  pendingPrimaryAccountId?: string | null
 }
 
-export default function BanksClient({ userId, bankAccounts }: BanksClientProps) {
+export default function BanksClient({
+  userId,
+  bankAccounts,
+  pendingPrimaryAccountId,
+}: BanksClientProps) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
 
   const handleSetPrimary = async (accountId: string) => {
-    const result = await setPrimaryBankAccountAction(userId, accountId)
+    const result = await requestPrimaryBankAccountChangeAction(accountId)
     if (result.success) {
-      toast.success('Primary bank account updated.')
+      toast.success(
+        'Primary account change requested. An administrator will review your change before it takes effect.',
+      )
       startTransition(() => {
         router.refresh()
       })
     } else {
-      toast.error(result.error || 'Failed to set primary account.')
+      toast.error(result.error || 'Failed to request primary account change.')
     }
   }
 
@@ -91,18 +99,19 @@ export default function BanksClient({ userId, bankAccounts }: BanksClientProps) 
                 accountNumber={account.accountNumber}
                 accountName={account.accountName}
                 isPrimary={account.isPrimary}
+                isPendingPrimary={pendingPrimaryAccountId === account.id}
               />
               <div className="flex gap-2 justify-end border-t border-outline-variant/30 pt-3">
                 {!account.isPrimary && (
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={isPending}
+                    disabled={isPending || pendingPrimaryAccountId === account.id}
                     onClick={() => handleSetPrimary(account.id)}
                     className="cursor-pointer h-8 text-[11px] font-semibold flex items-center gap-1"
                   >
                     <Star className="w-3.5 h-3.5 text-secondary" />
-                    <span>Set Primary</span>
+                    <span>{pendingPrimaryAccountId === account.id ? 'Review Pending' : 'Set Primary'}</span>
                   </Button>
                 )}
                 <Button

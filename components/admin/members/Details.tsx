@@ -13,6 +13,8 @@ const Details = ({
   nextOfKinInfo,
   rejectionReason,
   isRejected,
+  hasPendingBankChange = false,
+  hasPendingNokChange = false,
 }: {
   personalInfo: MemberDetails['personalInfo']
   bankInfo: MemberDetails['bankInfo'][]
@@ -20,16 +22,21 @@ const Details = ({
   nextOfKinInfo: MemberDetails['nextOfKinInfo']
   rejectionReason: string
   isRejected: boolean
+  hasPendingBankChange?: boolean
+  hasPendingNokChange?: boolean
 }) => {
   return (
     <div className='grid grid-cols-1 gap-4 lg:grid-cols-[2fr_1fr]'>
       <div className='flex flex-col gap-8'>
         <PersonalInfo data={personalInfo} />
-        <BankInfo data={bankInfo} />
+        <BankInfo data={bankInfo} hasPendingChange={hasPendingBankChange} />
       </div>
       <div className='grid grid-cols-1 gap-4 sm:grid-cols-2 lg:flex lg:flex-col'>
         <TierInfo tier={tier} />
-        <NextOfKinInfo data={nextOfKinInfo} />
+        <NextOfKinInfo
+          data={nextOfKinInfo}
+          hasPendingChange={hasPendingNokChange}
+        />
         {isRejected && rejectionReason.trim() && (
           <Rejection reason={rejectionReason} />
         )}
