@@ -4,7 +4,6 @@ import {
   LoanStatus,
   Relationship,
   SavingsFrequency,
-  SavingsMaturity,
   SavingsStatus,
   SavingsType,
   TransactionCategory,
@@ -358,13 +357,23 @@ describe('Server authorization matrix & invariants (PR P1-04)', () => {
     expect(foreignSavingsRes.success).toBe(false)
     expect(foreignSavingsRes.error).toMatch(/Savings plan not found/i)
 
-    // 4. Member A creating own transaction ignores spoofed recordedBy
-    const ownRes = await createTransaction({
+    // 4. Legacy savings deposits are refused (P3-03: savings use PaymentSubmission + lots)
+    const legacySavingsRes = await createTransaction({
       userId: 'member-a',
       amount: 5000,
       category: TransactionCategory.SAVINGS_DEPOSIT,
       type: TransactionType.DEPOSIT,
       savingsId: 'savings-a',
+      recordedBy: 'member-a',
+    })
+    expect(legacySavingsRes.success).toBe(false)
+
+    // 5. Member A creating own transaction ignores spoofed recordedBy
+    const ownRes = await createTransaction({
+      userId: 'member-a',
+      amount: 5000,
+      category: TransactionCategory.WALLET_TOPUP,
+      type: TransactionType.DEPOSIT,
       recordedBy: 'spoofed-admin-id',
     })
     expect(ownRes.success).toBe(true)
@@ -391,7 +400,7 @@ describe('Server authorization matrix & invariants (PR P1-04)', () => {
         id: 'savings-a',
         status: SavingsStatus.ACTIVE,
         savingsType: SavingsType.REGULAR,
-        maturity: SavingsMaturity.SIX_MONTHS,
+        durationMonths: 6,
       },
     } as never)
 
@@ -443,19 +452,29 @@ describe('Server authorization matrix & invariants (PR P1-04)', () => {
     expect(unprivRes.success).toBe(false)
     expect(unprivRes.error).toMatch(/permission/i)
 
-    // 4. Admin with SAVINGS_PAYMENTS_REVIEW succeeds and records actor.id instead of spoofed adminId
+    // 4. Admin with SAVINGS_PAYMENTS_REVIEW can act, and actor.id is recorded instead of the
+    //    spoofed adminId. Legacy savings transactions can only be rejected since P3-03.
     signInAs('admin-reviewer')
-    const privRes = await transitionTransaction(
+    const legacyConfirm = await transitionTransaction(
       'tx-pending-1',
       'CONFIRM',
       'spoofed-other-admin-id',
+    )
+    expect(legacyConfirm.success).toBe(false)
+    expect(legacyConfirm.code).toBe('LEGACY_SAVINGS_FLOW_DISABLED')
+
+    const privRes = await transitionTransaction(
+      'tx-pending-1',
+      'REJECT',
+      'spoofed-other-admin-id',
+      'Superseded by the savings receipt flow',
     )
     expect(privRes.success).toBe(true)
     expect(updateTxSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           processedBy: 'admin-reviewer',
-          status: TransactionStatus.CONFIRMED,
+          status: TransactionStatus.REJECTED,
         }),
       }),
     )
@@ -496,12 +515,10 @@ describe('Server authorization matrix & invariants (PR P1-04)', () => {
       savingsType: SavingsType.REGULAR,
       targetAmount: new Prisma.Decimal(50000),
       frequency: SavingsFrequency.MONTHLY,
-      maturity: SavingsMaturity.SIX_MONTHS,
-      interestRate: new Prisma.Decimal(5),
+      durationMonths: 6,
+      ratePercentSnapshot: new Prisma.Decimal(5),
       currentBalance: new Prisma.Decimal(10000),
-      accruedInterest: new Prisma.Decimal(0),
       totalDeposited: new Prisma.Decimal(10000),
-      expectedMaturityAmount: new Prisma.Decimal(52500),
       status: SavingsStatus.ACTIVE,
       transactions: [],
     } as never)
@@ -518,7 +535,6 @@ describe('Server authorization matrix & invariants (PR P1-04)', () => {
           userId: 'member-a',
           status: SavingsStatus.ACTIVE,
           currentBalance: new Prisma.Decimal(10000),
-          accruedInterest: new Prisma.Decimal(0),
         }
       }
       return null
@@ -533,7 +549,8 @@ describe('Server authorization matrix & invariants (PR P1-04)', () => {
     const crossDeposit = await submitSavingsDepositAction('member-a', {
       savingsId: 'savings-a',
       amount: 5000,
-      receiptUrl: 'https://cdn.example.com/r.png',
+      paidOn: '2026-11-01',
+      receiptUrl: '/api/files/file-1',
     })
     expect(crossDeposit.success).toBe(false)
 
@@ -547,13 +564,10 @@ describe('Server authorization matrix & invariants (PR P1-04)', () => {
     // Staff cannot create a personal member savings plan via member action (D-15)
     signInAs('owner-1')
     const staffPlan = await createSavingsPlanAction('owner-1', {
-      savingsType: SavingsType.REGULAR,
+      productId: '11111111-1111-4111-8111-111111111111',
+      durationMonths: 6,
       targetAmount: 10000,
       frequency: SavingsFrequency.MONTHLY,
-      maturity: SavingsMaturity.SIX_MONTHS,
-      bankName: 'GTBank',
-      accountNumber: '0123456789',
-      accountName: 'Owner',
     })
     expect(staffPlan.success).toBe(false)
     expect(staffPlan.error).toMatch(/Staff accounts cannot perform member/i)
@@ -753,9 +767,9 @@ describe('Server authorization matrix & invariants (PR P1-04)', () => {
     const staffSavings = await createSavingsForMemberAction({
       userId: 'owner-1',
       productId: 'prod-1',
+      durationMonths: 6,
       targetAmount: 10000,
       frequency: SavingsFrequency.MONTHLY,
-      maturity: SavingsMaturity.SIX_MONTHS,
     })
     expect(staffSavings.success).toBe(false)
     expect(staffSavings.error).toMatch(

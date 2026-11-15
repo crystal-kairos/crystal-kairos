@@ -52,3 +52,13 @@ export function formatSequentialNumber(prefix: string, sequenceNumber: number): 
   const padded = String(sequenceNumber).padStart(6, '0')
   return `${prefix}-${padded}`
 }
+
+/**
+ * Next sequence number after the highest existing one (e.g. "SUB-000071" → 72).
+ * Using the maximum instead of a row count keeps numbers unique when rows were removed
+ * (test clean-up) — concurrent writers can still collide and must retry on the unique key.
+ */
+export function nextSequenceAfter(lastNumber: string | null | undefined): number {
+  const n = lastNumber ? Number(lastNumber.split('-').pop()) : 0
+  return (Number.isFinite(n) ? n : 0) + 1
+}

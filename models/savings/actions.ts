@@ -1,161 +1,70 @@
 'use server'
 
-import { prisma } from '@/lib/prisma'
-import {
-  SavingsType,
-  SavingsFrequency,
-  SavingsMaturity,
-  SavingsStatus,
-  TransactionCategory,
-  TransactionType,
-  TransactionStatus,
-} from '@/generated/prisma/enums'
+import { z } from 'zod'
 import { revalidatePath } from 'next/cache'
-import { Prisma } from '@/generated/prisma/client'
-import {
-  serializeSavings,
-  serializeTransaction,
-  getInterestRate,
-  getPeriodsCount,
-} from '@/lib/savings'
+import { SavingsFrequency } from '@/generated/prisma/enums'
+import { serializeSavings } from '@/lib/savings'
 import { requireMemberSession } from '@/lib/authz/guards'
-import { bindStoredFileToRecord } from '@/lib/storage/cloudinary'
+import { extractStoredFileIdFromUrl } from '@/lib/storage/cloudinary'
 import { toActionErrorResult } from '@/lib/errors/to-action-result'
 import { AppError } from '@/lib/errors/app-error'
 import { validateAmount } from '@/lib/validation/money'
-import { lockMembers } from '@/lib/db/concurrency'
-import { assertSavingsWithdrawalAllowed } from '@/lib/services/guarantees.service'
-import { recordAuditEvent, AuditAction, AuditOutcome } from '@/lib/services/audit.service'
-
 import { assertProductEligibility } from '@/lib/services/profile.service'
+import {
+  cancelSavingsWithdrawal,
+  requestSavingsWithdrawal,
+  submitSavingsDeposit,
+  subscribeToSavingsPlan,
+} from '@/lib/services/savings.service'
+
+function revalidateSavings(memberId: string, savingsId?: string) {
+  try {
+    revalidatePath(`/dashboard/${memberId}/savings`)
+    revalidatePath(`/dashboard/${memberId}`)
+    if (savingsId) revalidatePath(`/dashboard/${memberId}/savings/${savingsId}`)
+  } catch {
+    // Ignored outside a Next.js request
+  }
+}
+
+const subscribeSchema = z.object({
+  productId: z.string().uuid('Choose a savings plan.'),
+  durationMonths: z.coerce.number().int().min(1, 'Choose a term between 1 and 12 months.').max(12, 'Choose a term between 1 and 12 months.'),
+  targetAmount: z.union([z.number(), z.string()]).optional().nullable(),
+  frequency: z.nativeEnum(SavingsFrequency).optional().nullable(),
+})
 
 /**
- * Creates a new savings plan in PENDING status.
+ * Subscribes the signed-in member to a savings plan and term (D-08, D-09).
+ * The plan is PENDING with no schedule until the first deposit is confirmed.
  */
 export const createSavingsPlanAction = async (
   userId: string,
   data: {
-    savingsType: SavingsType
-    targetAmount: number
-    frequency: SavingsFrequency
-    maturity: SavingsMaturity
-    bankName: string
-    accountNumber: string
-    accountName: string
-    productId?: string
+    productId: string
+    durationMonths: number
+    targetAmount?: number | string | null
+    frequency?: SavingsFrequency | null
   },
 ) => {
   try {
     const actor = await requireMemberSession(userId)
     await assertProductEligibility(actor.id, 'SAVINGS')
+    const parsed = subscribeSchema.parse(data)
+    const targetAmount =
+      parsed.targetAmount === undefined || parsed.targetAmount === null || parsed.targetAmount === ''
+        ? null
+        : validateAmount(parsed.targetAmount, 'targetAmount')
 
-    const validatedTargetAmount = validateAmount(data.targetAmount, 'targetAmount')
-
-    let interestRate = 0
-    const maturityMonthsMap: Record<SavingsMaturity, number> = {
-      [SavingsMaturity.ONE_MONTH]: 1,
-      [SavingsMaturity.THREE_MONTHS]: 3,
-      [SavingsMaturity.SIX_MONTHS]: 6,
-      [SavingsMaturity.TWELVE_MONTHS]: 12,
-    }
-    const durationMonths = (data as any).durationMonths ?? maturityMonthsMap[data.maturity] ?? 6
-    let termRateVersion = 1
-
-    if (data.productId) {
-      const termRate = await prisma.savingsProductTermRate.findFirst({
-        where: { productId: data.productId, durationMonths, isActive: true },
-        orderBy: { version: 'desc' },
-      })
-
-      if (termRate) {
-        interestRate = Number(termRate.ratePercent)
-        termRateVersion = termRate.version
-      } else {
-        const product = await prisma.savingsProduct.findUnique({
-          where: { id: data.productId },
-        })
-        if (product) {
-          switch (data.maturity) {
-            case SavingsMaturity.ONE_MONTH:
-              interestRate = Number(product.interestRate1Month || 0)
-              break
-            case SavingsMaturity.THREE_MONTHS:
-              interestRate = Number(product.interestRate3Months || 0)
-              break
-            case SavingsMaturity.SIX_MONTHS:
-              interestRate = Number(product.interestRate6Months || 0)
-              break
-            case SavingsMaturity.TWELVE_MONTHS:
-              interestRate = Number(product.interestRate12Months || 0)
-              break
-          }
-        }
-      }
-    } else {
-      // Fallback for older creations
-      interestRate = getInterestRate(data.savingsType, data.maturity)
-    }
-
-    // Calculate expected maturity amount
-    const targetAmountNum = validatedTargetAmount.toNumber()
-    let totalContribution = targetAmountNum
-    if (data.savingsType === SavingsType.REGULAR) {
-      const periods = getPeriodsCount(data.frequency, data.maturity)
-      totalContribution = targetAmountNum * Math.round(periods)
-    }
-
-    const interestAmount = (totalContribution * interestRate) / 100
-    const expectedMaturityAmount = totalContribution + interestAmount
-
-    const newSavings = await prisma.savings.create({
-      data: {
-        userId: actor.id,
-        savingsType: data.savingsType,
-        targetAmount: validatedTargetAmount,
-        frequency: data.frequency,
-        maturity: data.maturity,
-        durationMonths,
-        ratePercent: new Prisma.Decimal(interestRate.toString()),
-        interestCalculationMethod: 'SIMPLE_INTEREST_HELD_FRACTION',
-        savingsProductTermRateVersion: termRateVersion,
-        interestRate: new Prisma.Decimal(interestRate.toString()),
-        bankName: data.bankName,
-        accountNumber: data.accountNumber,
-        accountName: data.accountName,
-        expectedMaturityAmount: new Prisma.Decimal(
-          expectedMaturityAmount.toString(),
-        ),
-        isAnonymousRequest: false,
-        status: SavingsStatus.PENDING,
-        productId: data.productId || null,
-      },
+    const savings = await subscribeToSavingsPlan({
+      memberId: actor.id,
+      productId: parsed.productId,
+      durationMonths: parsed.durationMonths,
+      targetAmount,
+      frequency: parsed.frequency ?? null,
     })
-
-    await recordAuditEvent({
-      actorId: actor.id,
-      actorRole: actor.role,
-      affectedUserId: actor.id,
-      action: AuditAction.SAVINGS_PLAN_CREATED,
-      entityType: 'Savings',
-      entityId: newSavings.id,
-      outcome: AuditOutcome.SUCCESS,
-      metadata: {
-        savingsId: newSavings.id,
-        targetAmount: Number(newSavings.targetAmount),
-        durationMonths,
-        ratePercent: Number(newSavings.ratePercent),
-        accountNumber: data.accountNumber,
-      },
-    }).catch(() => {})
-
-    try {
-      revalidatePath(`/dashboard/${actor.id}/savings`)
-      revalidatePath(`/dashboard/${actor.id}`)
-    } catch {
-      // Ignored outside Next.js context
-    }
-
-    return { success: true, data: serializeSavings(newSavings) }
+    revalidateSavings(actor.id)
+    return { success: true, data: serializeSavings(savings) }
   } catch (error) {
     const err = toActionErrorResult(error, {
       actionName: 'createSavingsPlanAction',
@@ -172,66 +81,74 @@ export const createSavingsPlanAction = async (
   }
 }
 
+const depositSchema = z.object({
+  savingsId: z.string().uuid(),
+  amount: z.union([z.number(), z.string()]),
+  paidOn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Enter the date you paid.'),
+  periodIds: z.array(z.string().uuid()).max(400).optional(),
+  receiptUrl: z.string().min(1, 'Upload your payment receipt.'),
+  bankReference: z.string().trim().max(100).optional(),
+  payerAccountName: z.string().trim().max(150).optional(),
+  narration: z.string().trim().max(200).optional(),
+  resubmissionOfId: z.string().uuid().optional(),
+})
+
 /**
- * Submit savings deposit receipt for verification
+ * Uploads a receipt for a savings deposit (first deposit, regular periods, or a fixed/staggered
+ * deposit). Creates a PaymentSubmission; nothing moves until staff confirm it.
  */
 export const submitSavingsDepositAction = async (
   userId: string,
   data: {
     savingsId: string
-    amount: number
+    amount: number | string
+    paidOn: string
+    periodIds?: string[]
     receiptUrl: string
-    referenceNumber?: string
-    notes?: string
+    bankReference?: string
+    payerAccountName?: string
+    narration?: string
+    resubmissionOfId?: string
   },
 ) => {
   try {
     const actor = await requireMemberSession(userId)
-    const validatedAmount = validateAmount(data.amount)
-
-    const savings = await prisma.savings.findFirst({
-      where: { id: data.savingsId, userId: actor.id },
-    })
-
-    if (!savings) {
-      return { success: false, error: 'Savings plan not found' }
+    const parsed = depositSchema.parse(data)
+    const amount = validateAmount(parsed.amount)
+    const receiptFileId = extractStoredFileIdFromUrl(parsed.receiptUrl)
+    if (!receiptFileId) {
+      throw new AppError('VALIDATION_ERROR', 'Upload your payment receipt.', {
+        statusCode: 400,
+        fieldErrors: { receiptUrl: ['Upload your payment receipt.'] },
+      })
     }
 
-    const newTransaction = await prisma.transaction.create({
+    const { submission, warnings } = await submitSavingsDeposit({
+      memberId: actor.id,
+      savingsId: parsed.savingsId,
+      amount,
+      paidOn: parsed.paidOn,
+      periodIds: parsed.periodIds,
+      receiptFileId,
+      bankReference: parsed.bankReference || undefined,
+      payerAccountName: parsed.payerAccountName || undefined,
+      narration: parsed.narration || undefined,
+      resubmissionOfId: parsed.resubmissionOfId,
+    })
+    revalidateSavings(actor.id, parsed.savingsId)
+    return {
+      success: true,
       data: {
-        userId: actor.id,
-        amount: validatedAmount,
-        category: TransactionCategory.SAVINGS_DEPOSIT,
-        type: TransactionType.DEPOSIT,
-        status: TransactionStatus.PENDING,
-        savingsId: data.savingsId,
-        receiptUrl: data.receiptUrl,
-        referenceNumber: data.referenceNumber || null,
-        notes: data.notes || null,
-        recordedBy: actor.id,
+        submissionId: submission.id,
+        submissionNumber: submission.submissionNumber,
+        possibleDuplicate: warnings.hasDuplicateHashWarning || warnings.hasDuplicateReferenceWarning,
       },
-    })
-
-    await bindStoredFileToRecord({
-      fileUrl: data.receiptUrl,
-      ownerUserId: actor.id,
-      associatedType: 'TRANSACTION',
-      associatedId: newTransaction.id,
-    })
-
-    try {
-      revalidatePath(`/dashboard/${actor.id}/savings`)
-      revalidatePath(`/dashboard/${actor.id}`)
-    } catch {
-      // Ignored outside Next.js context
     }
-
-    return { success: true, data: serializeTransaction(newTransaction) }
   } catch (error) {
     const err = toActionErrorResult(error, {
       actionName: 'submitSavingsDepositAction',
       fallbackMessage: 'Failed to submit savings deposit',
-      context: { userId, savingsId: data.savingsId },
+      context: { userId, savingsId: data?.savingsId },
     })
     return {
       success: false,
@@ -244,108 +161,58 @@ export const submitSavingsDepositAction = async (
 }
 
 /**
- * Request savings plan withdrawal.
- * Sets the plan earlyWithdrawal flag and forfeits interest if not matured yet.
+ * Requests withdrawal of a savings plan. Early withdrawal forfeits all accrued interest;
+ * at/after maturity the payout is principal plus accrued interest. Refused while the
+ * principal is locked by an own loan or reserved for a guarantee (§2.1).
  */
-export const requestSavingsWithdrawalAction = async (
-  userId: string,
-  savingsId: string,
-  notes?: string,
-) => {
+export const requestSavingsWithdrawalAction = async (userId: string, savingsId: string) => {
   try {
     const actor = await requireMemberSession(userId)
-
-    const result = await prisma.$transaction(async (tx) => {
-      // 1. Transaction advisory lock on member (§2.1, §2.7)
-      await lockMembers(tx, [actor.id])
-
-      const savings = await tx.savings.findFirst({
-        where: { id: savingsId, userId: actor.id },
-      })
-
-      if (!savings) {
-        throw new AppError('NOT_FOUND', 'Savings plan not found', {
-          statusCode: 404,
-        })
-      }
-
-      if (savings.status !== SavingsStatus.ACTIVE) {
-        throw new AppError(
-          'INVALID_STATE',
-          'Only active savings plans can be withdrawn',
-          { statusCode: 422 },
-        )
-      }
-
-      const now = new Date()
-      const isEarly = savings.maturityDate ? now < savings.maturityDate : true
-
-      // Principal balance
-      const currentBalance = Number(savings.currentBalance)
-      const accruedInterest = Number(savings.accruedInterest)
-
-      // If early withdrawal, interest is 100% forfeited
-      const withdrawAmount = isEarly
-        ? currentBalance
-        : currentBalance + accruedInterest
-
-      // 2. Enforce own-savings lock (FULL mode) and guarantee encumbrances (§2.1, D-02)
-      await assertSavingsWithdrawalAllowed(tx, {
-        memberId: actor.id,
-        withdrawalAmount: currentBalance,
-      })
-
-      const updatedSavings = await tx.savings.update({
-        where: { id: savingsId },
-        data: {
-          status: isEarly
-            ? SavingsStatus.EARLY_WITHDRAWAL
-            : SavingsStatus.WITHDRAWN,
-          earlyWithdrawal: isEarly,
-          accruedInterest: isEarly ? 0 : savings.accruedInterest, // Forfeit interest if early
-        },
-      })
-
-      // Create a pending withdrawal transaction (to enter the admin disbursement queue)
-      const newTransaction = await tx.transaction.create({
-        data: {
-          userId: actor.id,
-          amount: new Prisma.Decimal(withdrawAmount.toString()),
-          category: TransactionCategory.SAVINGS_WITHDRAWAL,
-          type: TransactionType.WITHDRAWAL,
-          status: TransactionStatus.PENDING,
-          savingsId: savingsId,
-          notes:
-            notes ||
-            (isEarly
-              ? 'Early withdrawal request - interest forfeited'
-              : 'Matured savings withdrawal request'),
-          recordedBy: actor.id,
-          bankAccountId: null, // Admin will disburse to the saved details on the Savings record
-        },
-      })
-
-      return {
-        savings: serializeSavings(updatedSavings),
-        transaction: serializeTransaction(newTransaction),
-      }
-    })
-
-    try {
-      revalidatePath(`/dashboard/${actor.id}/savings`)
-      revalidatePath(`/dashboard/${actor.id}`)
-    } catch {
-      // Ignored outside Next.js context
-    }
-
+    const id = z.string().min(1).max(64).parse(savingsId)
+    const result = await requestSavingsWithdrawal({ memberId: actor.id, savingsId: id })
+    revalidateSavings(actor.id, id)
     return {
       success: true,
-      data: result,
+      data: {
+        savingsId: result.savingsId,
+        kind: result.kind,
+        principal: result.principal.toNumber(),
+        interest: result.interest.toNumber(),
+      },
     }
   } catch (error) {
     const err = toActionErrorResult(error, {
       actionName: 'requestSavingsWithdrawalAction',
       fallbackMessage: 'Failed to request savings withdrawal',
+      context: { userId, savingsId },
+    })
+    return {
+      success: false,
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
+    }
+  }
+}
+
+/** The member cancels their own withdrawal request before staff approve it. */
+export const cancelSavingsWithdrawalAction = async (userId: string, savingsId: string) => {
+  try {
+    const actor = await requireMemberSession(userId)
+    const id = z.string().uuid().parse(savingsId)
+    const result = await cancelSavingsWithdrawal({
+      savingsId: id,
+      actorId: actor.id,
+      memberId: actor.id,
+      reason: 'Cancelled by the member',
+    })
+    revalidateSavings(actor.id, id)
+    return { success: true, data: result }
+  } catch (error) {
+    const err = toActionErrorResult(error, {
+      actionName: 'cancelSavingsWithdrawalAction',
+      fallbackMessage: 'Failed to cancel the withdrawal',
       context: { userId, savingsId },
     })
     return {

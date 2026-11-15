@@ -172,7 +172,25 @@ performance work (P5-03) waits for it.
   its internals and must keep that API working.
 - **P4-01** removes Brevo: update the "Local setup" env list in this file (drop `BREVO_API_KEY`,
   add the Resend variables) in the same PR.
-- **P3-03** must fix the failing `tests/unit/error-normalization.test.ts` savings case (see Known issues).
+- **From P3-03 (savings):**
+  - Jobs written (pure, idempotent, catch-up by `asOf`): `runSavingsExpiryJob` (`savings-expiry.job.ts`),
+    `runSavingsForfeitureJob` (`savings-forfeiture.job.ts`), `runSavingsAccrualJob` (`savings-accrual.job.ts`),
+    `runSavingsMaturityJob` (`maturity.job.ts`). **P4-04:** run them daily in that order (forfeiture before
+    accrual); they take `{ asOf, notify }`.
+  - **P3-06:** wire `recalculateSavingsPeriodForfeiture(tx, periodId, asOf)` and `refreshSavingsPeriodStatus` into
+    `recalculateLateness()`; the savings review shield is already in `evaluatePeriodForfeiture`. Wallet
+    "pay savings from wallet" must create allocations with `targetType: SAVINGS, componentType: PRINCIPAL` and then
+    call `onSavingsAllocationsConfirmed` so lots exist.
+  - **P3-07:** savings receipts are confirmed/rejected on the plan page (`confirmSavingsSubmissionAction`,
+    `rejectSavingsSubmissionAction`, permission `SAVINGS_PAYMENTS_REVIEW`) until the unified queue replaces them.
+    Value-date corrections after confirmation are not built (OQ-11); the restore logic exists.
+  - **P3-09:** `onSavingsAllocationsReversed` voids lots and reverses accruals but **refuses** reversing a plan's first
+    deposit (`SAVINGS_FIRST_DEPOSIT_REVERSAL`); implement §2.10 step 4 (manual correction / back to `PENDING`) there.
+  - **P3-06B / P3-11:** use `Savings.withdrawalKind` `RECOVERY` / `SETTLEMENT`; reverse lot accruals the same way as
+    early withdrawal in `confirmSavingsWithdrawalPayout`.
+  - Legacy `Transaction` savings categories are disabled (create refused; confirm refused, reject allowed).
+  - Submission/payment/disbursement numbers now use "highest existing + 1" (`nextSequenceAfter`) instead of `count() + 1`;
+    concurrent writers can still collide on the unique key, so callers retry (`withSequenceRetry` in savings).
 
 ### Status
 
@@ -180,7 +198,7 @@ performance work (P5-03) waits for it.
 
 | Step | Status | Notes |
 |---|---|---|
-| P3-03 | Not started | |
+| P3-03 | Done | Savings lots/accruals, jobs in `lib/jobs/`, see hand-over notes |
 | P3-04 | Not started | |
 | P3-05 | Not started | |
 | P3-06 | Not started | |
@@ -271,8 +289,8 @@ Testing notes:
 
 - `pnpm typecheck`: 3 errors for `@/public/*.png` imports (no `next-env.d.ts` until a Next build/dev run).
 - `pnpm lint`: ~200 pre-existing errors (mostly `no-explicit-any`). Don't add new ones in touched files.
-- `tests/unit/error-normalization.test.ts` › "normalises database (Prisma)…" fails since P3-01's
-  eligibility gate; `createSavingsPlanAction` is rewritten in P3-03, fix the test there.
+- `tests/integration/member-lifecycle.test.ts` › invariant check can fail under a full parallel run: it checks the
+  whole DB while `guarantees.test.ts` deliberately holds an ADMIN with savings until its `afterAll` (passes alone).
 - `tests/integration/guarantees.test.ts` flaked once under a full parallel run (passes alone).
 - `revokeAllSessionsAction` also revokes the current session (it bumps `sessionVersion`), although the
   security page says "all other sessions".

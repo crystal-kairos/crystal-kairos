@@ -3,7 +3,6 @@ import { Prisma } from '@/generated/prisma/client'
 import {
   PaymentPeriodStatus,
   SavingsFrequency,
-  SavingsMaturity,
   SavingsType,
 } from '@/generated/prisma/enums'
 import { roundMoney, toDecimal } from '@/lib/domain/money'
@@ -19,7 +18,6 @@ import {
   parseDateOnly,
 } from '@/lib/domain/dates'
 import { generateLoanSchedule } from '@/lib/domain/loan-schedule'
-import { maturityToMonths } from '@/lib/savings'
 
 export interface LoanInstalmentOutstanding {
   principalOutstanding: Prisma.Decimal
@@ -216,13 +214,14 @@ export interface GenerateAndPersistSavingsScheduleParams {
   savingsId: string
   savingsType: SavingsType
   frequency: SavingsFrequency
-  maturity: SavingsMaturity
+  durationMonths: number
   targetAmount: Prisma.Decimal | string | number
   firstDepositValueDate: Date | string
 }
 
 /**
- * Generates and persists the savings schedule idempotently.
+ * Generates and persists the regular-savings schedule idempotently (§2.6).
+ * Only REGULAR plans have periods; FIXED and STAGGERED plans are tracked by lots (P3-03).
  */
 export async function generateAndPersistSavingsSchedule(
   tx: Prisma.TransactionClient,
@@ -233,57 +232,31 @@ export async function generateAndPersistSavingsSchedule(
     orderBy: { periodNumber: 'asc' },
   })
 
-  if (existing.length > 0) {
+  if (existing.length > 0 || params.savingsType !== SavingsType.REGULAR) {
     return existing
   }
 
   const targetAmount = roundMoney(params.targetAmount)
-  const durationMonths = maturityToMonths(params.maturity)
-  let dueDates: Date[] = []
-
-  if (params.savingsType === SavingsType.FIXED) {
-    // FIXED savings is a single lump-sum upfront period due on start date
-    dueDates = [parseDateOnly(params.firstDepositValueDate)]
-  } else if (params.savingsType === SavingsType.REGULAR) {
-    if (params.frequency === SavingsFrequency.MONTHLY) {
-      dueDates = generateMonthlySavingsDueDates(
-        params.firstDepositValueDate,
-        durationMonths,
-      )
-    } else if (params.frequency === SavingsFrequency.WEEKLY) {
-      dueDates = generateWeeklySavingsDueDates(
-        params.firstDepositValueDate,
-        durationMonths,
-      )
-    } else if (params.frequency === SavingsFrequency.DAILY) {
-      dueDates = generateDailySavingsDueDates(
-        params.firstDepositValueDate,
-        durationMonths,
-      )
-    } else {
-      // Default to monthly if unspecified
-      dueDates = generateMonthlySavingsDueDates(
-        params.firstDepositValueDate,
-        durationMonths,
-      )
-    }
+  let dueDates: Date[]
+  if (params.frequency === SavingsFrequency.WEEKLY) {
+    dueDates = generateWeeklySavingsDueDates(params.firstDepositValueDate, params.durationMonths)
+  } else if (params.frequency === SavingsFrequency.DAILY) {
+    dueDates = generateDailySavingsDueDates(params.firstDepositValueDate, params.durationMonths)
   } else {
-    // STAGGERED savings: minimum 1 period anchored on first deposit
-    dueDates = [parseDateOnly(params.firstDepositValueDate)]
+    dueDates = generateMonthlySavingsDueDates(params.firstDepositValueDate, params.durationMonths)
   }
 
-  const periodsData = dueDates.map((dueDate, idx) => ({
-    savingsId: params.savingsId,
-    periodNumber: idx + 1,
-    dueDate,
-    amountDue: targetAmount,
-    amountPaid: new Prisma.Decimal(0),
-    status: PaymentPeriodStatus.PENDING,
-    interestForfeited: false,
-  }))
-
   await tx.savingsPeriod.createMany({
-    data: periodsData,
+    data: dueDates.map((dueDate, idx) => ({
+      savingsId: params.savingsId,
+      periodNumber: idx + 1,
+      dueDate,
+      amountDue: targetAmount,
+      amountPaid: new Prisma.Decimal(0),
+      status: PaymentPeriodStatus.PENDING,
+      interestForfeited: false,
+    })),
+    skipDuplicates: true,
   })
 
   return tx.savingsPeriod.findMany({

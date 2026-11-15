@@ -11,7 +11,6 @@ import {
   EAjoFrequency,
   SavingsType,
   SavingsFrequency,
-  SavingsMaturity
 } from '../generated/prisma/enums'
 
 async function runTest() {
@@ -104,11 +103,9 @@ async function runTest() {
       savingsType: SavingsType.FIXED,
       targetAmount: 50000,
       frequency: SavingsFrequency.ONCE,
-      maturity: SavingsMaturity.SIX_MONTHS,
-      interestRate: 12.0,
-      bankName: 'Access Bank',
-      accountNumber: '0123456789',
-      accountName: 'Test Member',
+      durationMonths: 6,
+      ratePercentSnapshot: 12.0,
+      rateVersionSnapshot: 1,
       status: SavingsStatus.PENDING,
     }
   })

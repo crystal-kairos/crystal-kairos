@@ -7,7 +7,7 @@ import {
 } from '@/generated/prisma/client'
 import { AppError } from '@/lib/errors/app-error'
 import { lockMembers } from '@/lib/db/concurrency'
-import { formatSequentialNumber } from '@/lib/domain/payment-reference'
+import { formatSequentialNumber, nextSequenceAfter } from '@/lib/domain/payment-reference'
 import { postJournalEntry } from '@/lib/services/ledger.service'
 import { recordAuditEvent, AuditAction, AuditOutcome } from '@/lib/services/audit.service'
 import { enforceDualControl } from '@/lib/authz/guards'
@@ -51,8 +51,11 @@ export async function requestDisbursement(
     })
   }
 
-  const count = await db.disbursement.count()
-  const disbursementNumber = formatSequentialNumber('DSB', count + 1)
+  const last = await db.disbursement.findFirst({
+    orderBy: { disbursementNumber: 'desc' },
+    select: { disbursementNumber: true },
+  })
+  const disbursementNumber = formatSequentialNumber('DSB', nextSequenceAfter(last?.disbursementNumber))
   const idempotencyKey = input.idempotencyKey || `disb-req:${disbursementNumber}`
 
   const disbursement = await db.disbursement.create({

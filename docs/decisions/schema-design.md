@@ -355,10 +355,12 @@ Product catalogue for Fixed, Regular, and Staggered savings plans.
   - `type`: `SavingsType` (`FIXED`, `REGULAR`, `STAGGERED`)
   - `title`: `String`
   - `description`: `String`
-  - `badge`: `String?`
+  - `rates`: `String @default("Flexible Rates")` (display text regenerated from the active term rates; never typed)
+  - `badge`: `String?` (optional; hidden when blank — made nullable in P3-03)
   - `icon`: `String`
   - `isActive`: `Boolean @default(true)`
-  - `createdById`: `String`
+  - `createdBy`: `String`
+  - *P3-03 removed the legacy `interestRate1Month/3Months/6Months/12Months` columns; rates live only in `SavingsProductTermRate` (back-filled by the migration).*
   - `createdAt`: `DateTime @default(now())`
   - `updatedAt`: `DateTime @updatedAt`
 - **Relations:** `createdBy`: `User` (`onDelete: Restrict`), `termRates`: `SavingsProductTermRate[]`
@@ -664,79 +666,68 @@ Member-initiated wallet cash-out request acting as an active balance hold (§2.1
 
 ### 3.6 Domain: Savings Architecture
 
-#### 3.6.1 `Savings`
-Member's subscribed savings plan contract.
+#### 3.6.1 `Savings` (as implemented in P3-03)
+Member's subscription to a savings plan and term. Created `PENDING` without admin approval and without schedule, start or maturity date (D-08).
 - **Fields:**
   - `id`: `String @id @default(uuid())`
   - `userId`: `String`
-  - `productId`: `String`
+  - `productId`: `String?`
   - `savingsType`: `SavingsType` (`FIXED`, `REGULAR`, `STAGGERED`)
-  - `durationMonths`: `Int` (1 to 12)
-  - `termRatePercent`: `Decimal @db.Decimal(7, 4)` (Snapshotted full-term rate)
-  - `targetAmount`: `Decimal? @db.Decimal(15, 2)`
+  - `targetAmount`: `Decimal? @db.Decimal(15, 2)` (FIXED: target; REGULAR: amount per period; STAGGERED: null) — `CHECK (> 0)`
+  - `frequency`: `SavingsFrequency` (`DAILY`/`WEEKLY`/`MONTHLY` for REGULAR; `ONCE` otherwise)
+  - `durationMonths`: `Int` — `CHECK (1..12)`; replaces the removed `SavingsMaturity` enum (D-22)
+  - `ratePercentSnapshot`: `Decimal @db.Decimal(7, 4)` (full-term simple rate snapshotted at subscription, D-09) — `CHECK (0..100)`
+  - `rateVersionSnapshot`: `Int` (the `SavingsProductTermRate.version` used)
+  - `interestMethod`: `String @default("SIMPLE_HELD_TERM_FRACTION")`
+  - `currentBalance`: `Decimal(15,2)` (confirmed principal of non-voided lots; cache maintained by `savings.service`) — `CHECK (>= 0)`
+  - `totalDeposited`: `Decimal(15,2)` — `CHECK (>= 0)`
   - `status`: `SavingsStatus` (`PENDING`, `ACTIVE`, `MATURED`, `WITHDRAWAL_PENDING`, `WITHDRAWN`, `CANCELLED`)
-  - `startDate`: `DateTime? @db.Date` (Value date of first confirmed deposit D-08)
+  - `startDate`: `DateTime? @db.Date` (value date of the first confirmed deposit)
   - `maturityDate`: `DateTime? @db.Date` (`addMonthsClamped(startDate, durationMonths)`)
-  - `earlyWithdrawnAt`: `DateTime?`
-  - `withdrawnAt`: `DateTime?`
-  - `createdAt`: `DateTime @default(now())`
-  - `updatedAt`: `DateTime @updatedAt`
-- **Relations:**
-  - `user`: `User` (`onDelete: Restrict`)
-  - `product`: `SavingsProduct` (`onDelete: Restrict`)
-  - `periods`: `SavingsPeriod[]`
-  - `lots`: `SavingsLot[]`
-- **Indexes:** `[userId, status]`, `[status, maturityDate]`
+  - `maturedAt`, `cancelledAt`, `withdrawnAt`, `withdrawalRequestedAt`: `DateTime?`
+  - `cancellationReason`: `String?`
+  - `withdrawalKind`: `SavingsWithdrawalKind?` (`MATURITY`, `EARLY`, `RECOVERY`, `SETTLEMENT`)
+  - `withdrawalPrincipal`, `withdrawalInterest`: `Decimal(15,2)?` (amounts frozen at request) — `CHECK (>= 0)`
+  - `withdrawalDisbursementId`: `String? @unique` → `Disbursement` (`onDelete: Restrict`)
+  - `createdAt`, `updatedAt`
+- **Removed in P3-03:** `maturity`, `interestRate`, `ratePercent`, `savingsProductTermRateVersion`, `interestCalculationMethod`, `accruedInterest` (now derived from `SavingsInterestAccrual`), `expectedMaturityAmount`, `earlyWithdrawal`, `approvedAt`, `approvedBy`, `rejectionReason`, `isAnonymousRequest`, `bankName`, `accountNumber`, `accountName` (the payout account is the member's primary `BankAccount`, snapshotted on the `Disbursement`). Status values `APPROVED`, `REJECTED`, `EARLY_WITHDRAWAL` were mapped to `PENDING`, `CANCELLED`, `WITHDRAWN`+`EARLY`.
+- **Relations:** `user`, `product`, `periods: SavingsPeriod[]`, `lots: SavingsLot[]`, `withdrawalDisbursement` (all `Restrict`).
+- **Indexes:** `[userId]`, `[status]`, `[productId]`, `[status, maturityDate]`
 
 #### 3.6.2 `SavingsPeriod`
-Persisted regular-savings scheduled contribution instalment (§1.3, §2.6).
-- **Fields:**
-  - `id`: `String @id @default(uuid())`
-  - `savingsId`: `String`
-  - `periodNumber`: `Int` (1 to `durationMonths`)
-  - `dueDate`: `DateTime @db.Date` (`addMonthsClamped(startDate, periodNumber - 1)`)
-  - `expectedAmount`: `Decimal @db.Decimal(15, 2)`
-  - `paidAmount`: `Decimal @default(0) @db.Decimal(15, 2)`
-  - `status`: `PeriodStatus` (`PENDING`, `IN_REVIEW`, `COMPLETED`, `ONGOING`, `OVERDUE`, `WAIVED`)
-  - `interestForfeited`: `Boolean @default(false)` (True if unpaid past day +8 grace)
-  - `forfeitedAt`: `DateTime?`
-  - `shieldedUntil`: `DateTime?`
-- **Unique Constraint:** `@@unique([savingsId, periodNumber])`
-- **Relations:** `savings`: `Savings` (`onDelete: Restrict`), `lots`: `SavingsLot[]`
-- **Indexes:** `[dueDate, status]`
+Persisted regular-savings period (§1.3, §2.6). Only REGULAR plans have periods; FIXED and STAGGERED plans are tracked by lots only.
+- **Fields:** `id`, `savingsId`, `periodNumber`, `dueDate @db.Date`, `amountDue Decimal(15,2)`, `amountPaid Decimal(15,2)`, `status PaymentPeriodStatus`, `interestForfeited Boolean`, `createdAt`, `updatedAt` (unchanged from P2-03).
+- **Due dates:** monthly `addMonthsClamped(start, i−1)`; weekly/daily `start + 7(i−1)` / `start + (i−1)` days while strictly before maturity.
+- **Status** is derived (`refreshSavingsPeriodStatus`): `COMPLETED` > `IN_REVIEW` > `OVERDUE` > `REJECTED` > `ONGOING` > `PENDING`; `WAIVED` is never touched.
+- **`interestForfeited`** is recomputed from value dates and the review shield (`recalculateSavingsPeriodForfeiture`); a value-date correction can clear it.
+- **Unique Constraint:** `@@unique([savingsId, periodNumber])`; **Index:** `[status, dueDate]`
+- **Relations:** `savings` (`Restrict`), `lots: SavingsLot[]`
 
 #### 3.6.3 `SavingsLot`
-Immutable principal tranche representing a single confirmed deposit allocation (§2.5).
+Immutable principal lot, one per confirmed savings principal allocation (§2.5).
 - **Fields:**
   - `id`: `String @id @default(uuid())`
   - `savingsId`: `String`
-  - `savingsPeriodId`: `String?`
-  - `paymentAllocationId`: `String @unique`
-  - `amount`: `Decimal @db.Decimal(15, 2)`
-  - `valueDate`: `DateTime @db.Date` (Lagos deposit value date)
-  - `isInterestBearing`: `Boolean @default(true)`
-  - `status`: `LotStatus` (`ACTIVE`, `VOIDED`, `WITHDRAWN`)
-  - `createdAt`: `DateTime @default(now())`
-- **Relations:**
-  - `savings`: `Savings` (`onDelete: Restrict`)
-  - `savingsPeriod`: `SavingsPeriod?` (`onDelete: Restrict`)
-  - `allocation`: `PaymentAllocation` (`onDelete: Restrict`)
-  - `accruals`: `SavingsInterestAccrual[]`
-- **Indexes:** `[savingsId, status]`, `[valueDate]`
+  - `allocationId`: `String @unique` → `PaymentAllocation` (`Restrict`)
+  - `principal`: `Decimal @db.Decimal(15, 2)` — `CHECK (> 0)`
+  - `valueDate`: `DateTime @db.Date` (the payment's value date)
+  - `savingsPeriodId`: `String?` → `SavingsPeriod` (`Restrict`; REGULAR only)
+  - `interestBearing`: `Boolean @default(true)`
+  - `forfeitedAt`: `DateTime?`, `forfeitReason`: `String?` (`PERIOD_LATE`, `EARLY_WITHDRAWAL`, `VOIDED`)
+  - `voidedAt`: `DateTime?` (payment reversal)
+  - `createdAt`
+- **Indexes:** `[savingsId]`, `[savingsPeriodId]`
 
 #### 3.6.4 `SavingsInterestAccrual`
-Monthly linear accrual tracking per principal lot (§2.5, D-17).
+Monthly linear accrual per lot (§2.5, D-17, A-07); each row has its own balanced journal entry (`SAVINGS_INTEREST_EXPENSE` Dr / `SAVINGS_INTEREST_PAYABLE` Cr, key `savings-accrual:{lotId}:{date}`).
 - **Fields:**
-  - `id`: `String @id @default(uuid())`
-  - `savingsLotId`: `String`
-  - `accrualDate`: `DateTime @db.Date` (Last Lagos calendar day of month or maturity)
-  - `amount`: `Decimal @db.Decimal(15, 2)`
-  - `journalEntryId`: `String`
-  - `createdAt`: `DateTime @default(now())`
-- **Unique Constraint:** `@@unique([savingsLotId, accrualDate])`
-- **Relations:**
-  - `savingsLot`: `SavingsLot` (`onDelete: Restrict`)
-  - `journalEntry`: `JournalEntry` (`onDelete: Restrict`)
+  - `id`, `lotId` → `SavingsLot` (`Restrict`)
+  - `accrualDate`: `DateTime @db.Date` (last Lagos day of a month, or the maturity date)
+  - `amount`: `Decimal @db.Decimal(15, 2)` — `CHECK (> 0)`
+  - `journalEntryId`: `String?` → `JournalEntry` (`Restrict`)
+  - `reversedAt`: `DateTime?`, `reversalReason`: `String?` (forfeiture, early withdrawal, payment reversal — the journal entry is reversed, never edited)
+  - `createdAt`
+- **Unique Constraint:** `@@unique([lotId, accrualDate])` (a date whose row was reversed is not re-posted; the next accrual date — or the payout-time catch-up — posts the cumulative difference)
 
 ---
 
@@ -1202,9 +1193,14 @@ ALTER TABLE loans
   ADD CONSTRAINT chk_loans_duration_months
   CHECK (duration_months >= 1 AND duration_months <= 12);
 
-ALTER TABLE savings
-  ADD CONSTRAINT chk_savings_duration_months
-  CHECK (duration_months >= 1 AND duration_months <= 12);
+-- Implemented in P3-03 (migration 20261117090000_p3_03_savings_workflows):
+ALTER TABLE savings ADD CONSTRAINT savings_duration_months_check CHECK ("durationMonths" >= 1 AND "durationMonths" <= 12);
+ALTER TABLE savings ADD CONSTRAINT savings_rate_snapshot_check CHECK ("ratePercentSnapshot" >= 0 AND "ratePercentSnapshot" <= 100);
+ALTER TABLE savings ADD CONSTRAINT savings_balances_nonneg_check CHECK ("currentBalance" >= 0 AND "totalDeposited" >= 0);
+ALTER TABLE savings ADD CONSTRAINT savings_target_amount_check CHECK ("targetAmount" IS NULL OR "targetAmount" > 0);
+ALTER TABLE savings ADD CONSTRAINT savings_withdrawal_amounts_check CHECK (("withdrawalPrincipal" IS NULL OR "withdrawalPrincipal" >= 0) AND ("withdrawalInterest" IS NULL OR "withdrawalInterest" >= 0));
+ALTER TABLE savings_lots ADD CONSTRAINT savings_lots_principal_check CHECK ("principal" > 0);
+ALTER TABLE savings_interest_accruals ADD CONSTRAINT savings_interest_accruals_amount_check CHECK ("amount" > 0);
 
 ALTER TABLE loan_term_rates
   ADD CONSTRAINT chk_loan_rates_duration_months
@@ -1241,7 +1237,7 @@ ALTER TABLE e_ajo_slot_policies
 | **§2.3** | E-ajo daily late penalty | `EAjoMember`, `EAjoContributionPeriod`, `EAjoPenaltyAccrual` | `latePenaltyDailyPercent`, `penaltyCapValue` | `lib/jobs/penalties.job.ts`, `lib/services/lateness.service.ts` |
 | **§2.4** | Recovery case workflow & waterfall | `RecoveryCase`, `RecoveryAction`, `JournalEntry` | `status`, `noticeDeadlineDate`, `recoveredFrom*` | `lib/services/recovery.service.ts` |
 | **§2.5** | Savings lot interest & linear accrual | `SavingsLot`, `SavingsInterestAccrual` | `lotPrincipal`, `termRatePercent`, `valueDate` | `lib/domain/savings-interest.ts`, `lib/jobs/savings-accrual.job.ts` |
-| **§2.5** | Regular savings period forfeiture | `SavingsPeriod` | `interestForfeited`, `forfeitedAt` | `lib/services/lateness.service.ts` |
+| **§2.5** | Regular savings period forfeiture | `SavingsPeriod`, `SavingsLot` | `interestForfeited`, `SavingsLot.interestBearing` | `lib/domain/savings-interest.ts` (`evaluatePeriodForfeiture`), `lib/services/savings.service.ts`, `lib/jobs/savings-forfeiture.job.ts` (P3-06 wires it into `recalculateLateness`) |
 | **§2.6** | Africa/Lagos calendar clamping | All schedule models | `@db.Date` fields | `lib/domain/dates.ts` (`addMonthsClamped`) |
 | **§2.7** | Guarantor consent & offer re-consent | `GuaranteeRequest`, `StoredFile` | `termsVersion`, `consentedAt`, `status` | `lib/services/guarantees.service.ts` |
 | **§2.8** | E-ajo early-slot penalty & advance | `EAjoGroup`, `EAjoSlotPolicy`, `EAjoMember`, `EAjoPayout` | `advanceAmount`, `earlySlotPenalty`, `netPayout` | `lib/domain/eajo-payout.ts` |

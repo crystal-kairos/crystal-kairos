@@ -1,7 +1,6 @@
 import { auth } from '@/auth'
 import { redirect } from 'next/navigation'
-import { getSavingsRecords } from '@/models/members/query'
-import { getSavingsProducts } from '@/models/savings/query'
+import { getMemberSavingsPlans, getSavingsProducts } from '@/models/savings/query'
 import { SavingsHubClient } from '@/components/savings/SavingsHubClient'
 import { ShieldAlert } from 'lucide-react'
 
@@ -32,31 +31,15 @@ const SavingsHubPage = async ({ params }: PageProps) => {
     )
   }
 
-  const [recordsResult, productsResult] = await Promise.all([
-    getSavingsRecords(profileId),
+  const [plansResult, productsResult] = await Promise.all([
+    getMemberSavingsPlans(profileId),
     getSavingsProducts(),
   ])
-  
-  const savingsPlans = recordsResult.success && recordsResult.data ? recordsResult.data : []
+
+  const savingsPlans = plansResult.success ? plansResult.data : []
   const availableProducts = productsResult.success && productsResult.data ? productsResult.data : []
 
-  // Map database savings plan structures to plain client component structures
-  const mappedPlans = savingsPlans.map((p) => ({
-    id: p.id,
-    savingsType: p.savingsType,
-    targetAmount: p.targetAmount ? Number(p.targetAmount) : null,
-    frequency: p.frequency,
-    maturity: p.maturity,
-    interestRate: Number(p.interestRate),
-    currentBalance: Number(p.currentBalance),
-    totalDeposited: Number(p.totalDeposited),
-    accruedInterest: Number(p.accruedInterest),
-    status: p.status,
-    startDate: p.startDate,
-    maturityDate: p.maturityDate,
-  }))
-
-  return <SavingsHubClient userId={profileId} savingsPlans={mappedPlans} availableProducts={availableProducts} />
+  return <SavingsHubClient userId={profileId} savingsPlans={savingsPlans} availableProducts={availableProducts} />
 }
 
 export default SavingsHubPage

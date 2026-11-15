@@ -16,10 +16,18 @@ import {
   calculatePaymentAllocation,
   AllocationPeriodItem,
 } from '@/lib/services/allocation.service'
-import { formatSequentialNumber } from '@/lib/domain/payment-reference'
+import { formatSequentialNumber, nextSequenceAfter } from '@/lib/domain/payment-reference'
 import { postJournalEntry, reverseJournalEntry } from '@/lib/services/ledger.service'
 import { LedgerAccountType } from '@/generated/prisma/enums'
 import { recordAuditEvent, AuditAction, AuditOutcome } from '@/lib/services/audit.service'
+import {
+  applySavingsPlanCapacity,
+  onSavingsAllocationsConfirmed,
+  onSavingsAllocationsReversed,
+  onSavingsSubmissionRejected,
+  prepareSavingsTargetsForConfirmation,
+  refreshSavingsSubmissionTargets,
+} from '@/lib/services/savings.service'
 
 export interface CreatePaymentSubmissionInput {
   memberId: string
@@ -183,8 +191,11 @@ export async function createPaymentSubmission(
   }
 
   // Generate sequential submissionNumber (SUB-000001)
-  const count = await db.paymentSubmission.count()
-  const submissionNumber = formatSequentialNumber('SUB', count + 1)
+  const last = await db.paymentSubmission.findFirst({
+    orderBy: { submissionNumber: 'desc' },
+    select: { submissionNumber: true },
+  })
+  const submissionNumber = formatSequentialNumber('SUB', nextSequenceAfter(last?.submissionNumber))
 
   const submission = await db.paymentSubmission.create({
     data: {
@@ -332,6 +343,16 @@ export async function confirmPaymentSubmission(
     // 2. Fetch target periods
     const periodItems: AllocationPeriodItem[] = []
 
+    // Savings (P3-03): activates a PENDING plan on its first deposit (value date = start date)
+    // and returns period items (regular) or plan capacities (fixed/staggered).
+    const savingsPrep = await prepareSavingsTargetsForConfirmation(tx, {
+      memberId: submission.memberId,
+      targets: submission.targets,
+      valueDate,
+      actorId: confirmedById,
+    })
+    periodItems.push(...savingsPrep.periodItems)
+
     for (const target of submission.targets) {
       if (target.targetType === AllocationTargetType.LOAN && target.targetPeriodId) {
         const instalment = await tx.loanInstalment.findUnique({
@@ -364,27 +385,8 @@ export async function confirmPaymentSubmission(
             principalDue,
           })
         }
-      } else if (target.targetType === AllocationTargetType.SAVINGS && target.targetPeriodId) {
-        const period = await tx.savingsPeriod.findUnique({
-          where: { id: target.targetPeriodId },
-        })
-        if (period) {
-          const principalDue = Math.max(
-            0,
-            Number(period.amountDue) - Number(period.amountPaid),
-          )
-
-          periodItems.push({
-            periodId: period.id,
-            targetType: 'SAVINGS',
-            targetId: period.savingsId,
-            periodNumber: period.periodNumber,
-            dueDate: period.dueDate,
-            penaltyDue: 0,
-            interestDue: 0,
-            principalDue,
-          })
-        }
+      } else if (target.targetType === AllocationTargetType.SAVINGS) {
+        // handled by prepareSavingsTargetsForConfirmation above
       } else if (target.targetType === AllocationTargetType.EAJO && target.targetPeriodId) {
         const period = await tx.eAjoContributionPeriod.findUnique({
           where: { id: target.targetPeriodId },
@@ -416,15 +418,28 @@ export async function confirmPaymentSubmission(
     }
 
     // 3. Compute allocation waterfall
-    const allocationResult = calculatePaymentAllocation({
+    const baseAllocation = calculatePaymentAllocation({
       amount: confirmedAmount,
       memberId: submission.memberId,
       periods: periodItems,
     })
+    // Savings (P3-03): fixed/staggered plans take the excess up to their capacity.
+    const savingsAdjusted = applySavingsPlanCapacity(
+      baseAllocation.allocations,
+      savingsPrep.planCapacities,
+    )
+    const allocationResult = {
+      ...baseAllocation,
+      allocations: savingsAdjusted.allocations,
+      excessToWallet: savingsAdjusted.excessToWallet,
+    }
 
     // 4. Create Payment record
-    const paymentCount = await tx.payment.count()
-    const paymentNumber = formatSequentialNumber('PAY', paymentCount + 1)
+    const lastPayment = await tx.payment.findFirst({
+      orderBy: { paymentNumber: 'desc' },
+      select: { paymentNumber: true },
+    })
+    const paymentNumber = formatSequentialNumber('PAY', nextSequenceAfter(lastPayment?.paymentNumber))
     const idempotencyKey = `payment:${submission.id}`
 
     const payment = await tx.payment.create({
@@ -489,22 +504,7 @@ export async function confirmPaymentSubmission(
             })
           }
         } else if (alloc.targetType === AllocationTargetType.SAVINGS) {
-          await tx.savingsPeriod.update({
-            where: { id: alloc.periodId },
-            data: { amountPaid: { increment: alloc.amount } },
-          })
-          const refreshed = await tx.savingsPeriod.findUnique({
-            where: { id: alloc.periodId },
-          })
-          if (
-            refreshed &&
-            Number(refreshed.amountPaid) >= Number(refreshed.amountDue)
-          ) {
-            await tx.savingsPeriod.update({
-              where: { id: alloc.periodId },
-              data: { status: PaymentPeriodStatus.COMPLETED },
-            })
-          }
+          // Savings periods, lots and balances: onSavingsAllocationsConfirmed below (P3-03)
         } else if (alloc.targetType === AllocationTargetType.EAJO) {
           const updateData: Prisma.EAjoContributionPeriodUpdateInput = {}
           if (alloc.componentType === PaymentComponentType.PENALTY) {
@@ -609,6 +609,15 @@ export async function confirmPaymentSubmission(
       },
     })
 
+    // Savings (P3-03): lots, balances, period amounts, forfeiture and statuses.
+    await onSavingsAllocationsConfirmed(tx, {
+      paymentId: payment.id,
+      memberId: submission.memberId,
+      valueDate,
+      actorId: confirmedById,
+    })
+    await refreshSavingsSubmissionTargets(tx, submission.id, confirmedById)
+
     await recordAuditEvent(
       {
         actorId: confirmedById,
@@ -683,6 +692,9 @@ export async function rejectPaymentSubmission(params: {
       confirmedById: reviewerId,
     },
   })
+
+  // Savings (P3-03): lift the review shield and refresh the targeted periods.
+  await onSavingsSubmissionRejected(submission.id, reviewerId)
 
   await recordAuditEvent({
     actorId: reviewerId,
@@ -831,13 +843,7 @@ export async function reversePayment(
             data: { status: PaymentPeriodStatus.ONGOING },
           })
         } else if (alloc.targetType === AllocationTargetType.SAVINGS) {
-          await tx.savingsPeriod.update({
-            where: { id: alloc.periodId },
-            data: {
-              amountPaid: { decrement: alloc.amount },
-              status: PaymentPeriodStatus.ONGOING,
-            },
-          })
+          // Savings: onSavingsAllocationsReversed below (P3-03)
         } else if (alloc.targetType === AllocationTargetType.EAJO) {
           const updateData: Prisma.EAjoContributionPeriodUpdateInput = {}
           if (alloc.componentType === PaymentComponentType.PENALTY) {
@@ -864,6 +870,14 @@ export async function reversePayment(
         status: AllocationStatus.REVERSED,
         reversedAt: new Date(),
       },
+    })
+
+    // Savings (P3-03): void lots, reverse their accrued interest, recompute balances/periods.
+    await onSavingsAllocationsReversed(tx, {
+      paymentId: payment.id,
+      memberId: payment.memberId,
+      actorId: reversedById,
+      reason: reversalReason.trim(),
     })
 
     // 3. Reverse Journal Entry

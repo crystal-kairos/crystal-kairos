@@ -33,7 +33,9 @@ export async function getMemberEligibleSavingsPrincipal(
   const activeSavings = await tx.savings.findMany({
     where: {
       userId: memberId,
-      status: SavingsStatus.ACTIVE,
+      // P3-03: matured-but-unwithdrawn principal is still held as savings (and locked, A-04);
+      // WITHDRAWAL_PENDING principal is frozen and excluded.
+      status: { in: [SavingsStatus.ACTIVE, SavingsStatus.MATURED] },
     },
     select: { currentBalance: true },
   })

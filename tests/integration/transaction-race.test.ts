@@ -76,7 +76,9 @@ describe('Double-confirmation race prevention (PR P1-08)', () => {
     vi.spyOn(prisma.userSession, 'update').mockResolvedValue({} as any)
   })
 
-  it('atomically confirms pending transaction and rejects concurrent second confirmation with STALE_STATE', async () => {
+  // Legacy savings transactions can only be rejected since P3-03 (savings use PaymentSubmission
+  // and lots), so the race is exercised with two concurrent rejections.
+  it('atomically transitions a pending transaction and rejects the concurrent second attempt with STALE_STATE', async () => {
     let currentStatus: TransactionStatus = TransactionStatus.PENDING
     let savingsBalance = new Prisma.Decimal(0)
 
@@ -114,7 +116,7 @@ describe('Double-confirmation race prevention (PR P1-08)', () => {
               args.where.status === TransactionStatus.PENDING &&
               currentStatus === TransactionStatus.PENDING
             ) {
-              currentStatus = TransactionStatus.CONFIRMED
+              currentStatus = args.data.status
               return { count: 1 }
             }
             return { count: 0 }
@@ -138,8 +140,8 @@ describe('Double-confirmation race prevention (PR P1-08)', () => {
 
     // Simulate two concurrent confirmation requests arriving at the same time
     const [result1, result2] = await Promise.all([
-      transitionTransaction('tx-race-1', 'CONFIRM', adminActor.id),
-      transitionTransaction('tx-race-1', 'CONFIRM', adminActor.id),
+      transitionTransaction('tx-race-1', 'REJECT', adminActor.id, 'Duplicate upload'),
+      transitionTransaction('tx-race-1', 'REJECT', adminActor.id, 'Duplicate upload'),
     ])
 
     // Exactly one should succeed, and exactly one should fail with STALE_STATE
@@ -154,8 +156,9 @@ describe('Double-confirmation race prevention (PR P1-08)', () => {
     expect(failures[0].code).toBe('STALE_STATE')
     expect(failures[0].error).toMatch(/already processed/i)
 
-    // The savings balance should only have been incremented ONCE (5000, not 10000)
-    expect(savingsBalance.toNumber()).toBe(5000)
+    // The transition happened exactly once and no savings balance was touched.
+    expect(currentStatus).toBe(TransactionStatus.REJECTED)
+    expect(savingsBalance.toNumber()).toBe(0)
   })
 
   it('returns NOT_FOUND when transaction does not exist', async () => {

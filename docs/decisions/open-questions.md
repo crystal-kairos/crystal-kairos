@@ -78,3 +78,20 @@ This document records architectural, financial, and policy open questions arisin
 - **Question:** For a user who has MFA enabled, should a password alone ever satisfy step-up?
 - **Current implementation (conservative):** A user with MFA enabled steps up with an MFA code (TOTP or backup code) only; a user without MFA steps up with their password. Step-up lasts 10 minutes on the session where it was given and never counts as passing the MFA login challenge (`UserSession.stepUpAt` is separate from `mfaVerifiedAt`). Five failed challenge/step-up attempts revoke the session.
 - **Action Required:** Owner confirmation; changing it is a one-line rule in `lib/authz/step-up.ts` (`confirmStepUp`).
+
+---
+
+## 5. Savings workflows (P3-03)
+
+### OQ-11: Savings payout permission and value-date corrections
+- **Context:** P3-03 lets staff with `SAVINGS_PAYMENTS_REVIEW` confirm/reject savings receipts on the plan page, and staff with `SAVINGS_MANAGE` approve and pay savings withdrawals (dual control, A-19). There is no dedicated "savings payout" permission.
+- **Question:** Should savings payouts use a separate permission (like `LOANS_DISBURSE` for loans)? 
+- **Current behaviour (conservative):** `SAVINGS_MANAGE` for approval and payment, with dual control. A value-date correction after confirmation is not offered in the UI yet: it belongs to the payment review/reversal work (P3-07, P3-09); `recalculateSavingsPeriodForfeiture` already restores interest when a corrected value date falls inside the grace window.
+- **Action Required:** Owner decision on the permission; no change needed for the correction path.
+
+### OQ-12: Re-posting an accrual date after a cleared forfeiture
+- **Context:** `SavingsInterestAccrual` is unique on `(lotId, accrualDate)` (guide P3-03). When a forfeiture is cleared by a value-date correction, the reversed rows keep their dates, so the restored interest is posted on the **next** accrual date (or at withdrawal time for a matured plan), not back-dated to the original month ends.
+- **Question:** Is posting the catch-up on the next accrual date acceptable to the accountant, or must each original month be re-posted (which would need a partial unique index on non-reversed rows)?
+- **Current behaviour:** catch-up on the next accrual date; totals at maturity are exact (tested).
+- **Action Required:** Accountant confirmation.
+

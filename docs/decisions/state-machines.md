@@ -16,7 +16,7 @@ This document defines every stateful lifecycle enum, its allowed state transitio
 | `ProfileChangeRequest` | `status` | `APPROVED`, `REJECTED`, `CANCELLED` | Advisory lock on `memberId` + conditional update (`count === 1`) |
 | `PaymentSubmission` | `status` | `CONFIRMED`, `REJECTED`, `CANCELLED` | Conditional update (`count === 1`) |
 | `Payment` | `status` | `REVERSED` | Advisory lock on `paymentId` |
-| `Savings` (Plan) | `status` | `WITHDRAWN`, `CANCELLED` | Advisory lock on `savingsId` |
+| `Savings` (Plan) | `status` | `WITHDRAWN`, `CANCELLED` | Advisory lock on the member (`lockMembers`) + conditional `transition()` |
 | `SavingsPeriod` | `status` | `COMPLETED`, `WAIVED` | Derived from payment allocations |
 | `Loan` | `status` | `COMPLETED`, `DEFAULTED`, `REJECTED`, `CANCELLED` | Conditional update + Advisory lock |
 | `LoanInstalment` | `status` | `COMPLETED`, `WAIVED` | Derived from payment allocations |
@@ -133,12 +133,12 @@ stateDiagram-v2
 - **Transitions:**
   | From | To | Guard / Prerequisite | Actor | Side Effects |
   |---|---|---|---|---|
-  | `PENDING` | `ACTIVE` | First deposit confirmed | System (Payment Confirm) | `startDate` = value date; `maturityDate` = `addMonthsClamped(startDate, durationMonths)`; generate schedule for regular savings; create `SavingsLot`. |
-  | `PENDING` | `CANCELLED` | Expiry window elapsed (14 days, A-05) | Scheduled Job (`savings-expiry`) | Close plan; audit log. |
-  | `ACTIVE` | `MATURED` | Today (Lagos) >= `maturityDate` | Scheduled Job (`maturity`) | Mark plan matured; calculate final payable interest; notify member. |
-  | `ACTIVE` / `MATURED` | `WITHDRAWAL_PENDING` | No own-loan lock (`ownSavingsLienMode`); no active guarantee reservation; principal unencumbered | Member | Freeze requested principal; exclude from lending/guarantee capacity; create `Disbursement` request. |
-  | `WITHDRAWAL_PENDING` | `WITHDRAWN` | Payout disbursement confirmed | Staff with `LOANS_DISBURSE` / Payout | If early withdrawal: forfeit accrued interest (reverse journal lines); post principal payout journal; close plan. |
-  | `WITHDRAWAL_PENDING` | `ACTIVE` / `MATURED` | Payout failed or rejected by admin | Staff / Payout failure | Unfreeze principal; restore capacity; return to previous state. |
+  | `PENDING` | `ACTIVE` | First deposit confirmed | System (Payment Confirm) | `startDate` = value date; `maturityDate` = `addMonthsClamped(startDate, durationMonths)`; generate schedule for regular savings; create `SavingsLot`. Only one first-deposit receipt may be `SUBMITTED` at a time. |
+  | `PENDING` | `CANCELLED` | More than `savingsFirstDepositWindowDays` (14, A-05) Lagos days since subscription and no receipt `SUBMITTED` | Job `runSavingsExpiryJob` (`lib/jobs/savings-expiry.job.ts`) | `cancelledAt`, reason; audit `SAVINGS.PLAN_EXPIRED`; member notified after commit. |
+  | `ACTIVE` | `MATURED` | Lagos date >= `maturityDate` | Job `runSavingsMaturityJob` (`lib/jobs/maturity.job.ts`), or inline when the member requests a withdrawal | Accrue up to maturity first; `maturedAt`; audit; notify. No rollover (A-08). |
+  | `ACTIVE` / `MATURED` | `WITHDRAWAL_PENDING` | No own loan (`FULL` lien, A-04); principal ≤ unencumbered savings (guarantee reservations); no other withdrawal pending | Member | Kind `EARLY` (before maturity, interest 0) or `MATURITY` (principal + active accruals); amounts frozen on the plan; `Disbursement` (`SAVINGS_PAYOUT`, `REQUESTED`) to the member's primary bank account. Principal leaves lending/guarantee capacity (only `ACTIVE`/`MATURED` count). |
+  | `WITHDRAWAL_PENDING` | `WITHDRAWN` | Disbursement `APPROVED` (staff `SAVINGS_MANAGE`), then payout confirmed with evidence, value date and bank reference by a different `SAVINGS_MANAGE` staff member when two exist (A-19); amounts unchanged since the request | Staff with `SAVINGS_MANAGE` | Early: reverse every active accrual (lots `EARLY_WITHDRAWAL`), post Dr principal / Cr cash. Maturity: Dr principal + interest payable / Cr cash. Disbursement `PAID`; paid to the member's current primary account (approved bank-detail change, P3-02B). |
+  | `WITHDRAWAL_PENDING` | `ACTIVE` / `MATURED` | Member cancels (disbursement `REQUESTED` only) or staff reject (`REQUESTED`/`APPROVED`) with a reason | Member / Staff with `SAVINGS_MANAGE` | Disbursement `CANCELLED`; plan returns to `MATURED` if the maturity date has passed, else `ACTIVE`; accrual resumes. |
 
 ---
 
@@ -196,6 +196,7 @@ stateDiagram-v2
   - Statuses are **strictly derived** from active payment allocations and current Lagos date.
   - Review shield: While an active submission is `IN_REVIEW`, the period displays "Payment Under Review" and cannot transition to `OVERDUE`.
   - For regular savings, transitioning past Day +8 with an unpaid balance sets `interestForfeited = true` for that period only.
+  - **Savings (P3-03):** status precedence `COMPLETED` > `IN_REVIEW` > `OVERDUE` (due date passed) > `REJECTED` > `ONGOING` > `PENDING`, recomputed on submission, confirmation, rejection and by `runSavingsForfeitureJob`. Forfeiture is evaluated from the allocations' **value dates** at the end of day +7; a `SUBMITTED` receipt with `paidOn` ≤ day +7 shields it (A-11) and the rejection triggers the catch-up. Forfeiting marks the period's lots non-interest-bearing and reverses their accruals; a value-date correction restores them.
 
 ---
 
