@@ -17,6 +17,8 @@ export type AuthzErrorCode =
   | 'DUAL_CONTROL_REQUIRED'
   | 'STAFF_CANNOT_BE_MEMBER'
   | 'MFA_REQUIRED'
+  | 'MFA_CHALLENGE_REQUIRED'
+  | 'STEP_UP_REQUIRED'
 
 export class AuthzError extends Error {
   readonly code: AuthzErrorCode
@@ -37,6 +39,24 @@ export interface AuthenticatedActor {
   sessionId?: string
   mfaEnabled?: boolean
   isActive?: boolean
+  /** True while the user has MFA enabled but this session has not passed the MFA challenge. */
+  mfaPending?: boolean
+}
+
+export interface LoadActorOptions {
+  /**
+   * Allow a session that still has to pass the MFA login challenge.
+   * Only the MFA challenge action itself should set this.
+   */
+  allowMfaPending?: boolean
+}
+
+/**
+ * Sessions without a database session id (`sid`) only exist in unit/integration tests,
+ * where the Auth.js session is mocked. Real sign-ins always create a UserSession (P1-07).
+ */
+function isSessionlessTestContext(): boolean {
+  return process.env.NODE_ENV === 'test'
 }
 
 export interface MemberActor extends AuthenticatedActor {
@@ -50,6 +70,7 @@ export interface StaffActor extends AuthenticatedActor {
 
 async function loadLiveActor(
   db: typeof prisma = prisma,
+  options: LoadActorOptions = {},
 ): Promise<AuthenticatedActor> {
   const session = await getSessionHelper()
   const sessionUser = session?.user as
@@ -66,19 +87,27 @@ async function loadLiveActor(
     throw new AuthzError('UNAUTHENTICATED', 'Please sign in.')
   }
 
-  // 1. If session carries a sid (database session), validate it against user_sessions table
+  // 1. Every real session is backed by a UserSession row (P1-07): validate it.
+  let sessionMfaVerifiedAt: Date | null = null
   if (sessionUser.sid) {
     const sessionValidation = await validateAndTouchUserSession(
       sessionUser.sid,
       new Date(),
       db,
     )
-    if (!sessionValidation.valid) {
+    if (
+      !sessionValidation.valid ||
+      !sessionValidation.session ||
+      sessionValidation.session.userId !== sessionUser.id
+    ) {
       throw new AuthzError(
         'UNAUTHENTICATED',
         'Your session has expired or been revoked. Please sign in again.',
       )
     }
+    sessionMfaVerifiedAt = sessionValidation.session.mfaVerifiedAt
+  } else if (!isSessionlessTestContext()) {
+    throw new AuthzError('UNAUTHENTICATED', 'Your session is no longer valid. Please sign in again.')
   }
 
   const dbUser = (await db.user.findUnique({
@@ -122,17 +151,28 @@ async function loadLiveActor(
     )
   }
 
+  // 2. MFA login challenge (P1-07, D-16): an MFA-enabled user's session must have passed it.
+  const mfaPending = Boolean(sessionUser.sid && dbUser.mfaEnabled && !sessionMfaVerifiedAt)
+  if (mfaPending && !options.allowMfaPending) {
+    throw new AuthzError(
+      'MFA_CHALLENGE_REQUIRED',
+      'Please complete two-factor verification to continue.',
+    )
+  }
+
   return {
     ...dbUser,
     mfaEnabled: dbUser.mfaEnabled ?? true,
     sessionId: sessionUser.sid,
+    mfaPending,
   }
 }
 
 export async function requireAuthenticatedSession(
   db: typeof prisma = prisma,
+  options: LoadActorOptions = {},
 ): Promise<AuthenticatedActor> {
-  return loadLiveActor(db)
+  return loadLiveActor(db, options)
 }
 
 export async function requireMemberSession(

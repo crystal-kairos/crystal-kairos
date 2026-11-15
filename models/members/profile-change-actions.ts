@@ -17,6 +17,7 @@ import {
 } from '@/lib/authz/guards'
 import { AppError } from '@/lib/errors/app-error'
 import { toActionErrorResult } from '@/lib/errors/to-action-result'
+import { requireStepUp } from '@/lib/authz/step-up'
 import { lockMembers, transition } from '@/lib/db/concurrency'
 import { recordAuditEvent, AuditAction } from '@/lib/services/audit.service'
 import { bankProvider } from '@/lib/banking/paystack.provider'
@@ -199,6 +200,10 @@ export const requestBankDetailsChangeAction = async (
   try {
     const actor = await requireMemberSession()
     await assertTargetUserIsMember(actor.id)
+    // P1-07: with MFA enabled, a bank-detail change request needs a fresh MFA step-up.
+    if (actor.mfaEnabled) {
+      await requireStepUp(actor)
+    }
     const parsed = bankDetailsInputSchema.parse(input)
 
     const existing = await prisma.bankAccount.findFirst({

@@ -21,11 +21,12 @@ session, then the relevant section of the implementation guide.
 ## Progress
 
 - Done and merged to `dev`: P1-01 … P1-08, P2-00 … P2-07, P3-01, P3-02, P3-02B.
-- P3-02B follow-up hardening (branch from `dev`): concurrency-safe review, `BANK_DETAILS` flow,
-  delete rules, server-side bank-name resolution, redaction, member history/cancel UI, tests.
+- P3-02B follow-up hardening: merged to `dev` (PR #67).
+- P1-07 follow-up `fix/p1-07-mfa-session-enforcement` (from `dev`): MFA login challenge enforced
+  (proxy + guards), session-bound challenge with failure limit, single-use TOTP/backup codes,
+  step-up separated from MFA verification and enforced on permission changes, MFA reset/replace and
+  MFA members' bank-detail requests. See OQ-10 in `docs/decisions/open-questions.md`.
 - **Next guide step: P3-03 — savings workflows.** Before starting, re-read P3-03 and §2.5/§2.6.
-- **Open decision (ask the owner before touching):** the P1-07 MFA/step-up flow has gaps, see
-  "Known issues" below. It was deliberately left out of the P3-02B hardening branch.
 
 ## Git workflow
 
@@ -54,6 +55,13 @@ session, then the relevant section of the implementation guide.
 - **Errors:** throw `AppError(code, safeMessage)`; catch with `toActionErrorResult` and return an
   **inline object literal** `{ success: false, error, code, fieldErrors, correlationId }` (a shared
   helper returning the whole object breaks TypeScript's union normalisation at call sites).
+- **MFA and step-up (P1-07):** guards reject a session whose user has MFA enabled until it passed
+  the challenge (`MFA_CHALLENGE_REQUIRED`); only `verifyMfaChallengeAction` passes
+  `{ allowMfaPending: true }`. Sensitive actions call `requireStepUp(actor)` from
+  `lib/authz/step-up.ts` (throws `STEP_UP_REQUIRED`); in the UI wrap the call with
+  `useStepUp().withStepUp(...)` from `components/auth/StepUpDialog.tsx` and render `stepUpDialog`.
+  **Upcoming PRs must add step-up** to: wallet-withdrawal request/approval (P3-08), payment
+  reversal (P3-09), recovery execution (P3-06B), password change and MFA disable when built.
 - **Money:** `Prisma.Decimal` only; calendar days are `@db.Date` in Africa/Lagos.
 - **Privacy:** mask account numbers in list views (`maskAccountNumber`, `toRedactedProfileChange`
   in `lib/domain/profile-change.ts`).
@@ -82,6 +90,16 @@ PGPASSWORD=postgres psql -h localhost -U postgres crystal_kairos_test -c "INSERT
 
 Checks: `pnpm test`, `pnpm typecheck`, `pnpm lint`, `pnpm exec next build`.
 
+Testing notes:
+- Tests mock the Auth.js session. A mocked session **without** `sid` is accepted only when
+  `NODE_ENV=test` (treated as MFA-verified, never stepped-up). To test step-up or the MFA challenge,
+  create a `UserSession` row and put its id in the mock as `sid` (see
+  `tests/integration/mfa-session-enforcement.test.ts`).
+- TOTP codes are single-use per time step: in a test, use codes from different steps
+  (`generateSync({ secret, epoch: now + 30 * k })`).
+- To run the app locally (`pnpm exec next build && pnpm exec next start`), serve on the port in
+  `NEXTAUTH_URL` (3000 in `.env.test.example`): Auth.js builds proxy redirect URLs from it.
+
 ## Known issues (pre-existing, not yet fixed)
 
 - `pnpm typecheck`: 3 errors for `@/public/*.png` imports (no `next-env.d.ts` until a Next build/dev run).
@@ -89,9 +107,5 @@ Checks: `pnpm test`, `pnpm typecheck`, `pnpm lint`, `pnpm exec next build`.
 - `tests/unit/error-normalization.test.ts` › "normalises database (Prisma)…" fails since P3-01's
   eligibility gate; `createSavingsPlanAction` is rewritten in P3-03, fix the test there.
 - `tests/integration/guarantees.test.ts` flaked once under a full parallel run (passes alone).
-- **MFA (P1-07) gaps — needs an owner decision on scope before fixing:** login never routes
-  MFA-enrolled users to `/login/mfa`, so a password-only session can use `/admin`;
-  `requireStaffSession` checks MFA *enrolment*, not that the session is MFA-verified;
-  `verifyMfaChallengeAction` trusts `userId`/`sessionId` from the client; `requireStepUp` is never
-  called (permission changes, reversals, withdrawals, bank-detail change requests need it); a
-  password step-up sets `mfaVerifiedAt`, and `isStepUpValid` accepts any session of the user.
+- `revokeAllSessionsAction` also revokes the current session (it bumps `sessionVersion`), although the
+  security page says "all other sessions".

@@ -312,6 +312,7 @@ model User {
   mfaBackupCodes         Json? // Array of { hash: string, usedAt?: string }
   mfaEnrolledAt          DateTime?
   mfaResetAt             DateTime?
+  mfaLastTotpStep        Int? // last accepted TOTP time step; codes at or before it are rejected (replay protection)
   lockedUntil            DateTime?
   lockoutCount           Int                     @default(0)
   isActive               Boolean                 @default(true)
@@ -1257,7 +1258,9 @@ model UserSession {
   idleExpiresAt  DateTime
   userAgentLabel String?
   ipHash         String?
-  mfaVerifiedAt  DateTime?
+  mfaVerifiedAt  DateTime? // set only when this session passed the MFA login challenge (or enrolled MFA)
+  stepUpAt       DateTime? // last step-up re-authentication on this session (password or MFA code)
+  challengeFailures Int     @default(0) // failed MFA challenge / step-up attempts; session is revoked at the limit
   revokedAt      DateTime?
   user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 

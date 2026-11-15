@@ -71,3 +71,9 @@ This document records architectural, financial, and policy open questions arisin
 - **Question:** Should PR P2-01 perform a deliberate re-baseline of the database schema (clean migration baseline) or generate a chain of cumulative ALTER TABLE migrations?
 - **Current Assumption (A-24):** Perform one clean, deliberate re-baseline migration in PR P2-01 after P2-00 approval, resetting development databases cleanly.
 - **Action Required:** Formal owner sign-off in P2-00 review.
+
+### OQ-10: Step-up credential for users with MFA enabled
+- **Context:** P1-07 says step-up demands "a recent (≤ 10 minutes) password or MFA confirmation", and that for members with MFA enabled, MFA is "required as a step-up before a wallet withdrawal request and a bank-detail change request".
+- **Question:** For a user who has MFA enabled, should a password alone ever satisfy step-up?
+- **Current implementation (conservative):** A user with MFA enabled steps up with an MFA code (TOTP or backup code) only; a user without MFA steps up with their password. Step-up lasts 10 minutes on the session where it was given and never counts as passing the MFA login challenge (`UserSession.stepUpAt` is separate from `mfaVerifiedAt`). Five failed challenge/step-up attempts revoke the session.
+- **Action Required:** Owner confirmation; changing it is a one-line rule in `lib/authz/step-up.ts` (`confirmStepUp`).

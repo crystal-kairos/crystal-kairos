@@ -82,46 +82,56 @@ describe('MFA (TOTP RFC 6238) & Encrypted Secrets Integration (P1-07, D-16)', ()
     expect(decrypted).toBe(setupData.secret)
   })
 
-  it('verifies TOTP code and single-use backup code', async () => {
+  it('verifies TOTP and backup codes, each usable once (replay-safe, also under concurrency)', async () => {
     const { plaintextCodes, hashedCodes } = generateBackupCodes(10)
     const secret = generateTotpSecret()
-    const encryptedSecret = encryptMfaSecret(secret)
-
-    let currentBackupCodes = [...hashedCodes]
-
-    vi.spyOn(prisma.user, 'findUnique').mockImplementation((async () => {
-      return {
-        id: 'user-verify-mfa',
+    const user = await prisma.user.create({
+      data: {
+        email: `mfa-verify-${Date.now()}@test.com`,
+        name: 'MFA Verify',
         mfaEnabled: true,
-        mfaSecret: encryptedSecret,
-        mfaBackupCodes: currentBackupCodes,
+        mfaSecret: encryptMfaSecret(secret),
+        mfaBackupCodes: hashedCodes as unknown as object,
+      },
+    })
+
+    try {
+      // 1. A valid TOTP code is accepted once...
+      const currentTotp = generateSync({ secret })
+      const totpResult = await verifyUserMfa(user.id, currentTotp)
+      expect(totpResult.success).toBe(true)
+      expect(totpResult.method).toBe('totp')
+
+      // ...and the same code (same time step) is rejected afterwards (replay).
+      expect((await verifyUserMfa(user.id, currentTotp)).success).toBe(false)
+
+      // An older code from an earlier step is rejected too.
+      const olderTotp = generateSync({ secret, epoch: Math.floor(Date.now() / 1000) - 30 })
+      if (olderTotp !== currentTotp) {
+        expect((await verifyUserMfa(user.id, olderTotp)).success).toBe(false)
       }
-    }) as never)
 
-    vi.spyOn(prisma.user, 'update').mockImplementation((async (args: {
-      data: { mfaBackupCodes?: unknown }
-    }) => {
-      if (args.data.mfaBackupCodes) {
-        currentBackupCodes = args.data.mfaBackupCodes as typeof hashedCodes
-      }
-      return {}
-    }) as never)
+      // 2. A backup code works once
+      const firstCode = plaintextCodes[0]
+      const backupResult = await verifyUserMfa(user.id, firstCode)
+      expect(backupResult.success).toBe(true)
+      expect(backupResult.method).toBe('backup_code')
+      expect((await verifyUserMfa(user.id, firstCode)).success).toBe(false)
 
-    // 1. Verify valid TOTP
-    const currentTotp = generateSync({ secret })
-    const totpResult = await verifyUserMfa('user-verify-mfa', currentTotp)
-    expect(totpResult.success).toBe(true)
-    expect(totpResult.method).toBe('totp')
+      // 3. The same backup code used twice in parallel succeeds only once
+      const secondCode = plaintextCodes[1]
+      const results = await Promise.all([
+        verifyUserMfa(user.id, secondCode),
+        verifyUserMfa(user.id, secondCode),
+        verifyUserMfa(user.id, secondCode),
+      ])
+      expect(results.filter((r) => r.success)).toHaveLength(1)
 
-    // 2. Verify with backup code
-    const firstCode = plaintextCodes[0]
-    const backupResult = await verifyUserMfa('user-verify-mfa', firstCode)
-    expect(backupResult.success).toBe(true)
-    expect(backupResult.method).toBe('backup_code')
-
-    // 3. Second attempt with the SAME backup code fails (single-use)
-    const reuseResult = await verifyUserMfa('user-verify-mfa', firstCode)
-    expect(reuseResult.success).toBe(false)
+      // 4. Other unused backup codes still work
+      expect((await verifyUserMfa(user.id, plaintextCodes[2])).success).toBe(true)
+    } finally {
+      await prisma.user.delete({ where: { id: user.id } })
+    }
   })
 
   it('resets MFA and increments user sessionVersion to revoke existing sessions', async () => {

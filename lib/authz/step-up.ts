@@ -1,34 +1,57 @@
 import { prisma } from '@/lib/prisma'
 import { verifyUserMfa } from '@/lib/authz/mfa'
 import { AuthzError } from '@/lib/authz/guards'
+import {
+  markSessionStepUp,
+  recordSessionChallengeFailure,
+} from '@/lib/authz/sessions'
+import { recordAuditEvent, AuditAction, AuditOutcome } from '@/lib/services/audit.service'
 import bcrypt from 'bcryptjs'
+
+/**
+ * Step-up re-authentication (P1-07).
+ *
+ * - Step-up is recorded per session in `UserSession.stepUpAt` and is valid for
+ *   STEP_UP_WINDOW_MINUTES. It never sets `mfaVerifiedAt`, so it cannot be used to skip
+ *   the MFA login challenge.
+ * - A user with MFA enabled must step up with an MFA code (TOTP or backup code);
+ *   a user without MFA steps up with their password.
+ * - Failed attempts count towards the session's challenge-failure limit.
+ */
 
 export const STEP_UP_WINDOW_MINUTES = 10
 
-/**
- * Checks whether the current user session has a valid step-up confirmation (verified within the last 10 minutes).
- */
-export async function isStepUpValid(
-  userId: string,
-  now = new Date(),
-  db: typeof prisma = prisma,
-): Promise<boolean> {
-  const cutoff = new Date(now.getTime() - STEP_UP_WINDOW_MINUTES * 60 * 1000)
-
-  // Check if any recent active session for this user has mfaVerifiedAt >= cutoff
-  const recentVerification = await db.userSession.findFirst({
-    where: {
-      userId,
-      revokedAt: null,
-      mfaVerifiedAt: { gte: cutoff },
-    },
-  })
-
-  return Boolean(recentVerification)
+export interface StepUpActor {
+  id: string
+  sessionId?: string
 }
 
 /**
- * Confirms step-up authentication using either an MFA token (if MFA is enabled) or password.
+ * True when this specific session confirmed step-up within the window.
+ */
+export async function isStepUpValid(
+  sessionId: string | undefined,
+  now = new Date(),
+  db: typeof prisma = prisma,
+): Promise<boolean> {
+  if (!sessionId) return false
+  const cutoff = new Date(now.getTime() - STEP_UP_WINDOW_MINUTES * 60 * 1000)
+
+  const session = await db.userSession.findFirst({
+    where: {
+      id: sessionId,
+      revokedAt: null,
+      stepUpAt: { gte: cutoff },
+    },
+    select: { id: true },
+  })
+
+  return Boolean(session)
+}
+
+/**
+ * Confirms step-up for the actor's current session. Returns false (and counts a failure)
+ * when the credential is wrong or missing for the user's step-up method.
  */
 export async function confirmStepUp(params: {
   userId: string
@@ -36,60 +59,64 @@ export async function confirmStepUp(params: {
   password?: string
   mfaCode?: string
   db?: typeof prisma
-}): Promise<boolean> {
+}): Promise<{ confirmed: boolean; sessionRevoked?: boolean }> {
   const db = params.db ?? prisma
+  if (!params.sessionId) return { confirmed: false }
 
   const user = await db.user.findUnique({
     where: { id: params.userId },
-    select: {
-      id: true,
-      mfaEnabled: true,
-      passwordHash: true,
-    },
+    select: { id: true, mfaEnabled: true, passwordHash: true },
   })
-
-  if (!user) return false
+  if (!user) return { confirmed: false }
 
   let confirmed = false
-
-  // 1. If MFA is enabled and mfaCode provided, verify MFA
-  if (user.mfaEnabled && params.mfaCode) {
-    const mfaRes = await verifyUserMfa(user.id, params.mfaCode, db)
-    if (mfaRes.success) {
-      confirmed = true
+  if (user.mfaEnabled) {
+    if (params.mfaCode) {
+      const mfaRes = await verifyUserMfa(user.id, params.mfaCode, db)
+      confirmed = mfaRes.success
     }
+  } else if (params.password && user.passwordHash) {
+    confirmed = await bcrypt.compare(params.password, user.passwordHash)
   }
 
-  // 2. If password provided, verify password
-  if (!confirmed && params.password && user.passwordHash) {
-    const isMatch = await bcrypt.compare(params.password, user.passwordHash)
-    if (isMatch) {
-      confirmed = true
-    }
+  if (confirmed) {
+    confirmed = await markSessionStepUp(params.sessionId, user.id, db)
   }
 
-  if (confirmed && params.sessionId) {
-    await db.userSession.update({
-      where: { id: params.sessionId },
-      data: { mfaVerifiedAt: new Date() },
-    })
+  await recordAuditEvent(
+    {
+      actorId: user.id,
+      affectedUserId: user.id,
+      action: confirmed ? AuditAction.AUTH_STEP_UP_CONFIRMED : AuditAction.AUTH_STEP_UP_FAILED,
+      entityType: 'UserSession',
+      entityId: params.sessionId,
+      outcome: confirmed ? AuditOutcome.SUCCESS : AuditOutcome.FAILURE,
+      metadata: { method: user.mfaEnabled ? 'MFA' : 'PASSWORD' },
+    },
+    db,
+  ).catch(() => {})
+
+  if (!confirmed) {
+    const failure = await recordSessionChallengeFailure(params.sessionId, user.id, db)
+    return { confirmed: false, sessionRevoked: failure.revoked }
   }
 
-  return confirmed
+  return { confirmed: true }
 }
 
 /**
- * Enforces step-up authentication. Throws AuthzError if not recently verified.
+ * Enforces a recent step-up on the actor's current session.
+ * Throws AuthzError('STEP_UP_REQUIRED') so the UI can prompt and retry.
  */
 export async function requireStepUp(
-  userId: string,
+  actor: StepUpActor,
   db: typeof prisma = prisma,
 ): Promise<void> {
-  const valid = await isStepUpValid(userId, new Date(), db)
+  const valid = await isStepUpValid(actor.sessionId, new Date(), db)
   if (!valid) {
     throw new AuthzError(
-      'FORBIDDEN',
-      'Step-up authentication required. Please re-authenticate to continue.',
+      'STEP_UP_REQUIRED',
+      'Please confirm it is you to continue.',
     )
   }
 }

@@ -26,6 +26,7 @@ import {
   requirePermission,
 } from '@/lib/authz/guards'
 import { ALL_ADMIN_PERMISSIONS } from '@/lib/authz/permissions'
+import { requireStepUp } from '@/lib/authz/step-up'
 import { toActionErrorResult } from '@/lib/errors/to-action-result'
 import { AppError } from '@/lib/errors/app-error'
 import { createEAjoSlotPolicies } from '@/lib/services/rate-policy.service'
@@ -179,6 +180,8 @@ export const setAdminPermissionsAction = async (
 ) => {
   try {
     const owner = await requireOwner()
+    // Changing staff permissions requires a fresh step-up (P1-03 / P1-07).
+    await requireStepUp(owner)
 
     const targetUser = await prisma.user.findUnique({
       where: { id: adminUserId },

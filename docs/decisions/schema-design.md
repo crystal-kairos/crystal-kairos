@@ -119,6 +119,7 @@ Primary identity entity for members and staff.
   - `mfaBackupCodes`: `Json?` (Array of hashed codes)
   - `mfaEnrolledAt`: `DateTime?`
   - `mfaResetAt`: `DateTime?`
+  - `mfaLastTotpStep`: `Int?` (last accepted TOTP time step; a code from that step or earlier is rejected — replay protection)
   - `lockedUntil`: `DateTime?`
   - `lockoutCount`: `Int` `@default(0)`
   - `createdAt`: `DateTime @default(now())`
@@ -150,10 +151,13 @@ Revocable, idle-timeout-aware session store.
   - `idleExpiresAt`: `DateTime`
   - `userAgentLabel`: `String?`
   - `ipHash`: `String?`
-  - `mfaVerifiedAt`: `DateTime?`
+  - `mfaVerifiedAt`: `DateTime?` (set only by the MFA login challenge or MFA enrolment on this session)
+  - `stepUpAt`: `DateTime?` (last step-up re-authentication on this session; valid for 10 minutes)
+  - `challengeFailures`: `Int` `@default(0)` (failed MFA challenge/step-up attempts; the session is revoked at 5)
   - `revokedAt`: `DateTime?`
 - **Relations:** `user`: `User` (`onDelete: Cascade`)
 - **Indexes:** `[userId, revokedAt, expiresAt]`, `[expiresAt]`
+- **Rule (P1-07):** a session of a user with `mfaEnabled = true` may only use protected pages and actions once `mfaVerifiedAt` is set. Step-up never sets `mfaVerifiedAt`.
 
 #### 3.1.3 `LoginAttempt`
 Rate-limiting and credential stuffing audit record.
