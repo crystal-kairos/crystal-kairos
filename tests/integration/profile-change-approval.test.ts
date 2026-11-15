@@ -9,7 +9,7 @@ import {
 } from '@/generated/prisma/enums'
 
 const mockSessionHolder = {
-  session: null as any,
+  session: null as { user: { id: string; role: UserRole; email: string } } | null,
 }
 
 vi.mock('@/auth', () => ({
@@ -27,14 +27,20 @@ vi.mock('@/models/members/actions', async (importOriginal) => {
 import { prisma } from '@/lib/prisma'
 import {
   addBankAccountAction,
+  deleteBankAccountAction,
+  resolveAccountNameAction,
+  setPrimaryBankAccountAction,
   updateNextOfKinAction,
 } from '@/models/members/actions'
 import {
   requestNextOfKinChangeAction,
   requestPrimaryBankAccountChangeAction,
+  requestBankDetailsChangeAction,
   getMemberPendingProfileChangesAction,
+  getMyProfileChangeHistoryAction,
   cancelProfileChangeRequestAction,
 } from '@/models/members/profile-change-actions'
+import { setBankProviderForTesting } from '@/lib/banking/paystack.provider'
 import {
   approveProfileChangeRequestAction,
   rejectProfileChangeRequestAction,
@@ -56,14 +62,61 @@ describe('PR P3-02B — Require Admin Approval for Sensitive Profile Changes', (
   let adminId: string
   let ownerId: string
 
+  let admin2Id: string
   let bankAccount1Id: string
   let bankAccount2Id: string
 
+  // Per-run 10-digit account numbers so leftovers from other runs never trigger A-22.
+  const runDigits = String(timestamp).slice(-6)
+  const acct = (prefix: string, tail: string) => `${prefix}${runDigits}${tail}`
+  const ACC_MEMBER1_SECOND = acct('99', '77')
+  const ACC_MEMBER1_NEW_DETAILS = acct('77', '11')
+  const ACC_MEMBER1_RACE = acct('77', '22')
+  const ACC_MEMBER2_FIRST = acct('66', '22')
+  const ACC_MEMBER2_SECOND = acct('66', '33')
+  const ACC_MISMATCH = acct('55', '11')
+
+  const RESOLVED_NAMES: Record<string, string> = {
+    [ACC_MEMBER2_FIRST]: 'MEMBER TWO',
+    [ACC_MEMBER2_SECOND]: 'MEMBER TWO',
+    [ACC_MISMATCH]: 'TOTALLY DIFFERENT PERSON',
+  }
+
+  const nokInput = (name: string) => ({
+    name,
+    phoneNumber: '08077778888',
+    relationship: Relationship.SIBLING,
+    occupation: 'Architect',
+    address: '77 Broad Street',
+    bankName: 'UBA',
+    accountNumber: '1029384756',
+    accountName: `${name} Account`,
+  })
+
+  // Note: each action reads the mocked session when it starts, so in the concurrency tests
+  // a session set immediately before an action call is the one that action uses.
+  const asUser = (id: string, role: UserRole, email: string) => {
+    mockSessionHolder.session = { user: { id, role, email } }
+  }
+
   beforeEach(async () => {
     delete process.env.MOCK_SESSION_USER
+    setBankProviderForTesting({
+      listBanks: async () => [
+        { name: 'Guaranty Trust Bank', code: '058' },
+        { name: 'Access Bank', code: '044' },
+        { name: 'Zenith Bank', code: '057' },
+      ],
+      resolveAccount: async (code, num) => ({
+        accountName: RESOLVED_NAMES[num] ?? 'MEMBER ONE',
+        accountNumber: num,
+        bankCode: code,
+      }),
+    })
   })
 
   afterAll(async () => {
+    setBankProviderForTesting(null)
     // Cleanup test users and records
     const testUsers = await prisma.user.findMany({
       where: { email: { startsWith: testEmailPrefix } },
@@ -317,7 +370,7 @@ describe('PR P3-02B — Require Admin Approval for Sensitive Profile Changes', (
     const addRes = await addBankAccountAction(user1Id, {
       bankName: 'Access Bank',
       bankCode: '044',
-      accountNumber: '9999888877',
+      accountNumber: ACC_MEMBER1_SECOND,
       accountName: 'Member One',
     })
 
@@ -392,183 +445,463 @@ describe('PR P3-02B — Require Admin Approval for Sensitive Profile Changes', (
     expect(primaryCount).toBe(1)
   })
 
-  it('7. Separation of duties: Admin cannot approve or reject their own change request', async () => {
-    // Give Admin user a bank account
-    const adminAcc1 = await prisma.bankAccount.create({
-      data: {
-        userId: adminId,
-        bankName: 'Kuda Bank',
-        bankCode: '50211',
-        accountNumber: '3333444455',
-        accountName: 'Staff Reviewer',
-        isPrimary: true,
-        isVerified: true,
-      },
-    })
-    const adminAcc2 = await prisma.bankAccount.create({
-      data: {
-        userId: adminId,
-        bankName: 'Zenith Bank',
-        bankCode: '057',
-        accountNumber: '5555666677',
-        accountName: 'Staff Reviewer',
-        isPrimary: false,
-        isVerified: true,
-      },
-    })
+  it('7. Staff cannot submit profile changes, and requests about staff accounts cannot be reviewed (D-15)', async () => {
+    // A staff user has no member record, so the member submission path refuses them.
+    asUser(adminId, UserRole.ADMIN, adminEmail)
+    const staffSubmit = await requestNextOfKinChangeAction(adminId, nokInput('Staff Kin'))
+    expect(staffSubmit.success).toBe(false)
 
-    // Admin has a pending change request
-    const adminReq = await prisma.profileChangeRequest.create({
+    // Defence in depth: even a request row for a staff account (inserted directly) is never applied,
+    // neither by the staff user themself nor by the owner.
+    const staffReq = await prisma.profileChangeRequest.create({
       data: {
         userId: adminId,
-        changeType: ProfileChangeType.PRIMARY_BANK,
-        previousValue: {
-          bankAccountId: adminAcc1.id,
-          bankName: adminAcc1.bankName,
-          accountNumberMasked: '******4455',
-          accountName: adminAcc1.accountName,
-          bankCode: adminAcc1.bankCode,
-        },
-        proposedValue: {
-          targetBankAccountId: adminAcc2.id,
-          bankName: adminAcc2.bankName,
-          accountNumberMasked: '******6677',
-          accountName: adminAcc2.accountName,
-          bankCode: adminAcc2.bankCode,
-        },
-        status: ProfileChangeStatus.PENDING,
+        changeType: ProfileChangeType.NEXT_OF_KIN,
+        proposedValue: nokInput('Staff Kin'),
       },
     })
-    const adminRequestId = adminReq.id
+    try {
+      const selfApprove = await approveProfileChangeRequestAction(staffReq.id)
+      expect(selfApprove.success).toBe(false)
+      expect(selfApprove.error).toContain('Separation of duties')
 
-    // Admin tries to self-approve
-    mockSessionHolder.session = {
-      user: { id: adminId, role: UserRole.ADMIN, email: adminEmail },
+      asUser(ownerId, UserRole.OWNER, ownerEmail)
+      const ownerApprove = await approveProfileChangeRequestAction(staffReq.id)
+      expect(ownerApprove.success).toBe(false)
+      expect(ownerApprove.code).toBe('STAFF_CANNOT_BE_MEMBER')
+
+      const staffNok = await prisma.nextOfKin.findUnique({ where: { userId: adminId } })
+      expect(staffNok).toBeNull()
+    } finally {
+      await prisma.profileChangeRequest.delete({ where: { id: staffReq.id } })
     }
-    const selfApproveRes = await approveProfileChangeRequestAction(adminRequestId)
-    expect(selfApproveRes.success).toBe(false)
-    expect(selfApproveRes.error).toContain('Separation of duties')
-
-    // Admin tries to self-reject
-    const selfRejectRes = await rejectProfileChangeRequestAction(
-      adminRequestId,
-      'Self reject reason',
-    )
-    expect(selfRejectRes.success).toBe(false)
-    expect(selfRejectRes.error).toContain('Separation of duties')
-
-    // Owner can review and approve the admin's request
-    mockSessionHolder.session = {
-      user: { id: ownerId, role: UserRole.OWNER, email: ownerEmail },
-    }
-    const ownerApproveRes = await approveProfileChangeRequestAction(adminRequestId)
-    expect(ownerApproveRes.success).toBe(true)
-
-    const updatedAdminAcc2 = await prisma.bankAccount.findUnique({
-      where: { id: adminAcc2.id },
-    })
-    expect(updatedAdminAcc2?.isPrimary).toBe(true)
   })
 
   it('8. Unauthorised user cannot approve or review change requests', async () => {
-    // User 1 submits a request
-    mockSessionHolder.session = {
-      user: { id: user1Id, role: UserRole.USER, email: user1Email },
-    }
-    const subRes = await requestNextOfKinChangeAction(user1Id, {
-      name: 'Brother Ben',
-      phoneNumber: '08077778888',
-      relationship: Relationship.SIBLING,
-      occupation: 'Architect',
-      address: '77 Broad Street',
-      bankName: 'UBA',
-      accountNumber: '1029384756',
-      accountName: 'Ben Brother',
-    })
+    asUser(user1Id, UserRole.USER, user1Email)
+    const subRes = await requestNextOfKinChangeAction(user1Id, nokInput('Brother Ben'))
     expect(subRes.success).toBe(true)
     const reqId = subRes.data!.id
 
-    // User 2 (unauthorized member) tries to approve
-    mockSessionHolder.session = {
-      user: { id: user2Id, role: UserRole.USER, email: user2Email },
-    }
-    const unauthApprove = await approveProfileChangeRequestAction(reqId)
-    expect(unauthApprove.success).toBe(false)
+    // User 2 (a member, no staff permissions) tries to approve and reject
+    asUser(user2Id, UserRole.USER, user2Email)
+    expect((await approveProfileChangeRequestAction(reqId)).success).toBe(false)
+    expect((await rejectProfileChangeRequestAction(reqId, 'Malicious reject')).success).toBe(false)
 
-    // User 2 tries to reject
-    const unauthReject = await rejectProfileChangeRequestAction(reqId, 'Malicious reject')
-    expect(unauthReject.success).toBe(false)
+    // A member cannot submit on behalf of another member
+    const forged = await requestNextOfKinChangeAction(user1Id, nokInput('Forged Kin'))
+    expect(forged.success).toBe(false)
   })
 
   it('9. Idempotency: Cannot approve or reject a request that is not PENDING', async () => {
-    // Staff admin session approves the Brother Ben request
-    mockSessionHolder.session = {
-      user: { id: adminId, role: UserRole.ADMIN, email: adminEmail },
-    }
-
+    asUser(adminId, UserRole.ADMIN, adminEmail)
     const pending = await prisma.profileChangeRequest.findFirst({
       where: { userId: user1Id, status: ProfileChangeStatus.PENDING },
     })
     expect(pending).toBeDefined()
 
-    const firstApprove = await approveProfileChangeRequestAction(pending!.id)
-    expect(firstApprove.success).toBe(true)
+    expect((await approveProfileChangeRequestAction(pending!.id)).success).toBe(true)
 
-    // Second approve must fail idempotently
     const secondApprove = await approveProfileChangeRequestAction(pending!.id)
     expect(secondApprove.success).toBe(false)
-    expect(secondApprove.error).toContain('Only PENDING requests can be approved')
+    expect(secondApprove.error).toContain('Only PENDING requests can be reviewed')
 
-    // Rejecting already approved must fail
-    const rejectAfterApprove = await rejectProfileChangeRequestAction(
-      pending!.id,
-      'Too late to reject',
-    )
+    const rejectAfterApprove = await rejectProfileChangeRequestAction(pending!.id, 'Too late to reject')
     expect(rejectAfterApprove.success).toBe(false)
-    expect(rejectAfterApprove.error).toContain('Only PENDING requests can be rejected')
+    expect(rejectAfterApprove.error).toContain('Only PENDING requests can be reviewed')
+
+    // Rejection reason is mandatory
+    asUser(user1Id, UserRole.USER, user1Email)
+    const another = await requestNextOfKinChangeAction(user1Id, nokInput('Cousin Cal'))
+    asUser(adminId, UserRole.ADMIN, adminEmail)
+    const noReason = await rejectProfileChangeRequestAction(another.data!.id, '  ')
+    expect(noReason.success).toBe(false)
+    expect(noReason.code).toBe('VALIDATION_ERROR')
+    expect((await rejectProfileChangeRequestAction(another.data!.id, 'Not verifiable')).success).toBe(true)
   })
 
   it('10. Member can cancel their own pending request, but cannot cancel other members requests', async () => {
-    // User 1 submits a primary bank request
-    mockSessionHolder.session = {
-      user: { id: user1Id, role: UserRole.USER, email: user1Email },
-    }
+    asUser(user1Id, UserRole.USER, user1Email)
     const reqRes = await requestPrimaryBankAccountChangeAction(bankAccount1Id)
     expect(reqRes.success).toBe(true)
     const reqId = reqRes.data!.id
 
-    // User 2 tries to cancel User 1's request -> fails
-    mockSessionHolder.session = {
-      user: { id: user2Id, role: UserRole.USER, email: user2Email },
-    }
+    asUser(user2Id, UserRole.USER, user2Email)
     const badCancel = await cancelProfileChangeRequestAction(reqId)
     expect(badCancel.success).toBe(false)
-    expect(badCancel.error).toContain('only cancel your own')
+    expect(badCancel.code).toBe('NOT_FOUND')
 
-    // User 1 cancels own request -> succeeds
-    mockSessionHolder.session = {
-      user: { id: user1Id, role: UserRole.USER, email: user1Email },
-    }
-    const goodCancel = await cancelProfileChangeRequestAction(reqId)
-    expect(goodCancel.success).toBe(true)
+    asUser(user1Id, UserRole.USER, user1Email)
+    expect((await cancelProfileChangeRequestAction(reqId)).success).toBe(true)
+    const again = await cancelProfileChangeRequestAction(reqId)
+    expect(again.success).toBe(false)
+    expect(again.code).toBe('STALE_STATE')
 
-    const cancelledReq = await prisma.profileChangeRequest.findUnique({
-      where: { id: reqId },
-    })
+    const cancelledReq = await prisma.profileChangeRequest.findUnique({ where: { id: reqId } })
     expect(cancelledReq?.status).toBe(ProfileChangeStatus.CANCELLED)
   })
 
-  it('11. Audit events are recorded for profile change requests lifecycle', async () => {
+  it('11. Audit events use distinct actions, name the affected member and carry no member email', async () => {
     const auditLogs = await prisma.auditEvent.findMany({
-      where: {
-        entityType: 'ProfileChangeRequest',
-        actorId: { in: [user1Id, adminId, ownerId] },
+      where: { entityType: 'ProfileChangeRequest', affectedUserId: user1Id },
+    })
+    const actions = auditLogs.map((l) => l.action)
+    expect(actions).toContain(AuditAction.PROFILE_CHANGE_SUBMITTED)
+    expect(actions).toContain(AuditAction.PROFILE_CHANGE_APPROVED)
+    expect(actions).toContain(AuditAction.PROFILE_CHANGE_REJECTED)
+    expect(actions).toContain(AuditAction.PROFILE_CHANGE_CANCELLED)
+    for (const log of auditLogs) {
+      expect(JSON.stringify(log.metadata ?? {})).not.toContain('@test.com')
+    }
+  })
+
+  it('12. BANK_DETAILS: member requests new details, nothing changes until approval, approval applies resolved values', async () => {
+    asUser(user1Id, UserRole.USER, user1Email)
+    const before = await prisma.bankAccount.findUnique({ where: { id: bankAccount1Id } })
+
+    const res = await requestBankDetailsChangeAction(bankAccount1Id, {
+      bankCode: '057',
+      accountNumber: ACC_MEMBER1_NEW_DETAILS,
+    })
+    expect(res.success).toBe(true)
+    expect(res.data?.changeType).toBe(ProfileChangeType.BANK_DETAILS)
+    // Full account numbers never leave the server in the response
+    expect(JSON.stringify(res.data)).not.toContain(ACC_MEMBER1_NEW_DETAILS)
+    expect(JSON.stringify(res.data)).not.toContain(before!.accountNumber)
+
+    const pendingAcc = await prisma.bankAccount.findUnique({ where: { id: bankAccount1Id } })
+    expect(pendingAcc?.accountNumber).toBe(before!.accountNumber)
+
+    asUser(adminId, UserRole.ADMIN, adminEmail)
+    expect((await approveProfileChangeRequestAction(res.data!.id)).success).toBe(true)
+
+    const after = await prisma.bankAccount.findUnique({ where: { id: bankAccount1Id } })
+    expect(after?.bankCode).toBe('057')
+    expect(after?.bankName).toBe('Zenith Bank')
+    expect(after?.accountNumber).toBe(ACC_MEMBER1_NEW_DETAILS)
+    expect(after?.accountName).toBe('MEMBER ONE')
+    expect(after?.isPrimary).toBe(before!.isPrimary)
+
+    // History keeps the previous number on the request row (not in list views)
+    const stored = await prisma.profileChangeRequest.findUnique({ where: { id: res.data!.id } })
+    expect((stored?.previousValue as { accountNumber?: string } | null)?.accountNumber).toBe(before!.accountNumber)
+  })
+
+  it('13. BANK_DETAILS: invalid input, unchanged details and A-22 conflicts are refused (also at approval time)', async () => {
+    asUser(user2Id, UserRole.USER, user2Email)
+    const u2Add = await addBankAccountAction(user2Id, {
+      bankCode: '058',
+      bankName: 'GTBank',
+      accountNumber: ACC_MEMBER2_FIRST,
+    })
+    expect(u2Add.success).toBe(true)
+
+    asUser(user1Id, UserRole.USER, user1Email)
+    const invalid = await requestBankDetailsChangeAction(bankAccount1Id, { bankCode: '057', accountNumber: '12ab' })
+    expect(invalid.success).toBe(false)
+    expect(invalid.code).toBe('VALIDATION_ERROR')
+
+    const same = await requestBankDetailsChangeAction(bankAccount1Id, {
+      bankCode: '057',
+      accountNumber: ACC_MEMBER1_NEW_DETAILS,
+    })
+    expect(same.success).toBe(false)
+
+    const conflict = await requestBankDetailsChangeAction(bankAccount1Id, {
+      bankCode: '058',
+      accountNumber: ACC_MEMBER2_FIRST,
+    })
+    expect(conflict.success).toBe(false)
+    expect(conflict.error).toContain('already registered by another member')
+
+    // Submitted while free...
+    const raced = await requestBankDetailsChangeAction(bankAccount1Id, {
+      bankCode: '058',
+      accountNumber: ACC_MEMBER1_RACE,
+    })
+    expect(raced.success).toBe(true)
+
+    // ...then another member registers the same account before review.
+    await prisma.bankAccount.create({
+      data: {
+        userId: user2Id,
+        bankCode: '058',
+        bankName: 'Guaranty Trust Bank',
+        accountNumber: ACC_MEMBER1_RACE,
+        accountName: 'MEMBER TWO',
+        isVerified: true,
       },
-      orderBy: { createdAt: 'desc' },
     })
 
-    expect(auditLogs.length).toBeGreaterThanOrEqual(4)
-    const actions = auditLogs.map((l) => l.action)
-    expect(actions).toContain(AuditAction.MEMBER_PROFILE_UPDATED)
+    asUser(adminId, UserRole.ADMIN, adminEmail)
+    const approve = await approveProfileChangeRequestAction(raced.data!.id)
+    expect(approve.success).toBe(false)
+    expect(approve.error).toContain('registered by another member')
+
+    // The failed approval rolled back: request still PENDING, account untouched
+    const stillPending = await prisma.profileChangeRequest.findUnique({ where: { id: raced.data!.id } })
+    expect(stillPending?.status).toBe(ProfileChangeStatus.PENDING)
+    const acc = await prisma.bankAccount.findUnique({ where: { id: bankAccount1Id } })
+    expect(acc?.accountNumber).toBe(ACC_MEMBER1_NEW_DETAILS)
+
+    expect((await rejectProfileChangeRequestAction(raced.data!.id, 'Account now belongs to another member')).success).toBe(true)
+  })
+
+  it('14. Concurrency: simultaneous approve and reject of one request — exactly one wins', async () => {
+    asUser(user1Id, UserRole.USER, user1Email)
+    const sub = await requestNextOfKinChangeAction(user1Id, nokInput('Race Kin'))
+    expect(sub.success).toBe(true)
+    const nokBefore = await prisma.nextOfKin.findUnique({ where: { userId: user1Id } })
+
+    // Several approvals (admin) and rejections (owner) fire at the same time.
+    const attempts = Array.from({ length: 4 }, () => [
+      (async () => {
+        asUser(adminId, UserRole.ADMIN, adminEmail)
+        return { kind: 'approve' as const, res: await approveProfileChangeRequestAction(sub.data!.id) }
+      })(),
+      (async () => {
+        asUser(ownerId, UserRole.OWNER, ownerEmail)
+        return {
+          kind: 'reject' as const,
+          res: await rejectProfileChangeRequestAction(sub.data!.id, 'Owner rejects in parallel'),
+        }
+      })(),
+    ]).flat()
+    const outcomes = await Promise.all(attempts)
+
+    const winners = outcomes.filter((o) => o.res.success)
+    expect(winners).toHaveLength(1)
+    const approveRes = { success: winners[0].kind === 'approve' }
+
+    const finalReq = await prisma.profileChangeRequest.findUnique({ where: { id: sub.data!.id } })
+    const nokAfter = await prisma.nextOfKin.findUnique({ where: { userId: user1Id } })
+    if (approveRes.success) {
+      expect(finalReq?.status).toBe(ProfileChangeStatus.APPROVED)
+      expect(nokAfter?.name).toBe('Race Kin')
+    } else {
+      expect(finalReq?.status).toBe(ProfileChangeStatus.REJECTED)
+      expect(nokAfter?.name).toBe(nokBefore?.name)
+    }
+  })
+
+  it('14b. Concurrency: a decision based on a stale PENDING read cannot overwrite an earlier decision', async () => {
+    // Deterministic version of the race: the second reviewer's pre-check saw PENDING,
+    // but the first reviewer committed before the second reached its transaction.
+    asUser(user1Id, UserRole.USER, user1Email)
+    const sub = await requestNextOfKinChangeAction(user1Id, nokInput('Stale Read Kin'))
+    expect(sub.success).toBe(true)
+
+    const staleSnapshot = await prisma.profileChangeRequest.findUnique({
+      where: { id: sub.data!.id },
+      select: {
+        id: true,
+        userId: true,
+        changeType: true,
+        status: true,
+        proposedValue: true,
+        user: { select: { role: true } },
+      },
+    })
+    expect(staleSnapshot?.status).toBe(ProfileChangeStatus.PENDING)
+
+    asUser(adminId, UserRole.ADMIN, adminEmail)
+    expect((await approveProfileChangeRequestAction(sub.data!.id)).success).toBe(true)
+
+    // The owner's reject now runs with the stale PENDING pre-read.
+    const spy = vi
+      .spyOn(prisma.profileChangeRequest, 'findUnique')
+      .mockResolvedValueOnce(staleSnapshot as never)
+    asUser(ownerId, UserRole.OWNER, ownerEmail)
+    const lateReject = await rejectProfileChangeRequestAction(sub.data!.id, 'Late stale reject')
+    spy.mockRestore()
+
+    expect(lateReject.success).toBe(false)
+    expect(lateReject.code).toBe('STALE_STATE')
+
+    const finalReq = await prisma.profileChangeRequest.findUnique({ where: { id: sub.data!.id } })
+    expect(finalReq?.status).toBe(ProfileChangeStatus.APPROVED)
+    expect(finalReq?.rejectionReason).toBeNull()
+    expect(finalReq?.reviewedById).toBe(adminId)
+  })
+
+  it('15. Concurrency: duplicate simultaneous submissions create only one PENDING request', async () => {
+    asUser(user1Id, UserRole.USER, user1Email)
+    const results = await Promise.all([
+      requestPrimaryBankAccountChangeAction(bankAccount1Id),
+      requestPrimaryBankAccountChangeAction(bankAccount1Id),
+      requestPrimaryBankAccountChangeAction(bankAccount1Id),
+    ])
+    expect(results.filter((r) => r.success)).toHaveLength(1)
+
+    const pendingCount = await prisma.profileChangeRequest.count({
+      where: {
+        userId: user1Id,
+        changeType: ProfileChangeType.PRIMARY_BANK,
+        status: ProfileChangeStatus.PENDING,
+      },
+    })
+    expect(pendingCount).toBe(1)
+  })
+
+  it('16. Concurrency: approval racing a staff primary switch still leaves exactly one primary account', async () => {
+    const pending = await prisma.profileChangeRequest.findFirst({
+      where: {
+        userId: user1Id,
+        changeType: ProfileChangeType.PRIMARY_BANK,
+        status: ProfileChangeStatus.PENDING,
+      },
+    })
+    expect(pending).toBeDefined()
+
+    const approveP = (async () => {
+      asUser(adminId, UserRole.ADMIN, adminEmail)
+      return approveProfileChangeRequestAction(pending!.id) // -> account 1
+    })()
+    const directP = (async () => {
+      asUser(ownerId, UserRole.OWNER, ownerEmail)
+      return setPrimaryBankAccountAction(user1Id, bankAccount2Id) // -> account 2
+    })()
+    const [a, b] = await Promise.all([approveP, directP])
+    expect(a.success).toBe(true)
+    expect(b.success).toBe(true)
+
+    const primaryCount = await prisma.bankAccount.count({ where: { userId: user1Id, isPrimary: true } })
+    expect(primaryCount).toBe(1)
+  })
+
+  it('17. Delete rules: members cannot remove a primary (even a sole one) or an account with a pending request', async () => {
+    asUser(user2Id, UserRole.USER, user2Email)
+    const primary = await prisma.bankAccount.findFirst({ where: { userId: user2Id, isPrimary: true } })
+    expect(primary).not.toBeNull()
+
+    // Member 2 also has the A-22 test row; remove it so the primary is their only account.
+    await prisma.bankAccount.deleteMany({ where: { userId: user2Id, isPrimary: false } })
+
+    const delSole = await deleteBankAccountAction(user2Id, primary!.id)
+    expect(delSole.success).toBe(false)
+    expect(delSole.error).toContain('Cannot delete primary bank account')
+
+    const second = await addBankAccountAction(user2Id, {
+      bankCode: '044',
+      bankName: 'Access Bank',
+      accountNumber: ACC_MEMBER2_SECOND,
+    })
+    expect(second.success).toBe(true)
+    expect(second.data!.isPrimary).toBe(false)
+
+    const req = await requestPrimaryBankAccountChangeAction(second.data!.id)
+    expect(req.success).toBe(true)
+
+    const delPending = await deleteBankAccountAction(user2Id, second.data!.id)
+    expect(delPending.success).toBe(false)
+    expect(delPending.error).toContain('pending change request')
+
+    expect((await cancelProfileChangeRequestAction(req.data!.id)).success).toBe(true)
+    const delOk = await deleteBankAccountAction(user2Id, second.data!.id)
+    expect(delOk.success).toBe(true)
+
+    const removedAudit = await prisma.auditEvent.findFirst({
+      where: { action: AuditAction.MEMBER_BANK_ACCOUNT_REMOVED, entityId: second.data!.id },
+    })
+    expect(removedAudit).not.toBeNull()
+    expect(JSON.stringify(removedAudit!.beforeState)).not.toContain(ACC_MEMBER2_SECOND)
+  })
+
+  it('18. Pending-change lookup requires ownership or PROFILE_CHANGES_REVIEW / MEMBERS_READ, and is redacted', async () => {
+    const admin2 = await prisma.user.create({
+      data: {
+        email: `${testEmailPrefix}-admin2@test.com`,
+        name: 'Loans Only Admin',
+        role: UserRole.ADMIN,
+        isActive: true,
+        mfaEnabled: true,
+      },
+    })
+    admin2Id = admin2.id
+    await prisma.adminPermissionGrant.create({
+      data: { adminUserId: admin2Id, permission: AdminPermission.LOANS_READ, grantedById: ownerId },
+    })
+
+    asUser(user1Id, UserRole.USER, user1Email)
+    await requestNextOfKinChangeAction(user1Id, nokInput('Lookup Kin'))
+
+    asUser(admin2Id, UserRole.ADMIN, `${testEmailPrefix}-admin2@test.com`)
+    expect((await getMemberPendingProfileChangesAction(user1Id)).success).toBe(false)
+
+    asUser(user2Id, UserRole.USER, user2Email)
+    expect((await getMemberPendingProfileChangesAction(user1Id)).success).toBe(false)
+
+    asUser(adminId, UserRole.ADMIN, adminEmail)
+    const allowed = await getMemberPendingProfileChangesAction(user1Id)
+    expect(allowed.success).toBe(true)
+    const nokReq = allowed.data!.find((r) => r.changeType === ProfileChangeType.NEXT_OF_KIN)
+    expect((nokReq?.proposedValue as { accountNumber?: string } | null)?.accountNumber).toBeUndefined()
+    expect((nokReq?.proposedValue as { accountNumberMasked?: string } | null)?.accountNumberMasked).toBe('******4756')
+
+    const queue = await getProfileChangeRequestsAction({ status: ProfileChangeStatus.PENDING, limit: 100 })
+    expect(queue.success).toBe(true)
+    expect(JSON.stringify(queue.data!.requests)).not.toContain('1029384756')
+  })
+
+  it('19. Members see their own history, including rejection reasons, without full account numbers', async () => {
+    asUser(user1Id, UserRole.USER, user1Email)
+    const history = await getMyProfileChangeHistoryAction(50)
+    expect(history.success).toBe(true)
+    const statuses = history.data!.map((r) => r.status)
+    expect(statuses).toContain(ProfileChangeStatus.REJECTED)
+    expect(statuses).toContain(ProfileChangeStatus.APPROVED)
+    expect(history.data!.some((r) => r.rejectionReason)).toBe(true)
+    expect(JSON.stringify(history.data)).not.toContain(ACC_MEMBER1_NEW_DETAILS)
+
+    // Staff are not members and have no history endpoint
+    asUser(adminId, UserRole.ADMIN, adminEmail)
+    expect((await getMyProfileChangeHistoryAction()).success).toBe(false)
+  })
+
+  it('20. Adding a bank account stores the server-resolved name; a name mismatch blocks members but not staff', async () => {
+    asUser(user1Id, UserRole.USER, user1Email)
+    const blocked = await addBankAccountAction(user1Id, {
+      bankCode: '058',
+      bankName: 'GTBank',
+      accountNumber: ACC_MISMATCH,
+      accountName: 'Member One', // forged by the browser; must be ignored
+    })
+    expect(blocked.success).toBe(false)
+    expect(blocked.code).toBe('NAME_MISMATCH')
+
+    asUser(adminId, UserRole.ADMIN, adminEmail)
+    const staffAdd = await addBankAccountAction(user1Id, {
+      bankCode: '058',
+      bankName: 'GTBank',
+      accountNumber: ACC_MISMATCH,
+      accountName: 'Member One',
+    })
+    expect(staffAdd.success).toBe(true)
+    expect(staffAdd.data!.accountName).toBe('TOTALLY DIFFERENT PERSON')
+    expect(staffAdd.data!.isPrimary).toBe(false)
+
+    const audit = await prisma.auditEvent.findFirst({
+      where: { action: AuditAction.MEMBER_BANK_ACCOUNT_ADDED, entityId: staffAdd.data!.id },
+    })
+    expect((audit?.metadata as { nameMatch?: boolean } | null)?.nameMatch).toBe(false)
+  })
+
+  it('21. Members cannot resolve accounts against another member profile; staff direct NOK edits are audited', async () => {
+    asUser(user2Id, UserRole.USER, user2Email)
+    const res = await resolveAccountNameAction('058', ACC_MISMATCH, user1Id)
+    expect(res.success).toBe(false)
+
+    asUser(user1Id, UserRole.USER, user1Email)
+    const memberDirect = await updateNextOfKinAction(user1Id, nokInput('Direct Kin'))
+    expect(memberDirect.success).toBe(false)
+    expect(memberDirect.code).toBe('FORBIDDEN')
+
+    asUser(adminId, UserRole.ADMIN, adminEmail)
+    const staffDirect = await updateNextOfKinAction(user1Id, nokInput('Staff Set Kin'))
+    expect(staffDirect.success).toBe(true)
+    const audit = await prisma.auditEvent.findFirst({
+      where: { action: AuditAction.MEMBER_NEXT_OF_KIN_SET, affectedUserId: user1Id, actorId: adminId },
+    })
+    expect(audit).not.toBeNull()
   })
 })

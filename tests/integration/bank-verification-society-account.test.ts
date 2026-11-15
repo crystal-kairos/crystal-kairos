@@ -186,7 +186,10 @@ describe('Bank Search/Verification & Society Receiving Accounts (PR P3-02)', () 
 
     // Custom test mock provider
     setBankProviderForTesting({
-      listBanks: async () => [{ name: 'Guaranty Trust Bank', code: testBankCode }],
+      listBanks: async () => [
+        { name: 'Guaranty Trust Bank', code: testBankCode },
+        { name: 'Access Bank', code: '044' },
+      ],
       resolveAccount: async (code, num) => ({
         accountName: 'ADE WALE SAMUEL',
         accountNumber: num,
@@ -198,7 +201,7 @@ describe('Bank Search/Verification & Society Receiving Accounts (PR P3-02)', () 
     expect(res.success).toBe(true)
     expect(res.accountName).toBe('ADE WALE SAMUEL')
     expect(res.accountNumber).toBe(testAccountNumber1)
-    expect(['058', '001']).toContain(res.bankCode)
+    expect(res.bankCode).toBe(testBankCode)
     expect(res.nameMatch).toBeDefined()
     expect(res.nameMatch?.isMatch).toBe(true)
   })
@@ -221,7 +224,7 @@ describe('Bank Search/Verification & Society Receiving Accounts (PR P3-02)', () 
 
     // Add second account -> must not be primary
     const acc2 = await addBankAccountAction(user1Id, {
-      bankCode: '001',
+      bankCode: '044',
       bankName: 'Access Bank',
       accountNumber: testAccountNumber2,
       accountName: 'ADE WALE SAMUEL',
@@ -268,12 +271,12 @@ describe('Bank Search/Verification & Society Receiving Accounts (PR P3-02)', () 
     }
 
     // User 2 tries to resolve or add user 1's active bank account -> blocked!
-    const resolveConflict = await resolveAccountNameAction('001', testAccountNumber2, user2Id)
+    const resolveConflict = await resolveAccountNameAction('044', testAccountNumber2, user2Id)
     expect(resolveConflict.success).toBe(false)
     expect(resolveConflict.error).toContain('already registered by another member')
 
     const addConflict = await addBankAccountAction(user2Id, {
-      bankCode: '001',
+      bankCode: '044',
       bankName: 'Access Bank',
       accountNumber: testAccountNumber2,
       accountName: 'EMEKA OKAFOR',
@@ -286,7 +289,7 @@ describe('Bank Search/Verification & Society Receiving Accounts (PR P3-02)', () 
       user: { id: adminId, email: adminEmail, name: 'Admin Reviewer', role: UserRole.ADMIN },
     }
     const adminOverride = await addBankAccountAction(user2Id, {
-      bankCode: '001',
+      bankCode: '044',
       bankName: 'Access Bank',
       accountNumber: testAccountNumber2,
       accountName: 'EMEKA OKAFOR',
@@ -300,7 +303,7 @@ describe('Bank Search/Verification & Society Receiving Accounts (PR P3-02)', () 
       user: { id: ownerId, email: ownerEmail, name: 'Cooperative Owner', role: UserRole.OWNER },
     }
     const ownerOverride = await addBankAccountAction(user2Id, {
-      bankCode: '001',
+      bankCode: '044',
       bankName: 'Access Bank',
       accountNumber: testAccountNumber2,
       accountName: 'EMEKA OKAFOR',

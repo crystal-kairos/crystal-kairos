@@ -1,4 +1,7 @@
-import { ProfileChangeReviewQueue } from '@/components/admin/ProfileChangeReviewQueue'
+import {
+  ProfileChangeReviewQueue,
+  ProfileChangeRequestItem,
+} from '@/components/admin/ProfileChangeReviewQueue'
 import { getProfileChangeRequestsAction } from '@/models/admin/profile-change-actions'
 import { auth } from '@/auth'
 import { requireAnyPermission } from '@/lib/authz/guards'
@@ -28,7 +31,8 @@ const AdminProfileChangesPage = async () => {
   return (
     <div className='p-6 max-w-7xl mx-auto'>
       <ProfileChangeReviewQueue
-        initialRequests={res.data.requests as any}
+        // Snapshots are redacted server-side (toRedactedProfileChange) before reaching this page.
+        initialRequests={res.data.requests as unknown as ProfileChangeRequestItem[]}
         currentAdminId={actor.id}
         initialStats={res.data.stats}
       />

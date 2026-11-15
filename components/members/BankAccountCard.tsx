@@ -10,6 +10,7 @@ interface BankAccountCardProps {
   isPrimary?: boolean
   isVerified?: boolean
   isPendingPrimary?: boolean
+  isPendingDetails?: boolean
   onMakePrimary?: () => void
   onDelete?: () => void
 }
@@ -21,6 +22,7 @@ export const BankAccountCard = ({
   isPrimary = false,
   isVerified = true,
   isPendingPrimary = false,
+  isPendingDetails = false,
   onMakePrimary,
   onDelete,
 }: BankAccountCardProps) => {
@@ -47,6 +49,11 @@ export const BankAccountCard = ({
             {isPendingPrimary && (
               <Badge variant='outline' className='text-[10px] text-amber-600 dark:text-amber-400 border-amber-500/30 px-1.5 py-0 h-4.5 flex items-center gap-1 rounded-full'>
                 <Clock className='w-3 h-3' /> Primary Switch Pending
+              </Badge>
+            )}
+            {isPendingDetails && (
+              <Badge variant='outline' className='text-[10px] text-amber-600 dark:text-amber-400 border-amber-500/30 px-1.5 py-0 h-4.5 flex items-center gap-1 rounded-full'>
+                <Clock className='w-3 h-3' /> Details Change Pending
               </Badge>
             )}
           </div>

@@ -1,11 +1,14 @@
 'use server'
 
+import { z } from 'zod'
 import { auth } from '@/auth'
 import { prisma } from '@/lib/prisma'
 import { nextOfKinSchema } from '@/schema/auth.schema'
 import { revalidatePath } from 'next/cache'
 import {
   AdminPermission,
+  ProfileChangeStatus,
+  ProfileChangeType,
   Relationship,
   UserDeactivationReason,
   UserRole,
@@ -17,6 +20,7 @@ import {
   requireMemberOrStaffWithPermission,
   requireOwner,
 } from '@/lib/authz/guards'
+import { AppError } from '@/lib/errors/app-error'
 import { toActionErrorResult } from '@/lib/errors/to-action-result'
 import { assertMockSessionAllowed } from '@/lib/authz/mock-session-guard'
 import {
@@ -24,12 +28,10 @@ import {
   AuditAction,
   AuditOutcome,
 } from '@/lib/services/audit.service'
+import { lockMembers } from '@/lib/db/concurrency'
 import { bankProvider } from '@/lib/banking/paystack.provider'
 import { checkNameSimilarity, NameMatchResult } from '@/lib/banking/provider'
-import {
-  requestNextOfKinChangeAction,
-  requestPrimaryBankAccountChangeAction,
-} from './profile-change-actions'
+import { maskAccountNumber } from '@/lib/domain/profile-change'
 
 assertMockSessionAllowed()
 
@@ -42,6 +44,31 @@ interface NextOfKinInput {
   bankName: string
   accountNumber: string
   accountName: string
+}
+
+/** Staff permissions that may manage a member's bank / next-of-kin records directly. */
+const PROFILE_STAFF_PERMISSIONS = [
+  AdminPermission.PROFILE_CHANGES_REVIEW,
+  AdminPermission.MEMBERS_APPROVE,
+] as const
+
+function actionFailure(
+  error: unknown,
+  actionName: string,
+  fallbackMessage: string,
+  context?: Record<string, unknown>,
+) {
+  return toActionErrorResult(error, { actionName, fallbackMessage, context })
+}
+
+function revalidateMemberBankPaths(userId: string) {
+  try {
+    revalidatePath(`/dashboard/${userId}/banks`)
+    revalidatePath(`/dashboard/${userId}/profile`)
+    revalidatePath(`/admin/members/${userId}`)
+  } catch {
+    // revalidatePath is unavailable outside a Next.js request (e.g. in tests)
+  }
 }
 
 export const getSessionHelper = async () => {
@@ -57,67 +84,67 @@ export const getSessionHelper = async () => {
   }
 }
 
+/**
+ * Directly sets a member's next of kin. Staff only (PR P3-02B): members must use
+ * `requestNextOfKinChangeAction`, which goes through admin review.
+ */
 export const updateNextOfKinAction = async (
   userId: string,
   data: NextOfKinInput,
 ) => {
   try {
-    // 1. Authenticate and check permissions + ownership
-    const actor = await requireMemberOrStaffWithPermission(userId, [
-      AdminPermission.PROFILE_CHANGES_REVIEW,
-      AdminPermission.MEMBERS_APPROVE,
-    ])
+    const actor = await requireMemberOrStaffWithPermission(userId, PROFILE_STAFF_PERMISSIONS)
     await assertTargetUserIsMember(userId)
 
-    // Regular members cannot bypass approval (PR P3-02B)
     if (actor.role === UserRole.USER) {
-      return {
-        success: false,
-        error:
-          'Direct updates are not permitted. Please submit a Next of Kin change request for administrator approval.',
-      }
+      throw new AppError(
+        'FORBIDDEN',
+        'Direct updates are not permitted. Please submit a Next of Kin change request for administrator approval.',
+      )
     }
 
-    // 2. Validate input schema
     const parsedData = nextOfKinSchema.parse(data)
+    const nokData = {
+      name: parsedData.name,
+      phoneNumber: parsedData.phoneNumber,
+      relationship: parsedData.relationship,
+      occupation: parsedData.occupation,
+      address: parsedData.address,
+      bankName: parsedData.bankName,
+      accountNumber: parsedData.accountNumber,
+      accountName: parsedData.accountName,
+    }
 
-    // 3. Upsert Next of Kin record
-    const result = await prisma.nextOfKin.upsert({
-      where: { userId },
-      update: {
-        name: parsedData.name,
-        phoneNumber: parsedData.phoneNumber,
-        relationship: parsedData.relationship,
-        occupation: parsedData.occupation,
-        address: parsedData.address,
-        bankName: parsedData.bankName,
-        accountNumber: parsedData.accountNumber,
-        accountName: parsedData.accountName,
-      },
-      create: {
-        userId,
-        name: parsedData.name,
-        phoneNumber: parsedData.phoneNumber,
-        relationship: parsedData.relationship,
-        occupation: parsedData.occupation,
-        address: parsedData.address,
-        bankName: parsedData.bankName,
-        accountNumber: parsedData.accountNumber,
-        accountName: parsedData.accountName,
-      },
+    const result = await prisma.$transaction(async (tx) => {
+      await lockMembers(tx, [userId])
+
+      const saved = await tx.nextOfKin.upsert({
+        where: { userId },
+        update: nokData,
+        create: { userId, ...nokData },
+      })
+
+      await recordAuditEvent(
+        {
+          actorId: actor.id,
+          actorRole: actor.role,
+          affectedUserId: userId,
+          action: AuditAction.MEMBER_NEXT_OF_KIN_SET,
+          entityType: 'NextOfKin',
+          entityId: saved.id,
+          metadata: { source: 'STAFF_DIRECT_UPDATE' },
+        },
+        tx,
+      )
+
+      return saved
     })
 
-    try {
-      revalidatePath(`/dashboard/${userId}/profile`)
-      revalidatePath(`/admin/members/${userId}`)
-    } catch {}
-
+    revalidateMemberBankPaths(userId)
     return { success: true, data: result }
   } catch (error) {
-    const err = toActionErrorResult(error, {
-      actionName: 'updateNextOfKinAction',
-      fallbackMessage: 'Failed to update next of kin',
-      context: { userId },
+    const err = actionFailure(error, 'updateNextOfKinAction', 'Failed to update next of kin', {
+      userId,
     })
     return {
       success: false,
@@ -133,86 +160,143 @@ interface BankAccountInput {
   bankCode?: string
   bankName: string
   accountNumber: string
-  accountName: string
+  /** Ignored: the account name is always resolved on the server. Kept for form compatibility. */
+  accountName?: string
   isOverride?: boolean
   overrideReason?: string
 }
 
+const addBankAccountInputSchema = z.object({
+  bankCode: z.string().trim().min(1, 'Bank selection is required'),
+  accountNumber: z
+    .string()
+    .trim()
+    .regex(/^\d{10}$/, 'Account number must be 10 digits'),
+  isOverride: z.boolean().optional(),
+  overrideReason: z.string().trim().max(500).optional(),
+})
+
+/**
+ * Adds a bank account for a member (P3-02 / P3-02B).
+ *
+ * - The account name is resolved on the server; the browser-supplied name is never stored.
+ * - A member whose resolved name does not match their registered name is asked to contact an
+ *   administrator; staff may add such an account and the mismatch is recorded in the audit log.
+ * - The account becomes primary only when the member has no primary account yet.
+ * - A-22: an account already registered by another active member needs an OWNER override with a reason.
+ */
 export const addBankAccountAction = async (
   userId: string,
   data: BankAccountInput,
 ) => {
   try {
-    const actor = await requireMemberOrStaffWithPermission(userId, [
-      AdminPermission.PROFILE_CHANGES_REVIEW,
-      AdminPermission.MEMBERS_APPROVE,
-    ])
-    await assertTargetUserIsMember(userId)
+    const actor = await requireMemberOrStaffWithPermission(userId, PROFILE_STAFF_PERMISSIONS)
+    const member = await assertTargetUserIsMember(userId)
+    const input = addBankAccountInputSchema.parse({
+      bankCode: data.bankCode ?? '',
+      accountNumber: data.accountNumber,
+      isOverride: data.isOverride,
+      overrideReason: data.overrideReason,
+    })
 
-    if (data.accountNumber.length !== 10) {
-      return { success: false, error: 'Account number must be 10 digits' }
-    }
-
-    // Check duplicate active bank account across active members (A-22)
+    // Rule A-22: one active member per bank account, unless the OWNER overrides with a reason.
     const existingActiveAccount = await prisma.bankAccount.findFirst({
       where: {
-        bankCode: data.bankCode || null,
-        accountNumber: data.accountNumber,
+        bankCode: input.bankCode,
+        accountNumber: input.accountNumber,
+        userId: { not: userId },
         user: { isActive: true },
       },
-      include: { user: true },
+      select: { id: true },
     })
 
-    if (existingActiveAccount && existingActiveAccount.userId !== userId) {
-      // Owner can override with recorded reason
-      if (!data.isOverride || actor.role !== UserRole.OWNER) {
-        return {
-          success: false,
-          error:
-            'This bank account is already registered by another member. Please contact an administrator.',
-        }
+    let overrideReason: string | null = null
+    if (existingActiveAccount) {
+      if (!input.isOverride || actor.role !== UserRole.OWNER) {
+        throw new AppError(
+          'CONFLICT',
+          'This bank account is already registered by another member. Please contact an administrator.',
+        )
       }
-      if (!data.overrideReason || data.overrideReason.trim().length === 0) {
-        return {
-          success: false,
-          error:
-            'An override reason is required to register a shared bank account.',
-        }
+      if (!input.overrideReason) {
+        throw new AppError(
+          'BAD_REQUEST',
+          'An override reason is required to register a shared bank account.',
+        )
       }
+      overrideReason = input.overrideReason
     }
 
-    // Check if user already has bank accounts
-    const existingAccountsCount = await prisma.bankAccount.count({
-      where: { userId },
+    // Resolve on the server (P3-02): bank must be a known bank code.
+    const banks = await bankProvider.listBanks()
+    const bank = banks.find((b) => b.code === input.bankCode)
+    if (!bank) {
+      throw new AppError('BAD_REQUEST', 'Please select a valid bank.')
+    }
+    const resolved = await bankProvider.resolveAccount(input.bankCode, input.accountNumber)
+    const nameMatch = checkNameSimilarity(member.name, resolved.accountName)
+
+    if (!nameMatch.isMatch && actor.role === UserRole.USER) {
+      throw new AppError(
+        'NAME_MISMATCH',
+        `The account name returned by the bank (${resolved.accountName}) does not match your registered name. Please contact an administrator to add this account.`,
+      )
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      await lockMembers(tx, [userId])
+
+      const ownDuplicate = await tx.bankAccount.findFirst({
+        where: { userId, bankCode: input.bankCode, accountNumber: input.accountNumber },
+        select: { id: true },
+      })
+      if (ownDuplicate) {
+        throw new AppError('CONFLICT', 'This bank account is already registered on this profile.')
+      }
+
+      // Only the first primary is automatic; afterwards a switch needs approval (P3-02B).
+      const primaryCount = await tx.bankAccount.count({ where: { userId, isPrimary: true } })
+      const isPrimary = primaryCount === 0
+
+      const created = await tx.bankAccount.create({
+        data: {
+          userId,
+          bankCode: input.bankCode,
+          bankName: bank.name,
+          accountNumber: resolved.accountNumber,
+          accountName: resolved.accountName,
+          isPrimary,
+          isVerified: true,
+          verifiedAt: new Date(),
+        },
+      })
+
+      await recordAuditEvent(
+        {
+          actorId: actor.id,
+          actorRole: actor.role,
+          affectedUserId: userId,
+          action: AuditAction.MEMBER_BANK_ACCOUNT_ADDED,
+          entityType: 'BankAccount',
+          entityId: created.id,
+          metadata: {
+            isPrimary,
+            nameMatch: nameMatch.isMatch,
+            similarityScore: nameMatch.similarityScore,
+            ...(overrideReason ? { duplicateOverride: true, overrideReason } : {}),
+          },
+        },
+        tx,
+      )
+
+      return created
     })
 
-    // First account is automatically primary
-    const isPrimary = existingAccountsCount === 0
-
-    const result = await prisma.bankAccount.create({
-      data: {
-        userId,
-        bankCode: data.bankCode || null,
-        bankName: data.bankName,
-        accountNumber: data.accountNumber,
-        accountName: data.accountName,
-        isPrimary,
-        isVerified: true,
-        verifiedAt: new Date(),
-      },
-    })
-
-    try {
-      revalidatePath(`/dashboard/${userId}/banks`)
-      revalidatePath(`/dashboard/${userId}/profile`)
-    } catch {}
-
-    return { success: true, data: result }
+    revalidateMemberBankPaths(userId)
+    return { success: true, data: result, nameMatch }
   } catch (error) {
-    const err = toActionErrorResult(error, {
-      actionName: 'addBankAccountAction',
-      fallbackMessage: 'Failed to add bank account',
-      context: { userId },
+    const err = actionFailure(error, 'addBankAccountAction', 'Failed to add bank account', {
+      userId,
     })
     return {
       success: false,
@@ -224,58 +308,75 @@ export const addBankAccountAction = async (
   }
 }
 
+/**
+ * Sets the primary bank account directly.
+ * - Members may only do this when they have no primary account yet; otherwise they must
+ *   use `requestPrimaryBankAccountChangeAction` (admin approval, P3-02B).
+ * - Staff with the profile permissions may switch it directly; the switch is audited.
+ */
 export const setPrimaryBankAccountAction = async (
   userId: string,
   bankAccountId: string,
 ) => {
   try {
-    const actor = await requireMemberOrStaffWithPermission(userId, [
-      AdminPermission.PROFILE_CHANGES_REVIEW,
-      AdminPermission.MEMBERS_APPROVE,
-    ])
+    const actor = await requireMemberOrStaffWithPermission(userId, PROFILE_STAFF_PERMISSIONS)
     await assertTargetUserIsMember(userId)
 
-    // Regular members requesting to switch primary bank account must create an approval request (PR P3-02B)
-    if (actor.role === UserRole.USER) {
-      const currentPrimary = await prisma.bankAccount.findFirst({
-        where: { userId, isPrimary: true },
-      })
-      if (currentPrimary && currentPrimary.id !== bankAccountId) {
-        return {
-          success: false,
-          error:
-            'Direct primary bank updates are not permitted. Please submit a primary bank change request for administrator approval.',
-        }
-      }
-    }
-
     const result = await prisma.$transaction(async (tx) => {
-      // Unset all other primary accounts
-      await tx.bankAccount.updateMany({
+      await lockMembers(tx, [userId])
+
+      const target = await tx.bankAccount.findFirst({
+        where: { id: bankAccountId, userId },
+      })
+      if (!target) {
+        throw new AppError('NOT_FOUND', 'Bank account not found.')
+      }
+      if (!target.isVerified) {
+        throw new AppError('BAD_REQUEST', 'Only a verified bank account can be the primary account.')
+      }
+
+      const currentPrimary = await tx.bankAccount.findFirst({
         where: { userId, isPrimary: true },
+        select: { id: true },
+      })
+      if (actor.role === UserRole.USER && currentPrimary && currentPrimary.id !== target.id) {
+        throw new AppError(
+          'FORBIDDEN',
+          'Direct primary bank updates are not permitted. Please submit a primary bank change request for administrator approval.',
+        )
+      }
+
+      await tx.bankAccount.updateMany({
+        where: { userId, isPrimary: true, id: { not: target.id } },
         data: { isPrimary: false },
       })
-
-      // Set target account as primary
       const updated = await tx.bankAccount.update({
-        where: { id: bankAccountId, userId },
+        where: { id: target.id },
         data: { isPrimary: true },
       })
+
+      await recordAuditEvent(
+        {
+          actorId: actor.id,
+          actorRole: actor.role,
+          affectedUserId: userId,
+          action: AuditAction.MEMBER_PRIMARY_BANK_SET,
+          entityType: 'BankAccount',
+          entityId: target.id,
+          metadata: { previousPrimaryId: currentPrimary?.id ?? null },
+        },
+        tx,
+      )
 
       return updated
     })
 
-    try {
-      revalidatePath(`/dashboard/${userId}/banks`)
-      revalidatePath(`/dashboard/${userId}/profile`)
-    } catch {}
-
+    revalidateMemberBankPaths(userId)
     return { success: true, data: result }
   } catch (error) {
-    const err = toActionErrorResult(error, {
-      actionName: 'setPrimaryBankAccountAction',
-      fallbackMessage: 'Failed to set primary bank account',
-      context: { userId, bankAccountId },
+    const err = actionFailure(error, 'setPrimaryBankAccountAction', 'Failed to set primary bank account', {
+      userId,
+      bankAccountId,
     })
     return {
       success: false,
@@ -287,53 +388,111 @@ export const setPrimaryBankAccountAction = async (
   }
 }
 
+/**
+ * Removes a member bank account.
+ * - A member can never remove their primary account (replacing it needs an approved
+ *   primary switch or bank-details change, P3-02B). Staff may remove a primary account
+ *   only when it is the member's only account.
+ * - An account referenced by a pending change request, a payment, a disbursement or a
+ *   wallet withdrawal cannot be removed (history must stay explainable).
+ */
 export const deleteBankAccountAction = async (
   userId: string,
   bankAccountId: string,
 ) => {
   try {
-    await requireMemberOrStaffWithPermission(userId, [
-      AdminPermission.PROFILE_CHANGES_REVIEW,
-      AdminPermission.MEMBERS_APPROVE,
-    ])
+    const actor = await requireMemberOrStaffWithPermission(userId, PROFILE_STAFF_PERMISSIONS)
     await assertTargetUserIsMember(userId)
 
-    const targetAccount = await prisma.bankAccount.findUnique({
-      where: { id: bankAccountId, userId },
-    })
+    const result = await prisma.$transaction(async (tx) => {
+      await lockMembers(tx, [userId])
 
-    if (!targetAccount) {
-      return { success: false, error: 'Bank account not found' }
-    }
-
-    if (targetAccount.isPrimary) {
-      const totalAccounts = await prisma.bankAccount.count({
-        where: { userId },
+      const target = await tx.bankAccount.findFirst({
+        where: { id: bankAccountId, userId },
+        include: {
+          _count: {
+            select: { transactions: true, walletWithdrawals: true, disbursements: true },
+          },
+        },
       })
-      if (totalAccounts > 1) {
-        return {
-          success: false,
-          error:
+      if (!target) {
+        throw new AppError('NOT_FOUND', 'Bank account not found')
+      }
+
+      if (target.isPrimary) {
+        if (actor.role === UserRole.USER) {
+          throw new AppError(
+            'FORBIDDEN',
+            'Cannot delete primary bank account. Add another account and request it as your primary account first.',
+          )
+        }
+        const totalAccounts = await tx.bankAccount.count({ where: { userId } })
+        if (totalAccounts > 1) {
+          throw new AppError(
+            'BAD_REQUEST',
             'Cannot delete primary bank account. Please set another account as primary first.',
+          )
         }
       }
-    }
 
-    const result = await prisma.bankAccount.delete({
-      where: { id: bankAccountId },
+      const pendingRequests = await tx.profileChangeRequest.findMany({
+        where: {
+          userId,
+          status: ProfileChangeStatus.PENDING,
+          changeType: { in: [ProfileChangeType.PRIMARY_BANK, ProfileChangeType.BANK_DETAILS] },
+        },
+        select: { proposedValue: true },
+      })
+      const referencedByPending = pendingRequests.some((r) => {
+        const v = (r.proposedValue ?? {}) as Record<string, unknown>
+        return v.targetBankAccountId === target.id || v.bankAccountId === target.id
+      })
+      if (referencedByPending) {
+        throw new AppError(
+          'CONFLICT',
+          'This account has a pending change request. Cancel the request or wait for it to be reviewed first.',
+        )
+      }
+
+      const { transactions, walletWithdrawals, disbursements } = target._count
+      if (transactions + walletWithdrawals + disbursements > 0) {
+        throw new AppError(
+          'CONFLICT',
+          'This account is linked to past payments or payouts and cannot be removed.',
+        )
+      }
+
+      const deleted = await tx.bankAccount.delete({ where: { id: target.id } })
+
+      await recordAuditEvent(
+        {
+          actorId: actor.id,
+          actorRole: actor.role,
+          affectedUserId: userId,
+          action: AuditAction.MEMBER_BANK_ACCOUNT_REMOVED,
+          entityType: 'BankAccount',
+          entityId: target.id,
+          // Snapshot kept in the audit log so the removed account remains explainable.
+          beforeState: {
+            bankName: target.bankName,
+            bankCode: target.bankCode,
+            accountName: target.accountName,
+            accountNumberMasked: maskAccountNumber(target.accountNumber),
+            isPrimary: target.isPrimary,
+          },
+        },
+        tx,
+      )
+
+      return deleted
     })
 
-    try {
-      revalidatePath(`/dashboard/${userId}/banks`)
-      revalidatePath(`/dashboard/${userId}/profile`)
-    } catch {}
-
+    revalidateMemberBankPaths(userId)
     return { success: true, data: result }
   } catch (error) {
-    const err = toActionErrorResult(error, {
-      actionName: 'deleteBankAccountAction',
-      fallbackMessage: 'Failed to delete bank account',
-      context: { userId, bankAccountId },
+    const err = actionFailure(error, 'deleteBankAccountAction', 'Failed to delete bank account', {
+      userId,
+      bankAccountId,
     })
     return {
       success: false,
@@ -373,6 +532,12 @@ export const resolveAccountNameAction = async (
   try {
     const actor = await requireAuthenticatedSession()
 
+    // Resolving for someone else (name-match against their profile) needs the same
+    // authority as managing their bank accounts.
+    if (targetUserId && targetUserId !== actor.id) {
+      await requireMemberOrStaffWithPermission(targetUserId, PROFILE_STAFF_PERMISSIONS)
+    }
+
     if (!bankCodeOrName || !bankCodeOrName.trim()) {
       return { success: false, error: 'Bank selection is required' }
     }
@@ -385,7 +550,6 @@ export const resolveAccountNameAction = async (
     // Resolve bank code if bank name was passed
     const banks = await bankProvider.listBanks()
     let bankCode = bankCodeOrName.trim()
-    // let bankCode = '001'
     let bankName = bankCodeOrName.trim()
 
     const matchedByCode = banks.find((b) => b.code === bankCode)
