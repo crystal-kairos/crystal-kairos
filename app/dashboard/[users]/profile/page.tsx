@@ -4,7 +4,11 @@ import { getMemberById } from '@/models/members/query'
 import { StatusPill } from '@/components/ui/StatusPill'
 import { NextOfKinCard } from '@/components/members/NextOfKinCard'
 import { EditNextOfKinDialog } from '@/components/members/EditNextOfKinDialog'
-import { getMemberPendingProfileChangesAction } from '@/models/members/profile-change-actions'
+import {
+  getMemberPendingProfileChangesAction,
+  getMyProfileChangeHistoryAction,
+} from '@/models/members/profile-change-actions'
+import { ProfileChangeHistory } from '@/components/members/ProfileChangeHistory'
 import { ProfileChangeType } from '@/generated/prisma/enums'
 import {
   Card,
@@ -77,6 +81,9 @@ export default async function ProfilePage({ params }: PageProps) {
         (r) => r.changeType === ProfileChangeType.NEXT_OF_KIN,
       ),
     )
+
+  const historyRes = isSelf ? await getMyProfileChangeHistoryAction(10) : null
+  const changeHistory = historyRes?.success && historyRes.data ? historyRes.data : []
 
   return (
     <div className='w-[90%] mx-auto py-8 max-w-4xl flex flex-col gap-8'>
@@ -314,6 +321,8 @@ export default async function ProfilePage({ params }: PageProps) {
               </CardContent>
             </Card>
           )}
+
+          {isSelf && <ProfileChangeHistory items={changeHistory} />}
         </div>
       </div>
     </div>

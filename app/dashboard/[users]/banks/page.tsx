@@ -46,20 +46,25 @@ export default async function BanksPage({ params }: PageProps) {
   const bankAccounts = member.bankAccounts || []
 
   const pendingRes = await getMemberPendingProfileChangesAction(profileId)
+  const pending = pendingRes.success && pendingRes.data ? pendingRes.data : []
   const pendingPrimaryAccountId =
-    pendingRes.success && pendingRes.data
-      ? (
-          pendingRes.data.find(
-            (r) => r.changeType === ProfileChangeType.PRIMARY_BANK,
-          )?.proposedValue as any
-        )?.targetBankAccountId || null
-      : null
+    (
+      pending.find((r) => r.changeType === ProfileChangeType.PRIMARY_BANK)
+        ?.proposedValue as { targetBankAccountId?: string } | null
+    )?.targetBankAccountId || null
+  const pendingDetailsAccountId =
+    (
+      pending.find((r) => r.changeType === ProfileChangeType.BANK_DETAILS)
+        ?.proposedValue as { bankAccountId?: string } | null
+    )?.bankAccountId || null
 
   return (
     <BanksClient
       userId={profileId}
       bankAccounts={bankAccounts}
       pendingPrimaryAccountId={pendingPrimaryAccountId}
+      pendingDetailsAccountId={pendingDetailsAccountId}
+      canManage={isSelf}
     />
   )
 }

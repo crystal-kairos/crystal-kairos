@@ -40,12 +40,23 @@ import {
 import { toast } from 'sonner'
 import { useRouter } from 'next/navigation'
 
+/** Redacted snapshot shape shown to reviewers (full account numbers are never sent). */
+export interface ProfileChangeValueView {
+  bankName?: string
+  accountName?: string
+  accountNumberMasked?: string
+  name?: string
+  relationship?: string
+  phoneNumber?: string
+  nameMatch?: { isMatch: boolean; similarityScore?: number }
+}
+
 export interface ProfileChangeRequestItem {
   id: string
   userId: string
   changeType: ProfileChangeType
-  previousValue: any
-  proposedValue: any
+  previousValue: ProfileChangeValueView | null
+  proposedValue: ProfileChangeValueView | null
   status: ProfileChangeStatus
   submittedAt: Date | string
   reviewedAt: Date | string | null
@@ -95,6 +106,9 @@ export const ProfileChangeReviewQueue: React.FC<ProfileChangeReviewQueueProps> =
 
   // Approval modal state
   const [approveModalOpen, setApproveModalOpen] = useState(false)
+
+  // Read-only details for already-reviewed requests
+  const [detailsModalOpen, setDetailsModalOpen] = useState(false)
 
   // Filtered requests
   const filteredRequests = requests.filter((req) => {
@@ -390,8 +404,8 @@ export const ProfileChangeReviewQueue: React.FC<ProfileChangeReviewQueueProps> =
               ) : (
                 filteredRequests.map((req) => {
                   const isOwnRequest = req.userId === currentAdminId
-                  const proposed = req.proposedValue as any
-                  const previous = req.previousValue as any
+                  const proposed = req.proposedValue
+                  const previous = req.previousValue
 
                   return (
                     <tr key={req.id} className='hover:bg-muted/30 transition-colors'>
@@ -437,8 +451,21 @@ export const ProfileChangeReviewQueue: React.FC<ProfileChangeReviewQueueProps> =
                         )}
 
                         {req.changeType === ProfileChangeType.BANK_DETAILS && (
-                          <div className='text-xs truncate font-medium'>
-                            {proposed?.bankName} ({proposed?.accountNumberMasked || 'Updated'})
+                          <div className='flex flex-col gap-0.5'>
+                            <div className='flex items-center gap-1.5 text-xs truncate'>
+                              <span className='text-muted-foreground truncate'>
+                                {previous?.bankName} ({previous?.accountNumberMasked})
+                              </span>
+                              <ArrowRight className='w-3 h-3 text-primary shrink-0' />
+                              <span className='font-medium text-foreground truncate'>
+                                {proposed?.bankName} ({proposed?.accountNumberMasked})
+                              </span>
+                            </div>
+                            {proposed?.nameMatch && proposed.nameMatch.isMatch === false && (
+                              <span className='text-[10px] text-amber-600 font-medium flex items-center gap-1'>
+                                <AlertTriangle className='w-3 h-3' /> Account name does not match member name
+                              </span>
+                            )}
                           </div>
                         )}
                       </td>
@@ -489,7 +516,10 @@ export const ProfileChangeReviewQueue: React.FC<ProfileChangeReviewQueueProps> =
                           <Button
                             size='sm'
                             variant='ghost'
-                            onClick={() => setSelectedRequest(req)}
+                            onClick={() => {
+                              setSelectedRequest(req)
+                              setDetailsModalOpen(true)
+                            }}
                             className='h-7 px-2.5 text-xs text-muted-foreground hover:text-foreground'
                           >
                             Details
@@ -513,7 +543,7 @@ export const ProfileChangeReviewQueue: React.FC<ProfileChangeReviewQueueProps> =
               <CheckCircle2 className='w-5 h-5' /> Approve Profile Change
             </DialogTitle>
             <DialogDescription>
-              Are you sure you want to approve this request? Once approved, the changes will be applied to the member's active profile in an atomic transaction.
+              Are you sure you want to approve this request? Once approved, the changes will be applied to the member&apos;s active profile in an atomic transaction.
             </DialogDescription>
           </DialogHeader>
 
@@ -532,8 +562,29 @@ export const ProfileChangeReviewQueue: React.FC<ProfileChangeReviewQueueProps> =
                 <div className='mt-2 pt-2 border-t flex flex-col gap-1'>
                   <span className='text-muted-foreground font-medium'>New Primary Bank:</span>
                   <div className='bg-background p-2 rounded border text-foreground font-mono'>
-                    {(selectedRequest.proposedValue as any)?.bankName} — {(selectedRequest.proposedValue as any)?.accountNumberMasked}
+                    {selectedRequest.proposedValue?.bankName} — {selectedRequest.proposedValue?.accountNumberMasked}
                   </div>
+                </div>
+              )}
+
+              {selectedRequest.changeType === ProfileChangeType.BANK_DETAILS && (
+                <div className='mt-2 pt-2 border-t flex flex-col gap-1'>
+                  <span className='text-muted-foreground font-medium'>Current Details:</span>
+                  <div className='bg-background p-2 rounded border text-muted-foreground font-mono'>
+                    {selectedRequest.previousValue?.bankName} — {selectedRequest.previousValue?.accountNumberMasked}
+                  </div>
+                  <span className='text-muted-foreground font-medium mt-1'>New Details (resolved by bank):</span>
+                  <div className='bg-background p-2 rounded border text-foreground flex flex-col gap-0.5'>
+                    <span className='font-mono'>
+                      {selectedRequest.proposedValue?.bankName} — {selectedRequest.proposedValue?.accountNumberMasked}
+                    </span>
+                    <span className='font-semibold uppercase'>{selectedRequest.proposedValue?.accountName}</span>
+                  </div>
+                  {selectedRequest.proposedValue?.nameMatch?.isMatch === false && (
+                    <span className='text-amber-600 font-medium flex items-center gap-1'>
+                      <AlertTriangle className='w-3.5 h-3.5' /> The account name does not match the member&apos;s registered name. Verify before approving.
+                    </span>
+                  )}
                 </div>
               )}
 
@@ -541,9 +592,9 @@ export const ProfileChangeReviewQueue: React.FC<ProfileChangeReviewQueueProps> =
                 <div className='mt-2 pt-2 border-t flex flex-col gap-1'>
                   <span className='text-muted-foreground font-medium'>New Next of Kin:</span>
                   <div className='bg-background p-2 rounded border text-foreground flex flex-col gap-0.5'>
-                    <span className='font-semibold'>{(selectedRequest.proposedValue as any)?.name} ({(selectedRequest.proposedValue as any)?.relationship})</span>
-                    <span className='text-muted-foreground'>Phone: {(selectedRequest.proposedValue as any)?.phoneNumber}</span>
-                    <span className='text-muted-foreground'>Bank: {(selectedRequest.proposedValue as any)?.bankName} ({(selectedRequest.proposedValue as any)?.accountNumberMasked})</span>
+                    <span className='font-semibold'>{selectedRequest.proposedValue?.name} ({selectedRequest.proposedValue?.relationship})</span>
+                    <span className='text-muted-foreground'>Phone: {selectedRequest.proposedValue?.phoneNumber}</span>
+                    <span className='text-muted-foreground'>Bank: {selectedRequest.proposedValue?.bankName} ({selectedRequest.proposedValue?.accountNumberMasked})</span>
                   </div>
                 </div>
               )}
@@ -568,6 +619,59 @@ export const ProfileChangeReviewQueue: React.FC<ProfileChangeReviewQueueProps> =
               {isProcessing ? 'Applying Change...' : 'Confirm & Apply'}
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Reviewed Request Details */}
+      <Dialog
+        open={detailsModalOpen}
+        onOpenChange={(val) => {
+          setDetailsModalOpen(val)
+          if (!val) setSelectedRequest(null)
+        }}
+      >
+        <DialogContent className='sm:max-w-md'>
+          <DialogHeader>
+            <DialogTitle className='flex items-center gap-2'>
+              <FileText className='w-5 h-5' /> Change Request Details
+            </DialogTitle>
+            <DialogDescription>Recorded outcome of this profile change request.</DialogDescription>
+          </DialogHeader>
+          {selectedRequest && (
+            <div className='bg-muted/50 p-3.5 rounded-lg text-xs flex flex-col gap-2 border'>
+              <div className='flex justify-between gap-2'>
+                <span className='text-muted-foreground'>Member:</span>
+                <span className='font-semibold text-right'>{selectedRequest.user.name}</span>
+              </div>
+              <div className='flex justify-between gap-2'>
+                <span className='text-muted-foreground'>Type:</span>
+                {renderTypeBadge(selectedRequest.changeType)}
+              </div>
+              <div className='flex justify-between gap-2'>
+                <span className='text-muted-foreground'>Status:</span>
+                {renderStatusBadge(selectedRequest.status)}
+              </div>
+              <div className='flex justify-between gap-2'>
+                <span className='text-muted-foreground'>Submitted:</span>
+                <span>{new Date(selectedRequest.submittedAt).toLocaleString('en-GB')}</span>
+              </div>
+              {selectedRequest.reviewedAt && (
+                <div className='flex justify-between gap-2'>
+                  <span className='text-muted-foreground'>Reviewed:</span>
+                  <span className='text-right'>
+                    {new Date(selectedRequest.reviewedAt).toLocaleString('en-GB')}
+                    {selectedRequest.reviewedBy ? ` by ${selectedRequest.reviewedBy.name}` : ''}
+                  </span>
+                </div>
+              )}
+              {selectedRequest.rejectionReason && (
+                <div className='flex flex-col gap-1 pt-2 border-t'>
+                  <span className='text-muted-foreground'>Rejection reason:</span>
+                  <span className='text-rose-600 dark:text-rose-400'>{selectedRequest.rejectionReason}</span>
+                </div>
+              )}
+            </div>
+          )}
         </DialogContent>
       </Dialog>
 

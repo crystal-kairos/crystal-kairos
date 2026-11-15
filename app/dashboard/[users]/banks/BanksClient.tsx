@@ -4,6 +4,7 @@ import React, { useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { BankAccountCard } from '@/components/members/BankAccountCard'
 import { AddBankAccountDialog } from '@/components/members/AddBankAccountDialog'
+import { EditBankDetailsDialog } from '@/components/members/EditBankDetailsDialog'
 import { deleteBankAccountAction } from '@/models/members/actions'
 import { requestPrimaryBankAccountChangeAction } from '@/models/members/profile-change-actions'
 import { toast } from 'sonner'
@@ -23,12 +24,17 @@ interface BanksClientProps {
   userId: string
   bankAccounts: BankAccount[]
   pendingPrimaryAccountId?: string | null
+  pendingDetailsAccountId?: string | null
+  /** Only the member themself submits change requests from this page. */
+  canManage?: boolean
 }
 
 export default function BanksClient({
   userId,
   bankAccounts,
   pendingPrimaryAccountId,
+  pendingDetailsAccountId,
+  canManage = true,
 }: BanksClientProps) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
@@ -77,7 +83,7 @@ export default function BanksClient({
               <p className="text-sm text-muted-foreground">Manage Nominated Bank payout channels for Ajo payouts & loan disbursements</p>
             </div>
           </div>
-          <AddBankAccountDialog userId={userId} onSuccess={() => router.refresh()} />
+          {canManage && <AddBankAccountDialog userId={userId} onSuccess={() => router.refresh()} />}
         </div>
       </div>
 
@@ -100,32 +106,62 @@ export default function BanksClient({
                 accountName={account.accountName}
                 isPrimary={account.isPrimary}
                 isPendingPrimary={pendingPrimaryAccountId === account.id}
+                isPendingDetails={pendingDetailsAccountId === account.id}
               />
-              <div className="flex gap-2 justify-end border-t border-outline-variant/30 pt-3">
-                {!account.isPrimary && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={isPending || pendingPrimaryAccountId === account.id}
-                    onClick={() => handleSetPrimary(account.id)}
-                    className="cursor-pointer h-8 text-[11px] font-semibold flex items-center gap-1"
-                  >
-                    <Star className="w-3.5 h-3.5 text-secondary" />
-                    <span>{pendingPrimaryAccountId === account.id ? 'Review Pending' : 'Set Primary'}</span>
-                  </Button>
-                )}
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={isPending || (account.isPrimary && bankAccounts.length > 1)}
-                  onClick={() => handleDelete(account.id)}
-                  title={account.isPrimary && bankAccounts.length > 1 ? 'Nominate another primary account first' : 'Delete account'}
-                  className="cursor-pointer h-8 text-[11px] font-semibold text-error hover:text-error hover:bg-error/10 flex items-center gap-1"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  <span>Remove</span>
-                </Button>
-              </div>
+              {canManage && (() => {
+                const hasPendingPrimary = pendingPrimaryAccountId === account.id
+                const hasPendingDetails = pendingDetailsAccountId === account.id
+                const removeBlockedReason = account.isPrimary
+                  ? 'Your primary account cannot be removed. Request another account as primary first.'
+                  : hasPendingPrimary || hasPendingDetails
+                    ? 'This account has a pending change request.'
+                    : null
+                return (
+                  <div className="flex gap-2 justify-end flex-wrap border-t border-outline-variant/30 pt-3">
+                    {!account.isPrimary && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={isPending || hasPendingPrimary || Boolean(pendingPrimaryAccountId)}
+                        onClick={() => handleSetPrimary(account.id)}
+                        title={
+                          pendingPrimaryAccountId && !hasPendingPrimary
+                            ? 'Another primary account request is already under review'
+                            : undefined
+                        }
+                        className="cursor-pointer h-8 text-[11px] font-semibold flex items-center gap-1"
+                      >
+                        <Star className="w-3.5 h-3.5 text-secondary" />
+                        <span>{hasPendingPrimary ? 'Review Pending' : 'Set Primary'}</span>
+                      </Button>
+                    )}
+                    <EditBankDetailsDialog
+                      userId={userId}
+                      bankAccountId={account.id}
+                      currentBankName={account.bankName}
+                      disabled={isPending || Boolean(pendingDetailsAccountId)}
+                      isPendingForThisAccount={hasPendingDetails}
+                      disabledReason={
+                        hasPendingDetails
+                          ? 'A details change for this account is under review'
+                          : 'Another bank details change is already under review'
+                      }
+                      onSuccess={() => startTransition(() => router.refresh())}
+                    />
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      disabled={isPending || Boolean(removeBlockedReason)}
+                      onClick={() => handleDelete(account.id)}
+                      title={removeBlockedReason ?? 'Delete account'}
+                      className="cursor-pointer h-8 text-[11px] font-semibold text-error hover:text-error hover:bg-error/10 flex items-center gap-1"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Remove</span>
+                    </Button>
+                  </div>
+                )
+              })()}
             </div>
           ))
         )}
