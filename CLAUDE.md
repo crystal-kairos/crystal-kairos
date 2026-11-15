@@ -43,6 +43,19 @@ session, then the relevant section of the implementation guide.
 
 ## Delivery plan (remaining guide steps)
 
+### Owner commands
+
+- **`Start wave N`** — work on every step of wave N that is not yet merged, each on its own branch
+  from `origin/dev`, following "How a session uses this plan". Check first that all earlier waves
+  are merged; if not, say which steps are missing and stop. Ask the wave's owner-gate questions
+  that are still open. Report at the end per step: branch, what was done, test results, open issues.
+- **`Start wave N, step PX-YY`** — the same, for one step only (e.g. `Start wave 1, step P3-04`).
+  Use this to run one session per step; a whole wave in one session is a lot of work.
+- **`Continue wave N`** — resume unfinished steps of wave N from their existing branches.
+- **`Rebase wave N`** — after the owner merged some of wave N, rebase its other open branches onto
+  `origin/dev`, fix conflicts/migration order, re-test and push.
+- **`Wave status`** — report merged / in-progress / not-started steps and the current wave.
+
 ### How a session uses this plan
 
 1. Read this file, then run:
@@ -123,10 +136,9 @@ performance work (P5-03) waits for it.
 
 ### Owner gates (ask before starting the wave)
 
-- **Before wave 1:** has the cooperative's accountant approved Appendix C and the chart of accounts
-  (OQ-01; guide says P2-02 is not "done" without it)? If not, build to Appendix C anyway and keep
-  the golden fixtures as the contract. Loans also rely on assumptions OQ-03 (fee refundability) and
-  OQ-04 (partial early settlement) — proceed with the recorded assumptions.
+- **Before wave 1:** cleared — the owner confirmed the accountant approved Appendix C (worked
+  examples) and the chart of accounts. Loans still rely on the recorded assumptions OQ-03 (fee
+  refundability) and OQ-04 (partial early settlement); proceed with them.
 - **Wave 2 (P4-01):** Resend account, API key and verified domain/DNS are the owner's job. Without
   them, build and test behind the mocked provider and report what still needs credentials.
 - **Wave 3:** confirm staffing for dual control (A-19), wallet-withdrawal minimum (A-15) and final
