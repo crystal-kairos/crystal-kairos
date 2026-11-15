@@ -2,38 +2,54 @@
 
 import { prisma } from '@/lib/prisma'
 import {
-  serializeLoan,
-  calculateRepaymentSchedule,
-  calculateLoanPenaltyAmount,
-} from '@/lib/loans'
-import { AdminPermission } from '@/generated/prisma/enums'
+  AdminPermission,
+  AllocationStatus,
+  AllocationTargetType,
+  FeeType,
+  GuaranteeType,
+  PaymentSubmissionStatus,
+} from '@/generated/prisma/enums'
 import {
   AuthzError,
   requireMemberOrStaffWithPermission,
 } from '@/lib/authz/guards'
+import {
+  serializeInstalment,
+  serializeLoanQuote,
+  serializeSettlementQuote,
+} from '@/lib/loans'
+import {
+  computeSettlementQuote,
+  LOAN_REPAYABLE_STATUSES,
+} from '@/lib/domain/loan-workflow'
+import { getFeeOutstanding, quoteFromLoan } from '@/lib/services/loans.service'
+import { getWalletSummary } from '@/lib/services/wallet.service'
 
 /**
- * Fetches a single loan details along with its transactions, user details, and computed schedule.
- * Enforces member ownership or staff loan permissions.
+ * Loan details for the member (or staff with loan permissions): persisted
+ * instalments, offer and total cost, guarantee state, fee, settlement quote,
+ * receipts under review and a breakdown of what each payment covered.
  */
 export const getLoanPlanById = async (loanId: string) => {
   try {
     const loan = await prisma.loan.findUnique({
       where: { id: loanId },
       include: {
-        user: {
+        user: { select: { id: true, name: true, email: true } },
+        instalments: { orderBy: { instalmentNumber: 'asc' } },
+        guaranteeReservations: {
+          where: { guaranteeType: GuaranteeType.LOAN },
+          orderBy: { createdAt: 'desc' },
           select: {
             id: true,
-            name: true,
-            email: true,
+            state: true,
+            termsVersion: true,
+            consentedAt: true,
+            guarantor: { select: { id: true, name: true } },
           },
         },
-        transactions: {
-          orderBy: { createdAt: 'desc' },
-        },
-        instalments: {
-          orderBy: { instalmentNumber: 'asc' },
-          include: { penalties: true },
+        offerAcceptance: {
+          select: { decision: true, termsVersion: true, decidedAt: true, evidenceDocumentId: true },
         },
       },
     })
@@ -42,69 +58,124 @@ export const getLoanPlanById = async (loanId: string) => {
       return { success: false, error: 'Loan not found.' }
     }
 
-    await requireMemberOrStaffWithPermission(loan.userId, [
+    const actor = await requireMemberOrStaffWithPermission(loan.userId, [
       AdminPermission.LOANS_READ,
       AdminPermission.LOANS_REVIEW,
       AdminPermission.LOANS_DISBURSE,
     ])
 
-    const serializedLoan = serializeLoan(loan)
-    const serializedTransactions = (loan.transactions || []).map((t) => ({
-      ...t,
-      amount: Number(t.amount),
-    }))
+    const [allocations, pendingSubmissions, fee] = await Promise.all([
+      prisma.paymentAllocation.findMany({
+        where: { targetType: AllocationTargetType.LOAN, targetId: loan.id, status: AllocationStatus.ACTIVE },
+        include: { payment: { select: { id: true, paymentNumber: true, valueDate: true, source: true } } },
+        orderBy: { createdAt: 'desc' },
+      }),
+      prisma.paymentSubmission.findMany({
+        where: {
+          memberId: loan.userId,
+          status: PaymentSubmissionStatus.SUBMITTED,
+          targets: { some: { targetType: AllocationTargetType.LOAN, targetId: loan.id } },
+        },
+        select: { id: true, submissionNumber: true, claimedAmount: true, paidOn: true, submittedAt: true, purpose: true },
+        orderBy: { submittedAt: 'desc' },
+      }),
+      prisma.feeAssessment.findFirst({
+        where: { feeType: FeeType.LOAN_APPLICATION, targetId: loan.id },
+        orderBy: { assessedAt: 'desc' },
+      }),
+    ])
 
-    const serializedInstalments = (loan.instalments || []).map((inst) => ({
-      ...inst,
-      principalDue: Number(inst.principalDue),
-      interestDue: Number(inst.interestDue),
-      principalPaid: Number(inst.principalPaid),
-      interestPaid: Number(inst.interestPaid),
-      penaltyAssessed: Number(inst.penaltyAssessed),
-      penaltyPaid: Number(inst.penaltyPaid),
-      penaltyWaived: Number(inst.penaltyWaived),
-      penalties: (inst.penalties || []).map((p) => ({
-        ...p,
-        amount: Number(p.amount),
-      })),
-    }))
+    // Plain-language breakdown per payment (§4.2): penalty / interest / principal
+    const byPayment = new Map<
+      string,
+      { paymentId: string; paymentNumber: string; valueDate: Date; source: string; penalty: number; interest: number; principal: number }
+    >()
+    for (const a of allocations) {
+      const row =
+        byPayment.get(a.paymentId) ??
+        {
+          paymentId: a.paymentId,
+          paymentNumber: a.payment.paymentNumber,
+          valueDate: a.payment.valueDate,
+          source: a.payment.source as string,
+          penalty: 0,
+          interest: 0,
+          principal: 0,
+        }
+      if (a.componentType === 'PENALTY') row.penalty += Number(a.amount)
+      else if (a.componentType === 'INTEREST') row.interest += Number(a.amount)
+      else row.principal += Number(a.amount)
+      byPayment.set(a.paymentId, row)
+    }
 
-    // Calculate dynamic schedule if disbursed (ACTIVE/OVERDUE/COMPLETED/DEFAULTED)
-    const schedule = calculateRepaymentSchedule(
-      loan.approvedAmount
-        ? Number(loan.approvedAmount)
-        : Number(loan.requestedAmount),
-      Number(loan.interestRate),
-      loan.duration,
-      loan.disbursedAt,
-      Number(loan.totalRepaid),
-      loan.gracePeriodDays,
-    )
+    let offerQuote = null
+    try {
+      offerQuote = serializeLoanQuote(quoteFromLoan(loan))
+    } catch {
+      offerQuote = null // legacy row without snapshotted penalty terms
+    }
+    const settlementQuote = LOAN_REPAYABLE_STATUSES.includes(loan.status)
+      ? serializeSettlementQuote(computeSettlementQuote(loan.instalments))
+      : null
+    const feeOutstanding = fee ? (await getFeeOutstanding(prisma, fee.id)).outstanding.toNumber() : 0
+    const wallet =
+      actor.role === 'USER' ? await getWalletSummary(loan.userId) : null
 
-    // Calculate dynamic penalty
-    const computedPenaltyAmount = calculateLoanPenaltyAmount(
-      loan.approvedAmount
-        ? Number(loan.approvedAmount)
-        : Number(loan.requestedAmount),
-      loan.repaymentEndDate,
-      new Date(),
-      0.5, // 0.5% daily fee
-      3, // 3 days grace period
-    )
-
+    const guarantee = loan.guaranteeReservations[0] ?? null
     return {
       success: true,
       data: {
-        ...serializedLoan,
-        computedPenaltyAmount,
-        user: {
-          id: loan.user.id,
-          name: loan.user.name,
-          email: loan.user.email,
-        },
-        transactions: serializedTransactions,
-        schedule,
-        instalments: serializedInstalments,
+        id: loan.id,
+        userId: loan.userId,
+        status: loan.status as string,
+        purpose: loan.purpose,
+        requestedAmount: loan.requestedAmount.toNumber(),
+        approvedAmount: loan.approvedAmount?.toNumber() ?? null,
+        duration: loan.duration,
+        requestedDurationMonths: loan.requestedDurationMonths,
+        monthlyInterestRatePercent: Number(loan.monthlyInterestRatePercent ?? loan.interestRate),
+        applicationFee: loan.applicationFee.toNumber(),
+        outstandingBalance: loan.outstandingBalance.toNumber(),
+        totalRepaid: loan.totalRepaid.toNumber(),
+        termsVersion: loan.termsVersion,
+        rejectionReason: loan.rejectionReason,
+        approvalNote: loan.approvalNote,
+        createdAt: loan.createdAt,
+        approvedAt: loan.approvedAt,
+        approvedBy: loan.approvedBy,
+        offerExpiresAt: loan.offerExpiresAt,
+        disbursedAt: loan.disbursedAt,
+        disbursementValueDate: loan.disbursementValueDate,
+        completedAt: loan.completedAt,
+        user: { id: loan.user.id, name: loan.user.name, email: loan.user.email },
+        instalments: loan.instalments.map(serializeInstalment),
+        offerQuote,
+        settlementQuote,
+        guarantee: guarantee
+          ? {
+              state: guarantee.state as string,
+              termsVersion: guarantee.termsVersion,
+              consentedAt: guarantee.consentedAt,
+              guarantorName: guarantee.guarantor.name,
+            }
+          : null,
+        offer: loan.offerAcceptance
+          ? {
+              decision: loan.offerAcceptance.decision as string,
+              termsVersion: loan.offerAcceptance.termsVersion,
+              decidedAt: loan.offerAcceptance.decidedAt,
+              evidenceDocumentId: loan.offerAcceptance.evidenceDocumentId,
+            }
+          : null,
+        fee: fee
+          ? { id: fee.id, amount: Number(fee.amount), status: fee.status as string, outstanding: feeOutstanding }
+          : null,
+        pendingSubmissions: pendingSubmissions.map((s) => ({
+          ...s,
+          claimedAmount: Number(s.claimedAmount),
+        })),
+        payments: [...byPayment.values()],
+        availableWallet: wallet ? wallet.availableBalance.toNumber() : null,
       },
     }
   } catch (error) {
@@ -112,10 +183,6 @@ export const getLoanPlanById = async (loanId: string) => {
       return { success: false, error: error.message }
     }
     console.error('Error fetching loan plan:', error)
-    return {
-      success: false,
-      error:
-        error instanceof Error ? error.message : 'Failed to fetch loan plan.',
-    }
+    return { success: false, error: 'Failed to fetch loan plan.' }
   }
 }

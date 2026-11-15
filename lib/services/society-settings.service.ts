@@ -6,6 +6,7 @@ export interface SocietySettingsMap {
   maxBackdateDays: number
   savingsFirstDepositWindowDays: number
   loanApplicationFee: number
+  loanOfferValidityDays: number
   ownSavingsLienMode: 'FULL' | 'REQUIRED_PORTION'
   minWalletWithdrawal: number
   dualControlThreshold: number
@@ -21,6 +22,8 @@ export const DEFAULT_SOCIETY_SETTINGS: SocietySettingsMap = {
   maxBackdateDays: 30,
   savingsFirstDepositWindowDays: 14,
   loanApplicationFee: 0,
+  // ASSUMPTION OQ-13: an approved loan offer must be accepted within 14 days
+  loanOfferValidityDays: 14,
   ownSavingsLienMode: 'FULL',
   minWalletWithdrawal: 1000,
   dualControlThreshold: 500000,

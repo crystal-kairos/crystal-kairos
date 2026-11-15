@@ -1,753 +1,472 @@
 'use client'
 
-import { useState, useTransition } from 'react'
+import React, { useState, useTransition } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import {
-  ArrowLeft,
-  CheckCircle2,
-  XCircle,
-  Clock,
-  User as UserIcon,
-  Briefcase,
-  AlertTriangle,
-  Upload,
-  Receipt,
-  Download,
-  TrendingUp,
-  History,
-  Loader2,
-  Check,
-} from 'lucide-react'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
-import { Textarea } from '@/components/ui/textarea'
+import { ArrowLeft, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
-import {
-  approveLoanAction,
-  rejectLoanAction,
-  disburseLoanAction,
-  reviewLoanRepaymentAction,
-} from '@/models/admin/loanActions'
-import { ReceiptDropzone } from '@/components/ui/ReceiptDropzone'
-import { ReceiptLightbox } from '@/components/ui/ReceiptLightbox'
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table'
-import { format } from 'date-fns'
+import { Card, CardContent } from '../ui/card'
+import { Button } from '../ui/button'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../ui/dialog'
+import { Input } from '../ui/input'
+import { Label } from '../ui/label'
+import { Textarea } from '../ui/textarea'
+import { ReceiptDropzone } from '../ui/ReceiptDropzone'
+import { approveLoanAction, disburseLoanAction, rejectLoanAction } from '@/models/admin/loanActions'
+import { confirmPaymentSubmissionAction, rejectPaymentSubmissionAction } from '@/models/payments/actions'
 import { uploadReceiptAction } from '@/models/eajo/actions'
+import type { getLoanByIdQuery } from '@/models/admin/query'
+import {
+  formatDay,
+  formatNGN,
+  InstalmentStatusBadge,
+  LoanCostSummary,
+  LoanStatusBadge,
+  loanStatusLabel,
+} from '../loans/loanDisplay'
 
-interface AdminLoanDetailsClientProps {
-  loan: any // Type from getLoanByIdQuery
+type AdminLoan = NonNullable<Awaited<ReturnType<typeof getLoanByIdQuery>>['data']>
+
+const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Lagos' }).format(new Date())
+
+function Row({ k, v, strong }: { k: string; v: React.ReactNode; strong?: boolean }) {
+  return (
+    <div className="flex justify-between gap-4 py-1.5 text-sm">
+      <span className="text-muted-foreground">{k}</span>
+      <span className={strong ? 'font-semibold text-right' : 'text-right'}>{v}</span>
+    </div>
+  )
 }
 
-const formatCurrency = (val: number) =>
-  new Intl.NumberFormat('en-NG', {
-    style: 'currency',
-    currency: 'NGN',
-    minimumFractionDigits: 0,
-  }).format(val)
-
-export const AdminLoanDetailsClient = ({
-  loan,
-}: AdminLoanDetailsClientProps) => {
+/**
+ * Admin loan review (P3-04): consent states, capacity numbers, savings lock,
+ * history, outstanding obligations and fee status on one screen; approve
+ * (same or lower amount / other term → re-consent), reject with reason,
+ * record the disbursement (dual control), and confirm loan receipts.
+ */
+export const AdminLoanDetailsClient = ({ loan }: { loan: AdminLoan }) => {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
+  const review = loan.review
 
-  // Modal states
-  const [showApproveModal, setShowApproveModal] = useState(false)
-  const [showRejectModal, setShowRejectModal] = useState(false)
-  const [showDisburseModal, setShowDisburseModal] = useState(false)
-
-  // Form states
-  const [approvedAmount, setApprovedAmount] = useState(
-    loan.requestedAmount.toString(),
+  const [approveOpen, setApproveOpen] = useState(false)
+  const [approveAmount, setApproveAmount] = useState(String(loan.requestedAmount))
+  const [approveTerm, setApproveTerm] = useState(String(loan.duration))
+  const [approveNote, setApproveNote] = useState('')
+  const [rejectOpen, setRejectOpen] = useState(false)
+  const [rejectReason, setRejectReason] = useState('')
+  const [disburseOpen, setDisburseOpen] = useState(false)
+  const [valueDate, setValueDate] = useState(today())
+  const [bankReference, setBankReference] = useState('')
+  const [bankAccountId, setBankAccountId] = useState(
+    loan.member?.bankAccounts.find((b) => b.isPrimary)?.id ?? loan.member?.bankAccounts[0]?.id ?? '',
   )
-  const [rejectionReason, setRejectionReason] = useState('')
-  const [receiptFile, setReceiptFile] = useState<File | null>(null)
-  const [lightboxOpen, setLightboxOpen] = useState(false)
-  const [selectedReceiptUrl, setSelectedReceiptUrl] = useState<string | null>(
-    null,
-  )
+  const [evidence, setEvidence] = useState<File | null>(null)
+  const [receiptReject, setReceiptReject] = useState<{ id: string; reason: string } | null>(null)
 
-  // Transaction Review states
-  const [reviewTxId, setReviewTxId] = useState<string | null>(null)
-  const [showTxRejectModal, setShowTxRejectModal] = useState(false)
-  const [txRejectionReason, setTxRejectionReason] = useState('')
-
-  const handleApprove = () => {
+  const run = (
+    fn: () => Promise<{ success: boolean; error?: string }>,
+    ok: string,
+    after?: () => void,
+  ) =>
     startTransition(async () => {
-      const amount = Number(approvedAmount)
-      if (amount <= 0 || amount > loan.requestedAmount) {
-        toast.error('Invalid approval amount.')
-        return
-      }
-
-      const res = await approveLoanAction(loan.id, amount)
+      const res = await fn()
       if (res.success) {
-        toast.success('Loan approved successfully!')
-        setShowApproveModal(false)
-      } else {
-        toast.error(res.error)
-      }
-    })
-  }
-
-  const handleReject = () => {
-    startTransition(async () => {
-      if (!rejectionReason.trim()) {
-        toast.error('Rejection reason is required.')
-        return
-      }
-
-      const res = await rejectLoanAction(loan.id, rejectionReason)
-      if (res.success) {
-        toast.success('Loan rejected successfully.')
-        setShowRejectModal(false)
-      } else {
-        toast.error(res.error)
-      }
-    })
-  }
-
-  const handleDisburse = () => {
-    startTransition(async () => {
-      if (!receiptFile) {
-        toast.error('Disbursement receipt is required.')
-        return
-      }
-
-      const uploadFormData = new FormData()
-      uploadFormData.append('file', receiptFile)
-
-      const uploadRes = await uploadReceiptAction(uploadFormData)
-      if (!uploadRes.success || !uploadRes.url) {
-        toast.error(
-          uploadRes.error || 'Failed to upload receipt file to storage.',
-        )
-        return
-      }
-
-      const res = await disburseLoanAction(loan.id, uploadRes.url)
-      if (res.success) {
-        toast.success('Loan disbursed successfully!')
-        setShowDisburseModal(false)
-      } else {
-        toast.error(res.error)
-      }
-    })
-  }
-  const handleReviewTransaction = (
-    txId: string,
-    action: 'CONFIRMED' | 'REJECTED',
-  ) => {
-    if (action === 'REJECTED') {
-      setReviewTxId(txId)
-      setTxRejectionReason('')
-      setShowTxRejectModal(true)
-      return
-    }
-
-    startTransition(async () => {
-      const res = await reviewLoanRepaymentAction(txId, 'CONFIRMED')
-      if (res.success) {
-        toast.success('Repayment approved successfully')
+        toast.success(ok)
+        after?.()
         router.refresh()
       } else {
-        toast.error(res.error || 'Failed to approve repayment')
+        toast.error(res.error || 'Action failed.')
       }
     })
-  }
 
-  const handleRejectTransaction = () => {
-    if (!reviewTxId) return
-    if (!txRejectionReason.trim()) {
-      toast.error('Rejection reason is required')
-      return
-    }
+  const termsChanged =
+    Number(approveAmount) !== loan.requestedAmount || Number(approveTerm) !== (loan.requestedDurationMonths ?? loan.duration)
 
+  const submitDisbursement = () => {
+    if (!evidence) return toast.error('Upload the transfer evidence.')
     startTransition(async () => {
-      const res = await reviewLoanRepaymentAction(
-        reviewTxId,
-        'REJECTED',
-        txRejectionReason,
-      )
+      const fd = new FormData()
+      fd.append('file', evidence)
+      const up = await uploadReceiptAction(fd)
+      if (!up.success || !('fileId' in up) || !up.fileId) {
+        toast.error(up.error || 'Evidence upload failed.')
+        return
+      }
+      const res = await disburseLoanAction(loan.id, {
+        amount: loan.approvedAmount ?? 0,
+        valueDate,
+        bankReference,
+        evidenceFileId: up.fileId,
+        bankAccountId: bankAccountId || undefined,
+      })
       if (res.success) {
-        toast.success('Repayment rejected')
-        setShowTxRejectModal(false)
+        toast.success('Disbursement recorded. The repayment schedule is active.')
+        setDisburseOpen(false)
         router.refresh()
       } else {
-        toast.error(res.error || 'Failed to reject repayment')
+        toast.error(res.error || 'Failed to record the disbursement.')
       }
     })
   }
 
   return (
-    <div className='flex flex-col gap-6 max-w-4xl mx-auto py-6'>
-      <div className='flex items-center gap-4'>
-        <Button asChild variant='ghost' className='h-8 w-8 p-0 rounded-full'>
-          <Link href='/admin/loans'>
-            <ArrowLeft className='w-4 h-4 text-muted-foreground' />
-          </Link>
-        </Button>
+    <div className="max-w-6xl mx-auto space-y-6 p-4 md:p-6">
+      <Link href="/admin/loans" className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-primary">
+        <ArrowLeft className="w-4 h-4" /> All loans
+      </Link>
+
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className='text-2xl font-bold font-heading text-primary'>
-            Loan Details
-          </h2>
-          <p className='text-sm text-muted-foreground mt-0.5'>
-            Application ID: {loan.id.substring(0, 13).toUpperCase()}
+          <h1 className="text-2xl font-bold text-primary">
+            {loan.user.name} · {formatNGN(loan.approvedAmount ?? loan.requestedAmount)}
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            Requested {formatNGN(loan.requestedAmount)} over {loan.requestedDurationMonths ?? loan.duration} months ·{' '}
+            {loan.purpose} · applied {formatDay(loan.createdAt)}
           </p>
         </div>
+        <LoanStatusBadge status={loan.status} />
       </div>
 
-      <div className='grid grid-cols-1 md:grid-cols-3 gap-6'>
-        {/* Main Details */}
-        <div className='md:col-span-2 flex flex-col gap-6'>
-          <Card className='bg-surface-container border-0 shadow-none rounded-xl'>
-            <CardHeader className='pb-3 border-b border-outline-variant/20'>
-              <div className='flex items-center justify-between'>
-                <CardTitle className='text-sm font-bold text-primary uppercase tracking-widest'>
-                  Application Info
-                </CardTitle>
-                <div className='px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider rounded-full border bg-background'>
-                  {loan.status}
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent className='p-5 grid grid-cols-2 gap-y-6 gap-x-4'>
-              <div>
-                <p className='text-[10px] text-muted-foreground uppercase tracking-wider font-semibold mb-1'>
-                  Requested Amount
-                </p>
-                <p className='text-lg font-mono font-bold text-primary'>
-                  {formatCurrency(loan.requestedAmount)}
-                </p>
-              </div>
-              <div>
-                <p className='text-[10px] text-muted-foreground uppercase tracking-wider font-semibold mb-1'>
-                  Duration
-                </p>
-                <p className='text-sm font-bold text-primary'>
-                  {loan.duration} Months
-                </p>
-              </div>
-              <div>
-                <p className='text-[10px] text-muted-foreground uppercase tracking-wider font-semibold mb-1'>
-                  Interest Rate
-                </p>
-                <p className='text-sm font-bold text-primary'>
-                  {loan.interestRate}% monthly
-                </p>
-              </div>
-              <div>
-                <p className='text-[10px] text-muted-foreground uppercase tracking-wider font-semibold mb-1'>
-                  Application Date
-                </p>
-                <p className='text-sm font-bold text-primary'>
-                  {new Date(loan.requestedAt).toLocaleDateString()}
-                </p>
-              </div>
-              <div className='col-span-2'>
-                <p className='text-[10px] text-muted-foreground uppercase tracking-wider font-semibold mb-1'>
-                  Purpose
-                </p>
-                <div className='bg-background p-3 rounded-lg border text-sm text-primary'>
-                  {loan.purpose}
-                </div>
-              </div>
-
-              {loan.status === 'REJECTED' && loan.rejectionReason && (
-                <div className='col-span-2 bg-red-50 p-4 rounded-lg border border-red-200'>
-                  <p className='text-[10px] text-red-600 uppercase tracking-wider font-bold mb-1'>
-                    Rejection Reason
-                  </p>
-                  <p className='text-sm text-red-800'>{loan.rejectionReason}</p>
-                </div>
-              )}
-
-              {['ACTIVE', 'DISBURSED', 'OVERDUE', 'COMPLETED'].includes(
-                loan.status,
-              ) && (
-                <div className='col-span-2 grid grid-cols-2 gap-4 bg-emerald-50/50 p-4 rounded-lg border border-emerald-100'>
-                  <div>
-                    <p className='text-[10px] text-emerald-600 uppercase tracking-wider font-bold mb-1'>
-                      Approved Amount
-                    </p>
-                    <p className='text-sm font-bold font-mono text-emerald-800'>
-                      {formatCurrency(
-                        loan.approvedAmount || loan.requestedAmount,
-                      )}
-                    </p>
-                  </div>
-                  <div>
-                    <p className='text-[10px] text-emerald-600 uppercase tracking-wider font-bold mb-1'>
-                      Outstanding Balance
-                    </p>
-                    <p className='text-sm font-bold font-mono text-emerald-800'>
-                      {formatCurrency(loan.outstandingBalance)}
-                    </p>
-                  </div>
-                  <div>
-                    <p className='text-[10px] text-emerald-600 uppercase tracking-wider font-bold mb-1'>
-                      Disbursed Date
-                    </p>
-                    <p className='text-sm font-bold text-emerald-800'>
-                      {loan.disbursedAt
-                        ? new Date(loan.disbursedAt).toLocaleDateString()
-                        : 'N/A'}
-                    </p>
-                  </div>
-                  <div>
-                    <p className='text-[10px] text-emerald-600 uppercase tracking-wider font-bold mb-1'>
-                      Repayment End Date
-                    </p>
-                    <p className='text-sm font-bold text-emerald-800'>
-                      {loan.repaymentEndDate
-                        ? new Date(loan.repaymentEndDate).toLocaleDateString()
-                        : 'N/A'}
-                    </p>
-                  </div>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        </div>
-
-        {/* Sidebar Actions & User Profile */}
-        <div className='flex flex-col gap-6'>
-          {/* Action Buttons */}
-          <Card className='bg-surface-container border-0 shadow-none rounded-xl'>
-            <CardHeader className='pb-3 border-b border-outline-variant/20'>
-              <CardTitle className='text-sm font-bold text-primary uppercase tracking-widest'>
-                Admin Actions
-              </CardTitle>
-            </CardHeader>
-            <CardContent className='p-5 flex flex-col gap-3'>
-              {loan.status === 'PENDING' ? (
-                <>
-                  <Button
-                    onClick={() => setShowApproveModal(true)}
-                    className='w-full bg-blue-600 hover:bg-blue-700 text-white font-bold h-10'
-                  >
-                    <CheckCircle2 className='w-4 h-4 mr-2' /> Approve Loan
-                  </Button>
-                  <Button
-                    onClick={() => setShowRejectModal(true)}
-                    variant='outline'
-                    className='w-full border-red-200 text-red-600 hover:bg-red-50 font-bold h-10'
-                  >
-                    <XCircle className='w-4 h-4 mr-2' /> Reject Loan
-                  </Button>
-                </>
-              ) : loan.status === 'ACCEPTED' ? (
-                <Button
-                  onClick={() => setShowDisburseModal(true)}
-                  className='w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold h-10'
-                >
-                  <TrendingUp className='w-4 h-4 mr-2' /> Disburse Loan
-                </Button>
-              ) : (
-                <div className='flex items-center justify-center p-4 bg-background rounded-lg border text-sm text-muted-foreground font-medium text-center'>
-                  No actions available for
-                  <br />
-                  status: {loan.status}
-                </div>
-              )}
-            </CardContent>
-          </Card>
-
-          {/* User Profile */}
-          <Card className='bg-surface-container border-0 shadow-none rounded-xl'>
-            <CardHeader className='pb-3 border-b border-outline-variant/20'>
-              <CardTitle className='text-sm font-bold text-primary uppercase tracking-widest'>
-                Applicant
-              </CardTitle>
-            </CardHeader>
-            <CardContent className='p-5 flex flex-col gap-4'>
-              <div className='flex items-center gap-3'>
-                <div className='w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center text-primary font-bold text-sm shrink-0'>
-                  {loan.user.name.charAt(0)}
-                </div>
-                <div className='min-w-0'>
-                  <h4 className='font-bold text-primary text-sm truncate'>
-                    {loan.user.name}
-                  </h4>
-                  <p className='text-xs text-muted-foreground truncate'>
-                    {loan.user.email}
-                  </p>
-                </div>
-              </div>
-              <div className='pt-3 border-t border-outline-variant/20 space-y-3'>
-                <div>
-                  <p className='text-[10px] text-muted-foreground uppercase tracking-wider font-semibold mb-1'>
-                    Guarantor Name
-                  </p>
-                  <p className='text-sm font-medium text-primary'>
-                    {loan.guarantorName || 'N/A'}
-                  </p>
-                </div>
-                <div>
-                  <p className='text-[10px] text-muted-foreground uppercase tracking-wider font-semibold mb-1'>
-                    Guarantor Phone
-                  </p>
-                  <p className='text-sm font-medium text-primary'>
-                    {loan.guarantorPhoneNumber || 'N/A'}
-                  </p>
-                </div>
-                {loan.collateralDetails && (
-                  <div>
-                    <p className='text-[10px] text-muted-foreground uppercase tracking-wider font-semibold mb-1'>
-                      Collateral Details
-                    </p>
-                    <p className='text-sm font-medium text-primary'>
-                      {loan.collateralDetails}
-                    </p>
-                  </div>
-                )}
-              </div>
-            </CardContent>
-          </Card>
-        </div>
+      <div className="flex flex-wrap gap-2">
+        {loan.status === 'PENDING' && (
+          <>
+            <Button onClick={() => setApproveOpen(true)} disabled={isPending}>
+              Review & approve
+            </Button>
+            <Button variant="outline" onClick={() => setRejectOpen(true)} disabled={isPending}>
+              Reject
+            </Button>
+          </>
+        )}
+        {loan.status === 'ACCEPTED' && (
+          <Button onClick={() => setDisburseOpen(true)} disabled={isPending}>
+            Record disbursement
+          </Button>
+        )}
       </div>
 
-      {/* Transactions Table */}
-      <Card className='border border-outline-variant/30 shadow-none rounded-xl mt-4'>
-        <div className='p-5 border-b border-outline-variant/30 flex justify-between items-center bg-surface-container/30'>
-          <h3 className='font-bold text-primary flex items-center gap-2'>
-            <History className='w-4 h-4' /> Repayment History
-          </h3>
-          {isPending && (
-            <Loader2 className='w-4 h-4 animate-spin text-muted-foreground' />
-          )}
-        </div>
-        <div className='p-0'>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Date</TableHead>
-                <TableHead>Type</TableHead>
-                <TableHead>Amount</TableHead>
-                <TableHead>Receipt</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className='text-right'>Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {!loan.transactions ||
-              loan.transactions.filter(
-                (tx: any) =>
-                  tx.category === 'LOAN_REPAYMENT' || tx.category === 'FEE',
-              ).length === 0 ? (
-                <TableRow>
-                  <TableCell
-                    colSpan={6}
-                    className='text-center py-8 text-muted-foreground'
+      <div className="grid gap-4 md:grid-cols-3">
+        <Card>
+          <CardContent className="pt-6">
+            <h2 className="font-semibold mb-2">Consent</h2>
+            <Row k="Guarantor" v={loan.guarantee?.guarantorName ?? '—'} />
+            <Row k="Guarantor consent" v={loan.guarantee?.state ?? 'none'} strong />
+            <Row k="Consented amount" v={formatNGN(review?.guaranteeConsentedAmount)} />
+            <Row k="Borrower offer" v={loan.offer?.decision ?? 'not offered yet'} strong />
+            {loan.offer?.evidenceDocumentId && <Row k="Offer evidence" v={loan.offer.evidenceDocumentId} />}
+            <Row k="Terms version" v={loan.termsVersion} />
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-6">
+            <h2 className="font-semibold mb-2">Capacity (§2.1)</h2>
+            <Row k="Eligible savings" v={formatNGN(review?.eligibleSavings)} />
+            <Row k="Standalone limit (2×)" v={formatNGN(review?.standaloneLimit)} />
+            <Row k="Current loan exposure" v={formatNGN(review?.existingExposure)} />
+            {review?.supportNeeded !== null && review?.supportNeeded !== undefined && (
+              <Row k="Guarantee support needed" v={formatNGN(review.supportNeeded)} strong />
+            )}
+            <Row k="Reserved from guarantor" v={formatNGN(review?.guaranteeReserved)} />
+            <Row k="Guarantor free capacity" v={formatNGN(review?.guarantorFreeCapacity)} />
+            <Row k="Own savings locked" v={review?.savingsLocked ? 'Yes' : 'No'} />
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-6">
+            <h2 className="font-semibold mb-2">Obligations & fee</h2>
+            <Row
+              k="Application fee"
+              v={loan.fee ? `${formatNGN(loan.fee.amount)} · ${loan.fee.status}` : 'None'}
+              strong
+            />
+            {loan.fee && loan.fee.outstanding > 0 && (
+              <p className="text-xs text-error">Approval is blocked until the fee is paid.</p>
+            )}
+            <Row k="Overdue instalments (all loans)" v={review?.overdueInstalments ?? 0} />
+            <Row k="Outstanding on this loan" v={formatNGN(loan.outstandingBalance)} />
+            {loan.approvalNote && <Row k="Approval note" v={loan.approvalNote} />}
+            {loan.rejectionReason && <Row k="Reason" v={loan.rejectionReason} />}
+          </CardContent>
+        </Card>
+      </div>
+
+      {loan.offerQuote && (
+        <Card>
+          <CardContent className="pt-6">
+            <h2 className="font-semibold mb-2">
+              {loan.status === 'PENDING' ? 'Requested terms' : 'Offered terms'}
+            </h2>
+            <LoanCostSummary quote={loan.offerQuote} />
+          </CardContent>
+        </Card>
+      )}
+
+      {loan.receiptsToReview.length > 0 && (
+        <Card>
+          <CardContent className="pt-6 space-y-3">
+            <h2 className="font-semibold">Receipts awaiting confirmation</h2>
+            <p className="text-xs text-muted-foreground">
+              Confirm only after matching the receipt against the cooperative’s bank statement. The value date is the
+              day the money reached the account and drives lateness.
+            </p>
+            {loan.receiptsToReview.map((r) => (
+              <div key={r.id} className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-2 text-sm">
+                <span>
+                  {r.submissionNumber} · {r.purpose} · {formatNGN(r.claimedAmount)} · paid {formatDay(r.paidOn)}
+                  {r.bankReference ? ` · ref ${r.bankReference}` : ''}
+                  {r.receiptUrl && (
+                    <a href={r.receiptUrl} target="_blank" rel="noreferrer" className="ml-2 text-primary underline">
+                      receipt
+                    </a>
+                  )}
+                </span>
+                <span className="flex gap-2">
+                  <Button
+                    size="sm"
+                    disabled={isPending}
+                    onClick={() =>
+                      run(() => confirmPaymentSubmissionAction({ submissionId: r.id }), 'Payment confirmed and applied.')
+                    }
                   >
-                    No repayments found for this loan.
-                  </TableCell>
-                </TableRow>
-              ) : (
-                loan.transactions
-                  .filter(
-                    (tx: any) =>
-                      tx.category === 'LOAN_REPAYMENT' || tx.category === 'FEE',
-                  )
-                  .map((tx: any) => (
-                    <TableRow key={tx.id}>
-                      <TableCell className='font-medium'>
-                        {format(new Date(tx.createdAt), 'MMM d, yyyy h:mm a')}
-                      </TableCell>
-                      <TableCell>
-                        <div className='flex flex-col gap-1'>
-                          <span
-                            className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider w-fit ${
-                              tx.type === 'DEPOSIT'
-                                ? 'bg-success-green/10 text-success-green'
-                                : 'bg-error/10 text-error'
-                            }`}
-                          >
-                            {tx.category.replace('_', ' ')}
-                          </span>
-                          {tx.status === 'REJECTED' && tx.rejectionReason && (
-                            <span className='text-[10px] text-error italic mt-1 max-w-xs wrap-break-word'>
-                              Reason: {tx.rejectionReason}
-                            </span>
-                          )}
-                        </div>
-                      </TableCell>
-                      <TableCell className='font-mono font-semibold'>
-                        {formatCurrency(tx.amount)}
-                      </TableCell>
-                      <TableCell>
-                        {tx.receiptUrl ? (
-                          <Button
-                            variant='outline'
-                            size='sm'
-                            className='h-7 text-xs'
-                            onClick={() => {
-                              setSelectedReceiptUrl(tx.receiptUrl)
-                              setLightboxOpen(true)
-                            }}
-                          >
-                            View Receipt
-                          </Button>
-                        ) : (
-                          <span className='text-xs text-muted-foreground italic'>
-                            None
-                          </span>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        <span
-                          className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
-                            tx.status === 'PENDING'
-                              ? 'bg-amber-100 text-amber-800'
-                              : tx.status === 'CONFIRMED'
-                                ? 'bg-success-green/10 text-success-green'
-                                : 'bg-error/10 text-error'
-                          }`}
-                        >
-                          {tx.status}
-                        </span>
-                      </TableCell>
-                      <TableCell className='text-right'>
-                        {tx.status === 'PENDING' && (
-                          <div className='flex justify-end gap-2'>
-                            <Button
-                              size='sm'
-                              onClick={() =>
-                                handleReviewTransaction(tx.id, 'CONFIRMED')
-                              }
-                              disabled={isPending}
-                              className='h-7 px-2 bg-emerald-600 hover:bg-emerald-700 text-white'
-                            >
-                              <Check className='w-3.5 h-3.5 mr-1' />
-                              Approve
-                            </Button>
-                            <Button
-                              size='sm'
-                              variant='outline'
-                              onClick={() =>
-                                handleReviewTransaction(tx.id, 'REJECTED')
-                              }
-                              disabled={isPending}
-                              className='h-7 px-2 border-red-200 text-red-600 hover:bg-red-50'
-                            >
-                              <XCircle className='w-3.5 h-3.5 mr-1' />
-                              Reject
-                            </Button>
-                          </div>
-                        )}
-                      </TableCell>
-                    </TableRow>
-                  ))
-              )}
-            </TableBody>
-          </Table>
-        </div>
-      </Card>
-
-      {/* Approve Modal */}
-      <Dialog open={showApproveModal} onOpenChange={setShowApproveModal}>
-        <DialogContent className='sm:max-w-md'>
-          <DialogHeader>
-            <DialogTitle>Approve Loan Application</DialogTitle>
-            <DialogDescription>
-              Confirm the final approved amount. This will move the loan to the
-              APPROVED stage awaiting disbursement.
-            </DialogDescription>
-          </DialogHeader>
-          <div className='py-4 space-y-4'>
-            <div className='space-y-2'>
-              <label className='text-xs font-bold text-primary uppercase tracking-wider'>
-                Approved Amount (NGN)
-              </label>
-              <Input
-                type='number'
-                value={approvedAmount}
-                onChange={(e) => setApprovedAmount(e.target.value)}
-                className='font-mono'
-              />
-              <p className='text-xs text-muted-foreground'>
-                Requested: {formatCurrency(loan.requestedAmount)}
-              </p>
-            </div>
-          </div>
-          <DialogFooter>
-            <Button
-              variant='outline'
-              onClick={() => setShowApproveModal(false)}
-              disabled={isPending}
-            >
-              Cancel
-            </Button>
-            <Button
-              onClick={handleApprove}
-              disabled={isPending}
-              className='bg-blue-600 hover:bg-blue-700 text-white'
-            >
-              Confirm Approval
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Reject Modal */}
-      <Dialog open={showRejectModal} onOpenChange={setShowRejectModal}>
-        <DialogContent className='sm:max-w-md'>
-          <DialogHeader>
-            <DialogTitle>Reject Loan Application</DialogTitle>
-            <DialogDescription>
-              Please provide a reason for rejecting this loan. The applicant
-              will see this reason on their dashboard.
-            </DialogDescription>
-          </DialogHeader>
-          <div className='py-4 space-y-4'>
-            <div className='space-y-2'>
-              <label className='text-xs font-bold text-primary uppercase tracking-wider'>
-                Rejection Reason
-              </label>
-              <Textarea
-                placeholder='e.g. Guarantor details could not be verified.'
-                value={rejectionReason}
-                onChange={(e) => setRejectionReason(e.target.value)}
-                className='resize-none h-24'
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button
-              variant='outline'
-              onClick={() => setShowRejectModal(false)}
-              disabled={isPending}
-            >
-              Cancel
-            </Button>
-            <Button
-              onClick={handleReject}
-              disabled={isPending}
-              className='bg-red-600 hover:bg-red-700 text-white'
-            >
-              Confirm Rejection
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Disburse Modal */}
-      <Dialog open={showDisburseModal} onOpenChange={setShowDisburseModal}>
-        <DialogContent className='sm:max-w-md'>
-          <DialogHeader>
-            <DialogTitle>Disburse Approved Loan</DialogTitle>
-            <DialogDescription>
-              Upload the payment receipt to confirm the transfer of funds to the
-              applicant's bank account. This will activate the loan and begin
-              the repayment timeline.
-            </DialogDescription>
-          </DialogHeader>
-          <div className='py-4 space-y-4'>
-            <div className='bg-slate-50 p-4 rounded-lg border flex justify-between items-center'>
-              <div>
-                <p className='text-xs text-muted-foreground font-semibold uppercase tracking-wider mb-0.5'>
-                  Amount to Disburse
-                </p>
-                <p className='font-bold font-mono text-primary'>
-                  {formatCurrency(loan.approvedAmount || loan.requestedAmount)}
-                </p>
+                    Confirm
+                  </Button>
+                  <Button size="sm" variant="outline" disabled={isPending} onClick={() => setReceiptReject({ id: r.id, reason: '' })}>
+                    Reject
+                  </Button>
+                </span>
               </div>
-              <Download className='w-5 h-5 text-muted-foreground' />
-            </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
 
-            <div className='space-y-2'>
-              <label className='text-xs font-bold text-primary uppercase tracking-wider'>
-                Payment Receipt
-              </label>
-              <ReceiptDropzone
-                onFileSelected={setReceiptFile}
-                value={receiptFile}
-                maxSizeMb={5}
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button
-              variant='outline'
-              onClick={() => setShowDisburseModal(false)}
-              disabled={isPending}
-            >
-              Cancel
-            </Button>
-            <Button
-              onClick={handleDisburse}
-              disabled={isPending || !receiptFile}
-              className='bg-emerald-600 hover:bg-emerald-700 text-white'
-            >
-              Confirm Disbursement
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {loan.instalments.length > 0 && (
+        <Card>
+          <CardContent className="pt-6 overflow-x-auto">
+            <h2 className="font-semibold mb-3">
+              Instalments (disbursed {formatDay(loan.disbursementValueDate)})
+            </h2>
+            <table className="w-full text-sm min-w-[640px]">
+              <thead className="text-xs text-muted-foreground text-left">
+                <tr>
+                  <th className="py-2">#</th>
+                  <th>Due</th>
+                  <th className="text-right">Principal paid / due</th>
+                  <th className="text-right">Interest paid / due</th>
+                  <th className="text-right">Penalty paid / assessed</th>
+                  <th className="text-right">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {loan.instalments.map((i) => (
+                  <tr key={i.id}>
+                    <td className="py-2">{i.instalmentNumber}</td>
+                    <td>{formatDay(i.dueDate)}</td>
+                    <td className="text-right">
+                      {formatNGN(i.principalPaid)} / {formatNGN(i.principalDue)}
+                    </td>
+                    <td className="text-right">
+                      {formatNGN(i.interestPaid)} / {formatNGN(i.interestDue)}
+                    </td>
+                    <td className="text-right">
+                      {formatNGN(i.penaltyPaid)} / {formatNGN(i.penaltyAssessed - i.penaltyWaived)}
+                    </td>
+                    <td className="text-right">
+                      <InstalmentStatusBadge status={i.status} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </CardContent>
+        </Card>
+      )}
 
-      {/* Transaction Reject Modal */}
-      <Dialog open={showTxRejectModal} onOpenChange={setShowTxRejectModal}>
-        <DialogContent className='sm:max-w-md'>
+      {review && review.otherLoans.length > 0 && (
+        <Card>
+          <CardContent className="pt-6 text-sm">
+            <h2 className="font-semibold mb-2">Member’s other loans</h2>
+            {review.otherLoans.map((l) => (
+              <Link key={l.id} href={`/admin/loans/${l.id}`} className="flex justify-between py-1 hover:text-primary">
+                <span>
+                  {formatDay(l.createdAt)} · {formatNGN(l.approvedAmount ?? l.requestedAmount)} · {l.duration} months
+                </span>
+                <span>
+                  {loanStatusLabel(l.status)} · outstanding {formatNGN(l.outstandingBalance)}
+                </span>
+              </Link>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Approve */}
+      <Dialog open={approveOpen} onOpenChange={setApproveOpen}>
+        <DialogContent>
           <DialogHeader>
-            <DialogTitle>Reject Repayment</DialogTitle>
-            <DialogDescription>
-              Provide a reason for rejecting this repayment.
-            </DialogDescription>
+            <DialogTitle>Approve loan</DialogTitle>
           </DialogHeader>
-          <div className='py-4 space-y-4'>
-            <div className='space-y-2'>
-              <label className='text-xs font-bold text-primary uppercase tracking-wider'>
-                Rejection Reason
-              </label>
-              <Textarea
-                placeholder='e.g. Invalid receipt'
-                value={txRejectionReason}
-                onChange={(e) => setTxRejectionReason(e.target.value)}
-                className='resize-none h-24'
-              />
+          <div className="space-y-3 text-sm">
+            <p className="text-muted-foreground">
+              Eligibility is a ceiling, not an entitlement. You may approve a lower amount or a different term; the
+              member must then accept the final offer and the guarantor must consent again.
+            </p>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-1">
+                <Label htmlFor="approveAmount">Amount (≤ {formatNGN(loan.requestedAmount)})</Label>
+                <Input
+                  id="approveAmount"
+                  type="number"
+                  step="0.01"
+                  max={loan.requestedAmount}
+                  value={approveAmount}
+                  onChange={(e) => setApproveAmount(e.target.value)}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="approveTerm">Term (months)</Label>
+                <Input
+                  id="approveTerm"
+                  type="number"
+                  min={1}
+                  max={12}
+                  value={approveTerm}
+                  onChange={(e) => setApproveTerm(e.target.value)}
+                />
+              </div>
             </div>
+            <div className="space-y-1">
+              <Label htmlFor="approveNote">Note (optional)</Label>
+              <Textarea id="approveNote" value={approveNote} onChange={(e) => setApproveNote(e.target.value)} />
+            </div>
+            {termsChanged && (
+              <p className="text-xs text-warning">These terms differ from the application: re-consent will be required.</p>
+            )}
+            <Button
+              disabled={isPending}
+              onClick={() =>
+                run(
+                  () =>
+                    approveLoanAction(loan.id, Number(approveAmount), {
+                      approvedTermMonths: Number(approveTerm),
+                      note: approveNote,
+                    }),
+                  termsChanged ? 'Revised offer sent for re-consent.' : 'Loan approved; offer sent to the member.',
+                  () => setApproveOpen(false),
+                )
+              }
+            >
+              {isPending && <Loader2 className="w-4 h-4 animate-spin mr-2" />}Approve {formatNGN(Number(approveAmount))}
+            </Button>
           </div>
-          <DialogFooter>
-            <Button
-              variant='outline'
-              onClick={() => setShowTxRejectModal(false)}
-              disabled={isPending}
-            >
-              Cancel
-            </Button>
-            <Button
-              onClick={handleRejectTransaction}
-              disabled={isPending}
-              className='bg-red-600 hover:bg-red-700 text-white'
-            >
-              Confirm Rejection
-            </Button>
-          </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      <ReceiptLightbox
-        url={selectedReceiptUrl}
-        open={lightboxOpen}
-        onOpenChange={setLightboxOpen}
-      />
+      {/* Reject */}
+      <Dialog open={rejectOpen} onOpenChange={setRejectOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Reject application</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <Label htmlFor="rejectReason">Reason (shown to the member)</Label>
+            <Textarea id="rejectReason" value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} />
+            <Button
+              variant="destructive"
+              disabled={isPending || !rejectReason.trim()}
+              onClick={() =>
+                run(() => rejectLoanAction(loan.id, rejectReason), 'Application rejected.', () => setRejectOpen(false))
+              }
+            >
+              Reject
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Disburse */}
+      <Dialog open={disburseOpen} onOpenChange={setDisburseOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Record disbursement</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 text-sm">
+            <p className="text-muted-foreground">
+              Record the transfer of <strong>{formatNGN(loan.approvedAmount)}</strong> to {loan.user.name} only after it
+              has been made. This activates the loan and its repayment schedule from the value date and cannot be
+              undone here. The approver cannot also disburse when another authorised staff member exists.
+            </p>
+            <div className="space-y-1">
+              <Label htmlFor="bankAccount">Destination account</Label>
+              <select
+                id="bankAccount"
+                className="w-full rounded-md border border-border bg-background p-2"
+                value={bankAccountId}
+                onChange={(e) => setBankAccountId(e.target.value)}
+              >
+                {loan.member?.bankAccounts.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.bankName} · {b.accountNumberMasked} · {b.accountName}
+                    {b.isVerified ? '' : ' (unverified)'}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-1">
+                <Label htmlFor="valueDate">Value date</Label>
+                <Input id="valueDate" type="date" max={today()} value={valueDate} onChange={(e) => setValueDate(e.target.value)} />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="bankReference">Bank reference</Label>
+                <Input id="bankReference" value={bankReference} onChange={(e) => setBankReference(e.target.value)} />
+              </div>
+            </div>
+            <ReceiptDropzone value={evidence} onFileSelected={setEvidence} />
+            <Button disabled={isPending || !bankReference.trim() || !evidence} onClick={submitDisbursement}>
+              {isPending && <Loader2 className="w-4 h-4 animate-spin mr-2" />}Confirm disbursement
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Reject receipt */}
+      <Dialog open={!!receiptReject} onOpenChange={(o) => !o && setReceiptReject(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Reject receipt</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <Textarea
+              value={receiptReject?.reason ?? ''}
+              onChange={(e) => setReceiptReject((r) => (r ? { ...r, reason: e.target.value } : r))}
+              placeholder="Why is this receipt rejected?"
+            />
+            <Button
+              variant="destructive"
+              disabled={isPending || !receiptReject?.reason.trim()}
+              onClick={() =>
+                receiptReject &&
+                run(
+                  () =>
+                    rejectPaymentSubmissionAction({
+                      submissionId: receiptReject.id,
+                      rejectionReason: receiptReject.reason,
+                    }),
+                  'Receipt rejected.',
+                  () => setReceiptReject(null),
+                )
+              }
+            >
+              Reject receipt
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
+
+export default AdminLoanDetailsClient

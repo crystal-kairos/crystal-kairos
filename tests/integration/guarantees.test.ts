@@ -2,7 +2,6 @@ import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest'
 import { Prisma } from '@/generated/prisma/client'
 import {
   AdminPermission,
-  BorrowerOfferDecision,
   GuaranteeState,
   GuaranteeType,
   LoanStatus,
@@ -35,7 +34,6 @@ import {
   requestLoanGuarantor,
   decideGuarantorRequest,
   withdrawGuarantorConsent,
-  recordBorrowerOfferAcceptance,
   assertSavingsWithdrawalAllowed,
 } from '@/lib/services/guarantees.service'
 import {
@@ -43,11 +41,7 @@ import {
   getBorrowerStandaloneLimit,
   getGuarantorAvailableCapacity,
 } from '@/lib/domain/capacity'
-import { approveLoanAction, disburseLoanAction } from '@/models/admin/loanActions'
 import {
-  acceptLoanOfferAction,
-  declineLoanOfferAction,
-  decideGuarantorRequestAction,
 } from '@/models/loans/actions'
 import { requestSavingsWithdrawalAction } from '@/models/savings/actions'
 import { GET as getEvidenceRoute } from '@/app/api/guarantees/[id]/evidence/route'
@@ -352,7 +346,8 @@ describe('Guarantor Requests, Capacity Reservations & Savings Locks Integration 
         duration: 6,
         interestRate: new Prisma.Decimal(5),
         purpose: 'Loan 1',
-        status: LoanStatus.APPROVED,
+        // P3-04: a guarantor consents while the application is pending; approval follows
+        status: LoanStatus.PENDING,
       },
     })
 
@@ -373,6 +368,7 @@ describe('Guarantor Requests, Capacity Reservations & Savings Locks Integration 
     })
 
     expect(res1.reservation.reservedAmount.toNumber()).toBe(50000)
+    await prisma.loan.update({ where: { id: loan1.id }, data: { status: LoanStatus.APPROVED } })
 
     // Guarantor remaining capacity = ₦80,000 - ₦50,000 = ₦30,000
     const remainingCap = await getGuarantorAvailableCapacity(
@@ -618,175 +614,8 @@ describe('Guarantor Requests, Capacity Reservations & Savings Locks Integration 
     expect(withdrawResult.error).toContain('reserved to secure active guarantees')
   })
 
-  it('admin approval term changes force AWAITING_RECONSENT and release reservation (§2.7)', async () => {
-    const borrower = await createMemberWithSavings({
-      emailSuffix: 'rev-b',
-      name: 'Revision Borrower',
-      savingsAmount: 0,
-    })
-
-    const guarantor = await createMemberWithSavings({
-      emailSuffix: 'rev-g',
-      name: 'Revision Guarantor',
-      savingsAmount: 150000,
-    })
-
-    const loan = await prisma.loan.create({
-      data: {
-        userId: borrower.id,
-        requestedAmount: new Prisma.Decimal(80000),
-        duration: 6,
-        interestRate: new Prisma.Decimal(5),
-        purpose: 'Revision Test Loan',
-        status: LoanStatus.PENDING,
-      },
-    })
-
-    // Guarantor consents to ₦80,000
-    const { reservation } = await prisma.$transaction(async (tx) => {
-      const req = await requestLoanGuarantor(tx, {
-        loanId: loan.id,
-        applicantId: borrower.id,
-        guarantorId: guarantor.id,
-        requestedAmount: 80000,
-        termMonths: 6,
-        monthlyInterestRate: 5,
-      })
-      return decideGuarantorRequest(tx, {
-        reservationId: req.id,
-        guarantorId: guarantor.id,
-        decision: 'ACCEPT',
-      })
-    })
-
-    expect(reservation.state).toBe(GuaranteeState.CONSENTED)
-    expect(reservation.reservedAmount.toNumber()).toBe(80000)
-
-    // Admin reviewer attempts to approve for ₦100,000 (different amount!)
-    const admin = await prisma.user.create({
-      data: {
-        email: `${testEmailPrefix}-admin-rev@example.com`,
-        name: 'Admin Reviewer',
-        role: UserRole.ADMIN,
-        sessionVersion: 1,
-        mfaEnabled: true,
-      },
-    })
-    await prisma.adminPermissionGrant.create({
-      data: {
-        adminUserId: admin.id,
-        permission: AdminPermission.LOANS_REVIEW,
-        grantedById: admin.id,
-      },
-    })
-
-    mockSessionState.session = {
-      user: {
-        id: admin.id,
-        email: admin.email,
-        name: admin.name,
-        role: UserRole.ADMIN,
-        sessionVersion: 1,
-      },
-    }
-
-    const approveResult = await approveLoanAction(loan.id, 100000)
-    expect(approveResult.success).toBe(false)
-    expect(approveResult.code).toBe('AWAITING_RECONSENT')
-    expect(approveResult.error).toContain('Guarantor must re-consent')
-
-    // Reservation has transitioned to AWAITING_RECONSENT and reservedAmount released to 0
-    const updatedReservation = await prisma.guaranteeReservation.findUnique({
-      where: { id: reservation.id },
-    })
-    expect(updatedReservation?.state).toBe(GuaranteeState.AWAITING_RECONSENT)
-    expect(updatedReservation?.reservedAmount.toNumber()).toBe(0)
-    expect(updatedReservation?.termsVersion).toBe(reservation.termsVersion + 1)
-  })
-
-  it('borrower explicit offer acceptance generates evidence and gates loan disbursement (§2.7, §2.9)', async () => {
-    const borrower = await createMemberWithSavings({
-      emailSuffix: 'acc-b',
-      name: 'Acceptance Borrower',
-      savingsAmount: 100000,
-    })
-
-    const loan = await prisma.loan.create({
-      data: {
-        userId: borrower.id,
-        requestedAmount: new Prisma.Decimal(150000),
-        approvedAmount: new Prisma.Decimal(150000),
-        duration: 6,
-        interestRate: new Prisma.Decimal(5),
-        purpose: 'Offer Acceptance Loan',
-        status: LoanStatus.APPROVED,
-      },
-    })
-
-    mockSessionState.session = {
-      user: {
-        id: borrower.id,
-        email: borrower.email,
-        name: borrower.name,
-        role: UserRole.USER,
-        sessionVersion: 1,
-      },
-    }
-
-    // Borrower accepts offer
-    const acceptRes = await acceptLoanOfferAction(borrower.id, loan.id)
-    expect(acceptRes.success).toBe(true)
-
-    // Check borrower offer acceptance record
-    const acceptance = await prisma.borrowerOfferAcceptance.findUnique({
-      where: { loanId: loan.id },
-    })
-    expect(acceptance).not.null
-    expect(acceptance?.decision).toBe(BorrowerOfferDecision.ACCEPTED)
-    expect(acceptance?.evidenceSha256).toBeDefined()
-    expect(acceptance?.evidenceDocumentId).toMatch(/^CK-EVD-/)
-
-    // Loan status is now ACCEPTED
-    const updatedLoan = await prisma.loan.findUnique({ where: { id: loan.id } })
-    expect(updatedLoan?.status).toBe(LoanStatus.ACCEPTED)
-
-    // Admin disburses loan
-    const disburser = await prisma.user.create({
-      data: {
-        email: `${testEmailPrefix}-admin-disb@example.com`,
-        name: 'Admin Disburser',
-        role: UserRole.ADMIN,
-        sessionVersion: 1,
-        mfaEnabled: true,
-      },
-    })
-    await prisma.adminPermissionGrant.create({
-      data: {
-        adminUserId: disburser.id,
-        permission: AdminPermission.LOANS_DISBURSE,
-        grantedById: disburser.id,
-      },
-    })
-
-    mockSessionState.session = {
-      user: {
-        id: disburser.id,
-        email: disburser.email,
-        name: disburser.name,
-        role: UserRole.ADMIN,
-        sessionVersion: 1,
-      },
-    }
-
-    const disburseRes = await disburseLoanAction(
-      loan.id,
-      'https://example.com/receipt.jpg',
-    )
-    expect(disburseRes.success).toBe(true)
-
-    const finalLoan = await prisma.loan.findUnique({ where: { id: loan.id } })
-    expect(finalLoan?.status).toBe(LoanStatus.ACTIVE)
-  })
+  // P3-04: approval, re-consent, offer acceptance and disbursement are covered in
+  // tests/integration/loan-workflow.test.ts against the new loan service.
 
   it('protected evidence route (/api/guarantees/[id]/evidence) enforces strict access control', async () => {
     const borrower = await createMemberWithSavings({

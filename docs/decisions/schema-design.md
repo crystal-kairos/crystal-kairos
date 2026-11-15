@@ -773,6 +773,30 @@ Credit obligation, schedule anchor, and snapshotted pricing terms (§1.4, §2.1,
   - `guaranteeRequests`: `GuaranteeRequest[]`
 - **Indexes:** `[borrowerId, status]`, `[status, disbursementValueDate]`
 
+> **As implemented in P3-04 (migration `20261117090000_p3_04_loan_workflow`).** The live `loans` table keeps
+> its earlier column names (`userId`, `duration`, `approvedBy`, `requestedAt`, …); `applicationFeePaid` is not a
+> column — the fee is a `FeeAssessment` (`feeType = LOAN_APPLICATION`, `targetId = loan.id`) whose `PAID` status
+> is derived from its active `FEE` payment allocations. Borrower acceptance and its PDF evidence live in
+> `BorrowerOfferAcceptance` (one row per loan, `termsVersion` of the offer). Added by P3-04:
+>
+> - `LoanStatus` values `AWAITING_RECONSENT` (approved with a different amount/term, D-10), `CANCELLED`
+>   (member withdrew, or the guarantor withdrew consent after approval) and `EXPIRED` (offer not accepted in
+>   time). `DISBURSED` remains only for legacy rows (P5-04 cleanup); disbursement moves `ACCEPTED → ACTIVE`.
+> - `requestedDurationMonths Int?` — the term applied for (`duration` holds the offered/approved term).
+> - `termsVersion Int @default(1)` — bumped when the approval changes the terms; the guarantee and the
+>   borrower offer must carry the same version before disbursement.
+> - `approvalNote String?`, `offerExpiresAt DateTime?` (setting `loanOfferValidityDays`, OQ-13),
+>   `cancelledAt DateTime?`, `completedAt DateTime?`.
+> - `disbursementValueDate DateTime? @db.Date` — schedule anchor; `disbursementId String? @unique` →
+>   `Disbursement` (`onDelete: Restrict`; the disbursement's evidence is the `StoredFile` with
+>   `associatedType = 'DISBURSEMENT'`).
+> - Index `[status, offerExpiresAt]` for the offer-expiry job.
+> - `outstandingBalance` / `totalRepaid` are display caches recomputed from the instalments after every payment.
+> - CHECK constraints: `loans_requested_amount_positive`, `loans_approved_amount_valid` (> 0 and
+>   ≤ `requestedAmount`), `loans_duration_range` (1–12), `loan_instalments_amounts_non_negative`,
+>   `loan_instalments_not_overpaid` (principal/interest paid ≤ due). Added `NOT VALID` so legacy development
+>   rows are not rejected; every new or updated row is checked.
+
 #### 3.7.2 `LoanInstalment`
 Persisted monthly instalment with separate principal and interest portions (§2.9).
 - **Fields:**

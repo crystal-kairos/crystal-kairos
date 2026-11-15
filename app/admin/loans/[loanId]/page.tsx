@@ -25,5 +25,5 @@ export default async function AdminLoanDetailsPage({ params }: PageProps) {
     )
   }
 
-  return <AdminLoanDetailsClient loan={result.data as any} />
+  return <AdminLoanDetailsClient loan={result.data} />
 }

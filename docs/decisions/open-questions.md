@@ -27,6 +27,7 @@ This document records architectural, financial, and policy open questions arisin
 - **Context:** §1.9 & §2.9 state an admin-configured loan application fee may be assessed when a member applies.
 - **Question:** If an admin rejects the loan application, or if the borrower declines the approved offer / re-consent fails, is the application fee refunded to the member's wallet or forfeited as cooperative fee income?
 - **Current Assumption (A-14):** Application fee covers underwriting costs and is non-refundable fee income (`FEE_INCOME`), regardless of loan disposition.
+- **P3-04 implementation:** a *paid* fee is kept when the application is rejected, withdrawn, declined or expires; an *unpaid* fee assessment is marked `WAIVED` (it was never income, and it stops being a debt once the application ends).
 - **Action Required:** Confirmation by cooperative owner.
 
 ### OQ-04: Partial Early Loan Settlement
@@ -91,3 +92,20 @@ This document records architectural, financial, and policy open questions arisin
 ### OQ-12: Re-posting accruals after a cleared forfeiture
 - **Context:** When a period's forfeiture is cleared (value-date correction), its lots' reversed accruals must be posted again.
 - **Resolved (owner):** back-dated. The reversed dates are re-posted immediately, each with its original accrual date as the journal effective date, using the next `SavingsInterestAccrual.postingSeq` (unique `(lotId, accrualDate, postingSeq)`). The reversed rows and journal reversals stay as history.
+
+## 6. Loans workflow (P3-04)
+
+### OQ-13: How long a loan offer stays open (P3-04)
+- **Context:** §4.1 says an offer "can be declined or expire" and §2.7 that "a declined or expired offer releases any reservation", but no period is given.
+- **Current Assumption:** Setting `loanOfferValidityDays` = 14 days from approval. An `APPROVED` or `AWAITING_RECONSENT` loan not accepted (and, for re-consent, not re-consented) by then becomes `EXPIRED`; reservations are released and an unpaid fee is waived. `lib/jobs/loan-offers.job.ts` does this (idempotent, catch-up); until P4-04 schedules it, staff can run it from the admin action `expireLoanOffersAction`, and an expired offer can never be accepted.
+- **Action Required:** Owner to confirm the period.
+
+### OQ-14: Loan interest paid before its instalment's due date (P3-04)
+- **Context:** §2.12 recognises loan interest on each instalment's due date (A-18) and posts receipt allocations to interest as a credit to `LOAN_INTEREST_RECEIVABLE`. Early settlement (A-23) and paying ahead collect interest before the recognition job has debited the receivable, so that loan's interest receivable is temporarily in credit (it behaves like unearned interest) until the due dates pass.
+- **Current Assumption (conservative):** Follow the §2.12 posting table exactly; no new ledger account. The interest-recognition job (P3-06/P4-04) must still recognise every instalment on its due date, including instalments already paid or settled early, so the receivable nets to zero.
+- **Action Required:** Accountant to confirm, or to ask for an `UNEARNED_LOAN_INTEREST` account (a later, separate change).
+
+### OQ-15: Guarantor withdraws consent after approval but before disbursement (P3-04)
+- **Context:** §2.7 lets a guarantor withdraw "while the application is still awaiting admin activation" and says approval needs a consenting guarantor, but does not say what happens to an already approved or accepted offer.
+- **Current Assumption (conservative):** The offer is `CANCELLED` (reservations released, unpaid fee waived). The member may apply again with another guarantor. A pending application simply stays pending and cannot be approved.
+- **Action Required:** Owner to confirm, or prefer letting the member nominate a replacement guarantor on the same offer.

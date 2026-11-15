@@ -4,8 +4,6 @@ import { prisma } from '@/lib/prisma'
 import { revalidatePath } from 'next/cache'
 import {
   AdminPermission,
-  BorrowerOfferDecision,
-  GuaranteeState,
   LoanStatus,
   TransactionCategory,
   TransactionStatus,
@@ -14,226 +12,63 @@ import {
 } from '@/generated/prisma/enums'
 import { Prisma } from '@/generated/prisma/client'
 import { getActiveLoanRateForDuration } from '@/lib/services/rate-policy.service'
-import {
-  assertTargetUserIsMember,
-  enforceDualControl,
-  requirePermission,
-} from '@/lib/authz/guards'
+import { assertTargetUserIsMember, requirePermission } from '@/lib/authz/guards'
 import { toActionErrorResult } from '@/lib/errors/to-action-result'
-import { AppError } from '@/lib/errors/app-error'
-import { lockMembers } from '@/lib/db/concurrency'
-import {
-  calculateApplicantTotalLoanExposure,
-  calculateRequiredGuaranteeSupport,
-  getBorrowerStandaloneLimit,
-} from '@/lib/domain/capacity'
-import {
-  getMemberEligibleSavingsPrincipal,
-  getMemberUnencumberedSavings,
-} from '@/lib/services/guarantees.service'
 import { validateAmount } from '@/lib/validation/money'
-import { generateAndPersistLoanSchedule } from '@/lib/services/schedules.service'
+import { approveLoan, disburseLoan, rejectLoan } from '@/lib/services/loans.service'
+import { runLoanOfferExpiryJob } from '@/lib/jobs/loan-offers.job'
+import { serializeLoanQuote } from '@/lib/loans'
+
+const errorResult = (error: unknown, actionName: string, fallbackMessage: string, context?: Record<string, unknown>) =>
+  toActionErrorResult(error, { actionName, fallbackMessage, context })
+
+function revalidateAdminLoan(loanId: string, memberId?: string) {
+  try {
+    revalidatePath('/admin/loans')
+    revalidatePath(`/admin/loans/${loanId}`)
+    if (memberId) {
+      revalidatePath(`/dashboard/${memberId}/loans`)
+      revalidatePath(`/dashboard/${memberId}/loans/${loanId}`)
+    }
+  } catch {}
+}
 
 /**
- * Admin approves a loan and sets the final approved amount.
+ * Admin approves a loan (P3-04, D-07). The admin may approve the requested
+ * amount and term, or a lower amount / different term, which needs borrower
+ * acceptance and guarantor re-consent (D-10). Never automatic.
  */
 export const approveLoanAction = async (
   loanId: string,
   approvedAmount: number,
+  options: { approvedTermMonths?: number; note?: string } = {},
 ) => {
   try {
     const actor = await requirePermission(AdminPermission.LOANS_REVIEW)
-    const validatedApprovedAmount = validateAmount(approvedAmount, 'approvedAmount')
-
-    const updated = await prisma.$transaction(async (tx) => {
-      const loan = await tx.loan.findUnique({
-        where: { id: loanId },
-        include: {
-          guaranteeReservations: {
-            where: {
-              state: {
-                in: [
-                  GuaranteeState.CONSENTED,
-                  GuaranteeState.PENDING,
-                  GuaranteeState.AWAITING_RECONSENT,
-                ],
-              },
-            },
-          },
-        },
-      })
-      if (!loan) {
-        throw new AppError('NOT_FOUND', 'Loan not found.', { statusCode: 404 })
-      }
-      if (loan.status !== LoanStatus.PENDING) {
-        throw new AppError(
-          'INVALID_STATE',
-          'Only pending loans can be approved.',
-          { statusCode: 422 },
-        )
-      }
-
-      // Collect member IDs to lock (borrower and any associated guarantor)
-      const reservation = loan.guaranteeReservations[0] || null
-      const memberIdsToLock = reservation
-        ? [loan.userId, reservation.guarantorId]
-        : [loan.userId]
-      await lockMembers(tx, memberIdsToLock)
-
-      // Calculate cumulative exposure & guarantee requirements (§2.1)
-      const borrowerSavings = await getMemberEligibleSavingsPrincipal(
-        loan.userId,
-        tx,
-      )
-      const existingLoans = await tx.loan.findMany({
-        where: {
-          userId: loan.userId,
-          id: { not: loanId },
-          status: {
-            in: [
-              LoanStatus.APPROVED,
-              LoanStatus.ACCEPTED,
-              LoanStatus.DISBURSED,
-              LoanStatus.ACTIVE,
-              LoanStatus.OVERDUE,
-              LoanStatus.DEFAULTED,
-            ],
-          },
-        },
-        select: { approvedAmount: true, requestedAmount: true },
-      })
-
-      const standaloneLimit = getBorrowerStandaloneLimit(borrowerSavings)
-      const existingExposure = calculateApplicantTotalLoanExposure(existingLoans)
-      const totalExposure = existingExposure.plus(validatedApprovedAmount)
-      const requiredGuaranteeSupport = calculateRequiredGuaranteeSupport(
-        totalExposure,
-        standaloneLimit,
-      )
-
-      if (requiredGuaranteeSupport.gt(0)) {
-        if (!reservation) {
-          throw new AppError(
-            'GUARANTOR_REQUIRED',
-            `Loan requires guarantee support of ₦${requiredGuaranteeSupport.toFixed(2)}, but no guarantor is attached to this loan.`,
-            { statusCode: 422 },
-          )
-        }
-
-        // Check if approved terms differ from consented terms (§2.7)
-        const termsDiffer =
-          !reservation.consentedAmount.equals(validatedApprovedAmount) ||
-          reservation.state === GuaranteeState.AWAITING_RECONSENT
-
-        if (termsDiffer && reservation.state === GuaranteeState.CONSENTED) {
-          // Move to AWAITING_RECONSENT and release old reservation
-          await tx.guaranteeReservation.update({
-            where: { id: reservation.id },
-            data: {
-              state: GuaranteeState.AWAITING_RECONSENT,
-              reservedAmount: new Prisma.Decimal(0),
-              requestedAmount: validatedApprovedAmount,
-              termsVersion: reservation.termsVersion + 1,
-            },
-          })
-
-          return {
-            needsReconsent: true,
-            code: 'AWAITING_RECONSENT',
-            error: `Approved amount (₦${validatedApprovedAmount.toFixed(2)}) differs from consented terms (₦${reservation.consentedAmount.toFixed(2)}). Guarantor must re-consent before loan can be approved (§2.7).`,
-          }
-        }
-
-        if (reservation.state !== GuaranteeState.CONSENTED) {
-          throw new AppError(
-            'GUARANTOR_CONSENT_REQUIRED',
-            `Loan cannot be approved: guarantor has not consented (state: ${reservation.state}).`,
-            { statusCode: 422 },
-          )
-        }
-      }
-
-      const res = await tx.loan.update({
-        where: { id: loanId },
-        data: {
-          status: LoanStatus.APPROVED,
-          approvedAmount: validatedApprovedAmount,
-          approvedBy: actor.id,
-          approvedAt: new Date(),
-        },
-      })
-
-      return res
+    const amount = validateAmount(approvedAmount, 'approvedAmount')
+    const term =
+      options.approvedTermMonths === undefined || options.approvedTermMonths === null
+        ? undefined
+        : Number(options.approvedTermMonths)
+    const result = await approveLoan({
+      loanId: String(loanId),
+      actor,
+      approvedAmount: amount,
+      approvedTermMonths: term,
+      note: typeof options.note === 'string' ? options.note.slice(0, 500) : undefined,
     })
-
-    if ('needsReconsent' in updated && updated.needsReconsent) {
-      return {
-        success: false,
-        error: updated.error,
-        code: updated.code,
-      }
-    }
-
-    try {
-      revalidatePath('/admin/loans')
-      revalidatePath(`/admin/loans/${loanId}`)
-    } catch {}
-
-    return { success: true, data: updated }
-  } catch (error) {
-    const err = toActionErrorResult(error, {
-      actionName: 'approveLoanAction',
-      fallbackMessage: 'Failed to approve loan.',
-      context: { loanId },
-    })
+    revalidateAdminLoan(result.loan.id, result.loan.userId)
     return {
-      success: false,
-      error: err.error,
-      code: err.code,
-      fieldErrors: err.fieldErrors,
-      correlationId: err.correlationId,
-    }
-  }
-}
-
-/**
- * Admin rejects a loan with a mandatory reason.
- */
-export const rejectLoanAction = async (
-  loanId: string,
-  rejectionReason: string,
-) => {
-  try {
-    const actor = await requirePermission(AdminPermission.LOANS_REVIEW)
-
-    const loan = await prisma.loan.findUnique({ where: { id: loanId } })
-    if (!loan) return { success: false, error: 'Loan not found.' }
-    if (loan.status !== LoanStatus.PENDING) {
-      return { success: false, error: 'Only pending loans can be rejected.' }
-    }
-
-    const updated = await prisma.loan.update({
-      where: { id: loanId },
+      success: true,
       data: {
-        status: LoanStatus.REJECTED,
-        rejectionReason,
-        approvedBy: actor.id,
-        approvedAt: new Date(),
+        id: result.loan.id,
+        status: result.loan.status as string,
+        termsChanged: result.termsChanged,
+        quote: serializeLoanQuote(result.quote),
       },
-    })
-
-    try {
-      revalidatePath('/admin/loans')
-      revalidatePath(`/admin/loans/${loanId}`)
-    } catch {}
-
-    return { success: true, data: updated }
+    }
   } catch (error) {
-    const err = toActionErrorResult(error, {
-      actionName: 'rejectLoanAction',
-      fallbackMessage: 'Failed to reject loan.',
-      context: { loanId },
-    })
+    const err = errorResult(error, 'approveLoanAction', 'Failed to approve loan.', { loanId })
     return {
       success: false,
       error: err.error,
@@ -245,111 +80,65 @@ export const rejectLoanAction = async (
 }
 
 /**
- * Admin disburses a loan and uploads the receipt.
+ * Admin rejects a loan with a mandatory reason; reservations are released.
+ */
+export const rejectLoanAction = async (loanId: string, rejectionReason: string) => {
+  try {
+    const actor = await requirePermission(AdminPermission.LOANS_REVIEW)
+    const loan = await rejectLoan({ loanId: String(loanId), actor, reason: String(rejectionReason ?? '') })
+    revalidateAdminLoan(loan.id, loan.userId)
+    return { success: true, data: { id: loan.id, status: loan.status as string } }
+  } catch (error) {
+    const err = errorResult(error, 'rejectLoanAction', 'Failed to reject loan.', { loanId })
+    return {
+      success: false,
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
+    }
+  }
+}
+
+/**
+ * Records the offline loan disbursement (ACCEPTED → ACTIVE): amount, value
+ * date (schedule anchor), bank reference and evidence. Dual control (A-19):
+ * the approver cannot disburse when another eligible staff user exists.
  */
 export const disburseLoanAction = async (
   loanId: string,
-  receiptUrl: string,
+  input: {
+    amount: number
+    valueDate: string
+    bankReference: string
+    evidenceFileId: string
+    bankAccountId?: string
+  },
 ) => {
   try {
     const actor = await requirePermission(AdminPermission.LOANS_DISBURSE)
-
-    const loan = await prisma.loan.findUnique({ where: { id: loanId } })
-    if (!loan) return { success: false, error: 'Loan not found.' }
-    if (loan.status !== LoanStatus.ACCEPTED) {
-      return { success: false, error: 'Only accepted loans can be disbursed' }
-    }
-    if (!loan.approvedAmount) {
-      return { success: false, error: 'Approved amount is missing.' }
-    }
-
-    await enforceDualControl({
+    const amount = validateAmount(input?.amount, 'amount')
+    const result = await disburseLoan({
+      loanId: String(loanId),
       actor,
-      previousActorId: loan.approvedBy,
-      requiredPermission: AdminPermission.LOANS_DISBURSE,
+      amount,
+      valueDate: String(input?.valueDate ?? ''),
+      bankReference: String(input?.bankReference ?? ''),
+      evidenceFileId: String(input?.evidenceFileId ?? ''),
+      bankAccountId: input?.bankAccountId ? String(input.bankAccountId) : undefined,
     })
-
-    const now = new Date()
-    const repaymentEndDate = new Date(now)
-    repaymentEndDate.setMonth(repaymentEndDate.getMonth() + loan.duration)
-
-    const approvedAmountNum = Number(loan.approvedAmount || 0)
-    const interestRateNum = Number(loan.interestRate || 0)
-    const totalInterest =
-      (approvedAmountNum * interestRateNum * loan.duration) / 100
-    const initialDebt = approvedAmountNum + totalInterest
-
-    // Run in a transaction: Create disbursement record + update loan
-    const result = await prisma.$transaction(async (tx) => {
-      // Lock borrower during disbursement (§2.1, §2.7)
-      await lockMembers(tx, [loan.userId])
-
-      // Verify borrower explicit offer acceptance (§2.7, §2.9)
-      const acceptance = await tx.borrowerOfferAcceptance.findUnique({
-        where: { loanId: loan.id },
-      })
-      if (!acceptance || acceptance.decision !== BorrowerOfferDecision.ACCEPTED) {
-        throw new AppError(
-          'OFFER_NOT_ACCEPTED',
-          'Loan cannot be disbursed: borrower has not explicitly accepted the final loan offer (§2.7).',
-          { statusCode: 422 },
-        )
-      }
-
-      // Create the disbursement transaction
-      await tx.transaction.create({
-        data: {
-          userId: loan.userId,
-          amount: loan.approvedAmount!,
-          type: TransactionType.WITHDRAWAL, // Money leaving the system
-          category: TransactionCategory.LOAN_DISBURSEMENT,
-          status: TransactionStatus.DISBURSED,
-          receiptUrl,
-          loanId: loan.id,
-          notes: `Disbursement for Loan ${loan.id.substring(0, 8)}`,
-          recordedBy: actor.id,
-          processedBy: actor.id,
-          processedAt: now,
-        },
-      })
-
-      // Update the loan status to ACTIVE
-      const updatedLoan = await tx.loan.update({
-        where: { id: loanId },
-        data: {
-          status: LoanStatus.ACTIVE,
-          disbursedAt: now,
-          repaymentStartDate: now,
-          repaymentEndDate,
-          outstandingBalance: initialDebt, // initial debt matches approved amount + interest
-        },
-      })
-
-      await generateAndPersistLoanSchedule(tx, {
-        loanId,
-        principal: loan.approvedAmount!,
-        termMonths: loan.duration,
-        monthlyInterestRatePercent: loan.interestRate,
-        disbursementValueDate: now,
-      })
-
-      return updatedLoan
-    })
-
-    try {
-      revalidatePath('/admin/loans')
-      revalidatePath(`/admin/loans/${loanId}`)
-      revalidatePath(`/dashboard/${loan.userId}/loans`)
-      revalidatePath(`/dashboard/${loan.userId}/loans/${loanId}`)
-    } catch {}
-
-    return { success: true, data: result }
+    revalidateAdminLoan(result.loan.id, result.loan.userId)
+    return {
+      success: true,
+      data: {
+        id: result.loan.id,
+        status: result.loan.status as string,
+        disbursementNumber: result.disbursement.disbursementNumber,
+        isReplay: result.isReplay,
+      },
+    }
   } catch (error) {
-    const err = toActionErrorResult(error, {
-      actionName: 'disburseLoanAction',
-      fallbackMessage: 'Failed to disburse loan.',
-      context: { loanId },
-    })
+    const err = errorResult(error, 'disburseLoanAction', 'Failed to disburse loan.', { loanId })
     return {
       success: false,
       error: err.error,
@@ -360,79 +149,17 @@ export const disburseLoanAction = async (
   }
 }
 
-export const reviewLoanRepaymentAction = async (
-  transactionId: string,
-  status: 'CONFIRMED' | 'REJECTED',
-  rejectionReason?: string,
-) => {
+/** Runs the offer-expiry job on demand (until P4-04 schedules it). */
+export const expireLoanOffersAction = async () => {
   try {
-    const actor = await requirePermission(AdminPermission.LOANS_REVIEW)
-
-    const tx = await prisma.transaction.findUnique({
-      where: { id: transactionId },
-      include: { loan: true },
-    })
-
-    if (!tx || !tx.loanId) {
-      return {
-        success: false,
-        error: 'Transaction or associated loan not found.',
-      }
-    }
-    if (tx.status !== 'PENDING') {
-      return { success: false, error: 'Transaction is not pending review.' }
-    }
-    if (tx.category !== 'LOAN_REPAYMENT' && tx.category !== 'FEE') {
-      return { success: false, error: 'Not a loan transaction.' }
-    }
-
-    await prisma.$transaction(async (txPrisma) => {
-      await txPrisma.transaction.update({
-        where: { id: transactionId },
-        data: {
-          status,
-          rejectionReason: status === 'REJECTED' ? rejectionReason : null,
-          processedBy: actor.id,
-          processedAt: new Date(),
-        },
-      })
-
-      if (status === 'CONFIRMED') {
-        const loan = tx.loan!
-
-        const newTotalRepaid = new Prisma.Decimal(
-          Number(loan.totalRepaid) + Number(tx.amount),
-        )
-        const newOutstandingBalance = new Prisma.Decimal(
-          Math.max(0, Number(loan.outstandingBalance) - Number(tx.amount)),
-        )
-
-        await txPrisma.loan.update({
-          where: { id: loan.id },
-          data: {
-            totalRepaid: newTotalRepaid,
-            outstandingBalance: newOutstandingBalance,
-            actualRepaymentDate:
-              newOutstandingBalance.toNumber() <= 0 ? new Date() : undefined,
-            status:
-              newOutstandingBalance.toNumber() <= 0
-                ? LoanStatus.COMPLETED
-                : loan.status,
-          },
-        })
-      }
-    })
-
+    await requirePermission(AdminPermission.LOANS_REVIEW)
+    const result = await runLoanOfferExpiryJob()
     try {
-      revalidatePath(`/admin/loans/${tx.loanId}`)
+      revalidatePath('/admin/loans')
     } catch {}
-    return { success: true }
-  } catch (error: unknown) {
-    const err = toActionErrorResult(error, {
-      actionName: 'reviewLoanRepaymentAction',
-      fallbackMessage: 'Failed to review loan repayment.',
-      context: { transactionId, status },
-    })
+    return { success: true, data: result }
+  } catch (error) {
+    const err = errorResult(error, 'expireLoanOffersAction', 'Failed to expire loan offers.')
     return {
       success: false,
       error: err.error,

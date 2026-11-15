@@ -19,6 +19,9 @@ import {
   requireStaffSession,
 } from '@/lib/authz/guards'
 import { queryAuditEvents, AuditQueryParams } from '@/lib/services/audit.service'
+import { getLoanPlanById } from '@/models/loans/query'
+import { getLoanReviewContext } from '@/lib/services/loans.service'
+import { maskAccountNumber } from '@/lib/domain/profile-change'
 
 /**
  * Fetches comprehensive aggregate statistics and activity feeds for the Admin Dashboard
@@ -567,47 +570,101 @@ export const getLoanByIdQuery = async (loanId: string) => {
       AdminPermission.LOAN_SETTINGS_MANAGE,
     ])
 
-    const loan = await prisma.loan.findUnique({
-      where: { id: loanId },
-      include: {
-        user: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-            username: true,
-            role: true,
-            photoUrl: true,
-            createdAt: true,
-            userInfo: true,
-            bankAccounts: true,
-            membership: true,
+    // P3-04: one review screen — consent states, capacity, lock, history, fee, receipts
+    const plan = await getLoanPlanById(loanId)
+    if (!plan.success || !plan.data) {
+      return { success: false, error: plan.error ?? 'Loan not found.', data: null }
+    }
+    const loan = plan.data
+    const [review, member, submissions] = await Promise.all([
+      getLoanReviewContext(loanId),
+      prisma.user.findUnique({
+        where: { id: loan.userId },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          photoUrl: true,
+          createdAt: true,
+          bankAccounts: {
+            select: { id: true, bankName: true, accountName: true, accountNumber: true, isPrimary: true, isVerified: true },
           },
         },
-        transactions: {
-          orderBy: { createdAt: 'desc' },
+      }),
+      prisma.paymentSubmission.findMany({
+        where: {
+          status: 'SUBMITTED',
+          targets: {
+            some: {
+              OR: [
+                { targetType: 'LOAN', targetId: loanId },
+                ...(loan.fee ? [{ targetType: 'FEE' as const, targetId: loan.fee.id }] : []),
+              ],
+            },
+          },
         },
+        select: {
+          id: true,
+          submissionNumber: true,
+          claimedAmount: true,
+          paidOn: true,
+          bankReference: true,
+          purpose: true,
+          submittedAt: true,
+          receiptFileId: true,
+        },
+        orderBy: { submittedAt: 'asc' },
+      }),
+    ])
+
+    const toNum = (d: Prisma.Decimal | null | undefined) => (d ? d.toNumber() : null)
+    return {
+      success: true,
+      data: {
+        ...loan,
+        member: member
+          ? {
+              ...member,
+              bankAccounts: member.bankAccounts.map((b) => ({
+                id: b.id,
+                bankName: b.bankName,
+                accountName: b.accountName,
+                accountNumberMasked: maskAccountNumber(b.accountNumber),
+                isPrimary: b.isPrimary,
+                isVerified: b.isVerified,
+              })),
+            }
+          : null,
+        receiptsToReview: submissions.map((s) => ({
+          ...s,
+          claimedAmount: Number(s.claimedAmount),
+          receiptUrl: s.receiptFileId ? `/api/files/${s.receiptFileId}` : null,
+        })),
+        review: review
+          ? {
+              eligibleSavings: review.eligibility.eligibleSavings.toNumber(),
+              standaloneLimit: review.eligibility.standaloneLimit.toNumber(),
+              existingExposure: review.eligibility.existingExposure.toNumber(),
+              guarantorFreeCapacity: toNum(review.eligibility.guarantorFreeCapacity),
+              supportNeeded: toNum(review.support?.needed),
+              guaranteeReserved: toNum(review.guarantee?.reservedAmount),
+              guaranteeConsentedAmount: toNum(review.guarantee?.consentedAmount),
+              guarantorName: review.guarantee?.guarantor.name ?? null,
+              savingsLocked: review.lien.isLocked,
+              overdueInstalments: review.overdueInstalments,
+              otherLoans: review.otherLoans.map((l) => ({
+                id: l.id,
+                status: l.status as string,
+                requestedAmount: l.requestedAmount.toNumber(),
+                approvedAmount: toNum(l.approvedAmount),
+                duration: l.duration,
+                outstandingBalance: l.outstandingBalance.toNumber(),
+                createdAt: l.createdAt,
+              })),
+            }
+          : null,
       },
-    })
-
-    if (!loan) return { success: false, error: 'Loan not found.' }
-
-    const serialized = {
-      ...loan,
-      requestedAmount: Number(loan.requestedAmount),
-      approvedAmount: loan.approvedAmount ? Number(loan.approvedAmount) : null,
-      interestRate: Number(loan.interestRate),
-      applicationFee: Number(loan.applicationFee),
-      outstandingBalance: Number(loan.outstandingBalance),
-      totalRepaid: Number(loan.totalRepaid),
-      defaultPenalty: Number(loan.defaultPenalty),
-      transactions: loan.transactions.map((tx) => ({
-        ...tx,
-        amount: Number(tx.amount),
-      })),
     }
-
-    return { success: true, data: serialized }
   } catch (error) {
     console.error('Error fetching admin loan details:', error)
     return {

@@ -596,6 +596,11 @@ describe('Server authorization matrix & invariants (PR P1-04)', () => {
         email: 'member.a@crystalkairos.coop',
       },
       transactions: [],
+      instalments: [],
+      guaranteeReservations: [],
+      offerAcceptance: null,
+      termsVersion: 1,
+      createdAt: new Date(),
     } as never)
 
     vi.spyOn(prisma.loan, 'findFirst').mockImplementation((async (args: {
@@ -651,7 +656,8 @@ describe('Server authorization matrix & invariants (PR P1-04)', () => {
         await submitLoanRepaymentAction('member-a', {
           loanId: 'loan-a',
           amount: 5000,
-          receiptUrl: 'https://cdn.example.com/r.png',
+          paidOn: '2026-11-01',
+          receiptFileId: 'file-a',
         })
       ).success,
     ).toBe(false)
@@ -662,9 +668,11 @@ describe('Server authorization matrix & invariants (PR P1-04)', () => {
     const loanDetail = await getLoanPlanById('loan-a')
     expect(loanDetail.success).toBe(true)
     expect(JSON.stringify(loanDetail.data)).not.toContain('passwordHash')
-    expect((await acceptLoanOfferAction('member-a', 'loan-a')).success).toBe(
-      true,
-    )
+    // P3-04: the owner passes authorisation; the offer itself is validated by the
+    // loan service inside a locked transaction (covered in loan-workflow.test.ts).
+    const ownAccept = await acceptLoanOfferAction('member-a', 'loan-a')
+    expect(ownAccept.code).not.toBe('FORBIDDEN')
+    expect(ownAccept.code).not.toBe('UNAUTHENTICATED')
 
     // 4. searchMemberByEmailAction rejects staff emails as guarantors (D-15)
     const ownerGuarantor = await searchMemberByEmailAction(

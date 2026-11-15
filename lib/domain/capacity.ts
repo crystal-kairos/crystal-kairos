@@ -139,6 +139,7 @@ export interface LoanForLienCheck {
 
 export const ACTIVE_LOAN_LIEN_STATUSES: readonly LoanStatus[] = [
   LoanStatus.APPROVED,
+  LoanStatus.AWAITING_RECONSENT, // P3-04: approved with changed terms, not yet disbursed
   LoanStatus.ACCEPTED,
   LoanStatus.DISBURSED,
   LoanStatus.ACTIVE,

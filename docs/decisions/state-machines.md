@@ -18,7 +18,7 @@ This document defines every stateful lifecycle enum, its allowed state transitio
 | `Payment` | `status` | `REVERSED` | Advisory lock on `paymentId` |
 | `Savings` (Plan) | `status` | `WITHDRAWN`, `CANCELLED` | Advisory lock on the member (`lockMembers`) + conditional `transition()` |
 | `SavingsPeriod` | `status` | `COMPLETED`, `WAIVED` | Derived from payment allocations |
-| `Loan` | `status` | `COMPLETED`, `DEFAULTED`, `REJECTED`, `CANCELLED` | Conditional update + Advisory lock |
+| `Loan` | `status` | `COMPLETED`, `REJECTED`, `DECLINED`, `CANCELLED`, `EXPIRED` | Conditional update + Advisory lock |
 | `LoanInstalment` | `status` | `COMPLETED`, `WAIVED` | Derived from payment allocations |
 | `GuaranteeRequest` | `status` | `DECLINED`, `RELEASED`, `REPLACED`, `CANCELLED` | Advisory lock on `guarantorId` |
 | `GuaranteeReservation` | `status` | `RELEASED`, `CONSUMED` | Advisory lock on `guarantorId` |
@@ -144,35 +144,49 @@ stateDiagram-v2
 
 ### 2.5 Loan Lifecycle (`LoanStatus`)
 
+As implemented in P3-04 (`lib/services/loans.service.ts`). Every transition runs in one transaction that
+first takes `lockMembers` on the borrower and the guarantor, then uses `transition()` (conditional update,
+`STALE_STATE` on a race).
+
 ```mermaid
 stateDiagram-v2
-    [*] --> PENDING: Member applies
-    PENDING --> APPROVED: Admin approves unchanged terms
-    PENDING --> AWAITING_RECONSENT: Admin approves modified amount/term/rate (D-10)
-    PENDING --> REJECTED: Admin rejects application
-    AWAITING_RECONSENT --> ACCEPTED: Borrower accepts offer & Guarantor re-consents
-    AWAITING_RECONSENT --> DECLINED: Borrower declines or Guarantor declines
-    AWAITING_RECONSENT --> CANCELLED: Re-consent deadline expires
-    APPROVED --> ACCEPTED: Borrower accepts formal offer (Consent PDF stored)
-    ACCEPTED --> ACTIVE: Admin disburses loan (Disbursement confirmed)
-    ACTIVE --> OVERDUE: Instalment unpaid past grace period (Day +8)
-    ACTIVE --> COMPLETED: All instalments fully repaid
+    [*] --> PENDING: Member applies (rate/penalty/cap snapshotted; guarantor asked; fee assessed if > 0)
+    PENDING --> APPROVED: Admin approves the requested amount and term
+    PENDING --> AWAITING_RECONSENT: Admin approves a lower amount or another term (D-10)
+    PENDING --> REJECTED: Admin rejects (reason required)
+    PENDING --> CANCELLED: Member withdraws the application
+    APPROVED --> ACCEPTED: Borrower accepts the offer (PDF evidence)
+    AWAITING_RECONSENT --> ACCEPTED: Borrower accepts AND guarantor re-consents (either order)
+    APPROVED --> DECLINED: Borrower declines (reason required)
+    AWAITING_RECONSENT --> DECLINED: Borrower or guarantor declines the revised terms
+    APPROVED --> EXPIRED: Offer not accepted by offerExpiresAt (job)
+    AWAITING_RECONSENT --> EXPIRED: Offer not accepted by offerExpiresAt (job)
+    APPROVED --> CANCELLED: Guarantor withdraws consent before disbursement
+    AWAITING_RECONSENT --> CANCELLED: Guarantor withdraws consent before disbursement
+    ACCEPTED --> CANCELLED: Guarantor withdraws consent before disbursement
+    ACCEPTED --> ACTIVE: Staff record the disbursement (dual control A-19)
+    ACTIVE --> OVERDUE: An unpaid, unshielded instalment reaches due date + 8
     OVERDUE --> ACTIVE: Overdue amounts brought current
-    OVERDUE --> COMPLETED: Loan settled early or via recovery
-    OVERDUE --> DEFAULTED: Recovery case execution or non-performing
-    DEFAULTED --> COMPLETED: Fully recovered via settlement
+    ACTIVE --> COMPLETED: Every instalment's principal, interest and net penalties settled
+    OVERDUE --> COMPLETED: Settled (receipt, wallet or early settlement)
+    OVERDUE --> DEFAULTED: Recovery (P3-06B)
+    DEFAULTED --> COMPLETED: Fully recovered
 ```
 
 - **Transitions:**
   | From | To | Guard / Prerequisite | Actor | Side Effects |
   |---|---|---|---|---|
-  | `PENDING` | `APPROVED` | Borrower within capacity; guarantor consented & reserved; application fee paid (if applicable) | Staff with `LOANS_REVIEW` | Snapshot agreed rate, duration, penalty cap; create borrower offer. |
-  | `PENDING` | `AWAITING_RECONSENT` | Approved terms differ from requested | Staff with `LOANS_REVIEW` | Hold provisional reservation; notify borrower and guarantor to re-consent. |
-  | `AWAITING_RECONSENT` | `ACCEPTED` | Both borrower and guarantor accept revised terms | Borrower & Guarantor | Re-create guarantee reservation atomically; generate signed terms PDF. |
-  | `APPROVED` | `ACCEPTED` | Borrower accepts terms & schedule | Borrower | Store accepted terms PDF evidence. |
-  | `ACCEPTED` | `ACTIVE` | Disbursed by different staff user (dual control A-19); disbursement value date recorded | Staff with `LOANS_DISBURSE` | Set `disbursementValueDate`; generate `LoanInstalment` rows via `addMonthsClamped`; activate own-savings lock (`FULL`); post loan receivable journal. |
-  | `ACTIVE` | `OVERDUE` | Today >= dueDate + 8 (unshielded) | Scheduled Job / Lateness | Flag loan overdue; begin daily penalty accrual. |
-  | `ACTIVE` / `OVERDUE` | `COMPLETED` | Balance = 0 (principal, interest, penalties) | System (Payment / Wallet) | Release own-savings lock; release guarantor reservation atomically; audit log. |
+  | — | `PENDING` | Active member (not staff), product eligibility, active term rate for the term, named active guarantor whose free capacity covers the support needed (§2.1) | Member | Snapshot rate, penalty %, cap, rate version; `GuaranteeReservation` `PENDING`; `FeeAssessment` if fee > 0. |
+  | `PENDING` | `APPROVED` / `AWAITING_RECONSENT` | Guarantee `CONSENTED` for the current `termsVersion`; fee `PAID`/`WAIVED`; amount ≤ requested and ≤ consented; capacity re-checked inside the lock | `LOANS_REVIEW` | Offer (`BorrowerOfferAcceptance` `PENDING`), `offerExpiresAt`; on changed terms bump `termsVersion`, re-snapshot the new term's rate, guarantee → `AWAITING_RECONSENT` holding the new support amount. |
+  | `PENDING` | `REJECTED` / `CANCELLED` | Reason (reject) / own application (cancel) | `LOANS_REVIEW` / Member | Release guarantees; waive an unpaid fee (a paid fee is kept, OQ-03); re-allocate reservations. |
+  | `APPROVED` | `ACCEPTED` | Offer open, not expired, `termsVersion` matches | Borrower | Evidence PDF. |
+  | `AWAITING_RECONSENT` | `ACCEPTED` | Borrower accepted **and** guarantee `CONSENTED` at the new `termsVersion` | Borrower / Guarantor | Evidence PDFs for both decisions. |
+  | `APPROVED`/`AWAITING_RECONSENT` | `DECLINED` / `EXPIRED` | Borrower declines, guarantor declines re-consent, or `offerExpiresAt` passed | Borrower / Guarantor / Job | Release guarantees; waive an unpaid fee. |
+  | `ACCEPTED` | `ACTIVE` | Offer accepted and guarantee consented at the same `termsVersion`; amount = approved; value date ≤ today and ≥ approval date; bank reference; evidence file; disburser ≠ approver when two eligible staff exist | `LOANS_DISBURSE` | `Disbursement` (`PAID`), journal `LOAN_RECEIVABLE_PRINCIPAL` / `COOPERATIVE_CASH` (key `loan-disbursement:{loanId}`), instalments from `addMonthsClamped(valueDate, k)`. Idempotent replay. |
+  | `ACTIVE`/`OVERDUE` | `ACTIVE`/`OVERDUE`/`COMPLETED` | Derived by `refreshLoanAfterPayment()` after every confirmation, rejection and wallet payment | System | Instalment statuses re-derived; completion releases guarantees (the own-savings lock is derived from the status); reservations re-allocated (§2.1). |
+
+- The own-savings lock (D-02) applies in `APPROVED`, `AWAITING_RECONSENT`, `ACCEPTED`, `ACTIVE`, `OVERDUE`,
+  `DEFAULTED` (and legacy `DISBURSED`).
 
 ---
 
@@ -219,6 +233,7 @@ stateDiagram-v2
   - Amount reserved = `max(0, applicantExposure - borrowerStandaloneLimit)`.
   - Reserved amount reduces guarantor's free guarantee capacity.
   - Released only upon: loan full settlement, e-ajo completion, replacement guarantor reservation activation, or application cancellation.
+  - P3-04: a guarantee in `AWAITING_RECONSENT` keeps holding its (re-sized) reservation until the guarantor decides; consent and withdrawal are only possible while the loan is not yet disbursed.
 
 ---
 
