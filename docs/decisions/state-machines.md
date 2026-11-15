@@ -13,7 +13,7 @@ This document defines every stateful lifecycle enum, its allowed state transitio
 | Model | State Enum Field | Terminal States | Concurrency Mechanism |
 |---|---|---|---|
 | `Membership` | `status` | `APPROVED`, `REJECTED`, `EXPIRED` | Conditional update (`count === 1`) |
-| `ProfileChangeRequest` | `status` | `APPROVED`, `REJECTED` | Advisory lock on `memberId` |
+| `ProfileChangeRequest` | `status` | `APPROVED`, `REJECTED`, `CANCELLED` | Advisory lock on `memberId` + conditional update (`count === 1`) |
 | `PaymentSubmission` | `status` | `CONFIRMED`, `REJECTED`, `CANCELLED` | Conditional update (`count === 1`) |
 | `Payment` | `status` | `REVERSED` | Advisory lock on `paymentId` |
 | `Savings` (Plan) | `status` | `WITHDRAWN`, `CANCELLED` | Advisory lock on `savingsId` |
@@ -54,6 +54,28 @@ stateDiagram-v2
   | `PENDING` | `APPROVED` | Profile essentials complete, user is active, no existing membership | Staff with `MEMBERS_APPROVE` | Generate `CK-000001` member number from sequence, record `approvedAt`, `approvedBy`, send approval notification. |
   | `PENDING` | `REJECTED` | Rejection reason supplied | Staff with `MEMBERS_APPROVE` | Record `rejectionReason`, notify applicant. |
   | `APPROVED` | `EXPIRED` | **Disabled** (D-19): Membership expiry has no behaviour in this build. | None | None |
+
+---
+
+### 2.1A Profile Change Request (`ProfileChangeStatus`) — P3-02B
+
+```mermaid
+stateDiagram-v2
+    [*] --> PENDING: Member submits change (one PENDING per member per change type)
+    PENDING --> APPROVED: Reviewer approves (change applied in same transaction)
+    PENDING --> REJECTED: Reviewer rejects (reason required)
+    PENDING --> CANCELLED: Member cancels own request
+```
+
+- **Change types:** `PRIMARY_BANK` (switch default payout account), `BANK_DETAILS` (replace bank/account number of an existing account; resolved server-side), `NEXT_OF_KIN`.
+- **Concurrency:** every submission, approval, rejection and cancellation runs in one transaction that first takes `lockMembers(tx, [memberId])`, then moves the status with a conditional `updateMany({ where: { id, status: 'PENDING' } })` that must affect exactly one row (`STALE_STATE` otherwise). The audit event is written in the same transaction.
+- **Transitions:**
+  | From | To | Guard / Prerequisite | Actor | Side Effects |
+  |---|---|---|---|---|
+  | — | `PENDING` | Actor is the member (role `USER`); no other `PENDING` request of the same type; payload validated for its type | Member | Snapshot previous value; audit `PROFILE_CHANGE.SUBMITTED`. |
+  | `PENDING` | `APPROVED` | Reviewer differs from the member; payload re-validated; target account still belongs to member, is verified and not registered by another active member (A-22) | Staff with `PROFILE_CHANGES_REVIEW` | Apply the change (exactly one primary account is kept); audit `PROFILE_CHANGE.APPROVED`. |
+  | `PENDING` | `REJECTED` | Reason (≥ 3 chars) | Staff with `PROFILE_CHANGES_REVIEW` | Active values unchanged; audit `PROFILE_CHANGE.REJECTED`. |
+  | `PENDING` | `CANCELLED` | Request belongs to the actor | Member | Audit `PROFILE_CHANGE.CANCELLED`. |
 
 ---
 

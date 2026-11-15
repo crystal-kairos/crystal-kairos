@@ -13,7 +13,7 @@ import {
   validateStoredFileBuffer,
 } from '@/lib/storage/file-validation'
 import { StorageUploadError } from '@/lib/storage/cloudinary'
-import { updateNextOfKinAction } from '@/models/members/actions'
+import { requestNextOfKinChangeAction } from '@/models/members/profile-change-actions'
 import { createSavingsPlanAction } from '@/models/savings/actions'
 import {
   Relationship,
@@ -114,9 +114,10 @@ describe('Error Normalisation, Validation & Receipt Upload Limit (PR P1-06)', ()
   })
 
   it('returns structured fieldErrors for invalid form data and does not create database rows', async () => {
-    const upsertSpy = vi.spyOn(prisma.nextOfKin, 'upsert')
+    // Members change next of kin through the review request path (PR P3-02B).
+    const createSpy = vi.spyOn(prisma.profileChangeRequest, 'create')
 
-    const res = await updateNextOfKinAction('member-1', {
+    const res = await requestNextOfKinChangeAction('member-1', {
       name: 'A', // Too short (< 2 chars)
       phoneNumber: '123', // Invalid phone number
       relationship: Relationship.SIBLING,
@@ -131,7 +132,7 @@ describe('Error Normalisation, Validation & Receipt Upload Limit (PR P1-06)', ()
     expect(res.code).toBe('VALIDATION_ERROR')
     expect(res.fieldErrors).toBeDefined()
     expect(res.fieldErrors?.accountNumber).toBeDefined()
-    expect(upsertSpy).not.toHaveBeenCalled()
+    expect(createSpy).not.toHaveBeenCalled()
   })
 
   it('normalises database (Prisma) and Cloudinary failures into safe messages with a correlation ID and hides raw internals', async () => {

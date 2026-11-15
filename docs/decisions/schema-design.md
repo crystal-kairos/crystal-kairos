@@ -282,21 +282,22 @@ Next of kin contact for settlement in the event of death.
 - **Relations:** `user`: `User` (`onDelete: Restrict`)
 
 #### 3.2.5 `ProfileChangeRequest`
-Audited review queue for sensitive profile amendments.
+Audited review queue for sensitive profile amendments (implemented in P3-02B).
 - **Fields:**
   - `id`: `String @id @default(uuid())`
   - `userId`: `String`
-  - `fieldName`: `String` (e.g. `bankAccount`, `phoneNumber`, `name`)
-  - `oldValue`: `Json?`
-  - `requestedValue`: `Json`
-  - `reason`: `String?`
-  - `status`: `ProfileChangeStatus` (`PENDING`, `APPROVED`, `REJECTED`)
+  - `changeType`: `ProfileChangeType` (`BANK_DETAILS`, `PRIMARY_BANK`, `NEXT_OF_KIN`)
+  - `previousValue`: `Json?` (snapshot of the active value when submitted)
+  - `proposedValue`: `Json` (validated per `changeType` on submission **and** re-validated on approval — see `lib/domain/profile-change.ts`)
+  - `status`: `ProfileChangeStatus` (`PENDING`, `APPROVED`, `REJECTED`, `CANCELLED`)
+  - `submittedAt`: `DateTime @default(now())`
   - `reviewedById`: `String?`
   - `reviewedAt`: `DateTime?`
   - `rejectionReason`: `String?`
-  - `createdAt`: `DateTime @default(now())`
+  - `createdAt`: `DateTime @default(now())`, `updatedAt`: `DateTime @updatedAt`
 - **Relations:** `user`: `User` (`onDelete: Restrict`), `reviewedBy`: `User?` (`onDelete: Restrict`)
-- **Indexes:** `[userId, status]`
+- **Indexes:** `[userId, submittedAt]`, `[userId, changeType, status]`, `[status, submittedAt]`
+- **Privacy:** full account numbers inside the JSON snapshots are never sent to list views; `redactChangeValue()` replaces them with `accountNumberMasked`.
 
 ---
 
