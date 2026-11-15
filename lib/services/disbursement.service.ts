@@ -167,6 +167,16 @@ export async function disbursePayment(
       return { disbursement, isReplay: true }
     }
 
+    // P3-05: e-ajo payouts post a multi-line journal (§2.12, C4) and run under
+    // EAJO_PAYOUTS_MANAGE dual control; they are recorded only via recordEAjoPayoutPaid.
+    if (disbursement.purpose === DisbursementPurpose.EAJO_PAYOUT) {
+      throw new AppError(
+        'USE_EAJO_PAYOUT_FLOW',
+        'E-ajo payouts are recorded from the e-ajo group page.',
+        { statusCode: 409 },
+      )
+    }
+
     if (disbursement.status !== DisbursementStatus.APPROVED) {
       throw new AppError(
         'INVALID_STATUS',
@@ -199,8 +209,6 @@ export async function disbursePayment(
       debitAccount = LedgerAccountType.SAVINGS_PRINCIPAL_LIABILITY
     } else if (disbursement.purpose === DisbursementPurpose.WALLET_WITHDRAWAL) {
       debitAccount = LedgerAccountType.MEMBER_WALLET_LIABILITY
-    } else if (disbursement.purpose === DisbursementPurpose.EAJO_PAYOUT) {
-      debitAccount = LedgerAccountType.EAJO_ADVANCE_RECEIVABLE
     } else if (disbursement.purpose === DisbursementPurpose.MEMBER_SETTLEMENT) {
       debitAccount = LedgerAccountType.MEMBER_SETTLEMENT_PAYABLE
     }

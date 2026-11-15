@@ -183,29 +183,39 @@ export function evaluateOwnSavingsLien(
 }
 
 /**
- * Calculates E-Ajo advance exposure for guarantee reservations (§2.1, §2.8).
- * Before member payout: advanceAmount = (payoutPosition - 1) * contributionAmount
- * After member payout: remaining unpaid scheduled contributions (never more than advanceAmount)
+ * Calculates the e-ajo guarantee reservation (the cooperative's advance exposure, §2.1, §2.8, A-09).
+ *
+ *   advanceAmount = c × (N − s)
+ *   before the member's payout:  reservation = advanceAmount
+ *   after the member's payout:   reservation = remaining unpaid scheduled contributions,
+ *                                never more than advanceAmount
+ *
+ * A member in the last slot has advanceAmount = 0: the guarantor is still named and consents,
+ * with a zero reservation.
+ *
+ * (Before P3-05 this used `c × (s − 1)`, which is the contributions *held*, not the advance.)
  */
 export function calculateEAjoAdvanceExposure(params: {
   payoutPosition: number
+  totalSlots: number
   contributionAmount: Prisma.Decimal | string | number
   hasReceivedPayout?: boolean
   unpaidScheduledContributions?: Prisma.Decimal | string | number
 }): Prisma.Decimal {
   const position = params.payoutPosition
-  const contribution = toDecimal(params.contributionAmount)
-
-  if (position <= 1) {
-    // Slot 1 members receive payout after period 1; advance exposure is zero
-    return new Prisma.Decimal(0)
+  const totalSlots = params.totalSlots
+  if (!Number.isInteger(totalSlots) || totalSlots <= 0) {
+    throw new Error('totalSlots must be a positive integer')
   }
+  if (!Number.isInteger(position) || position < 1 || position > totalSlots) {
+    throw new Error(`payoutPosition must be an integer between 1 and ${totalSlots}`)
+  }
+  const contribution = toDecimal(params.contributionAmount)
+  const advanceAmount = roundMoney(contribution.times(totalSlots - position))
 
-  const advanceAmount = roundMoney(contribution.times(position - 1))
-
-  if (params.hasReceivedPayout && params.unpaidScheduledContributions !== undefined) {
-    const unpaid = toDecimal(params.unpaidScheduledContributions)
-    return Prisma.Decimal.min(advanceAmount, Prisma.Decimal.max(0, unpaid))
+  if (params.hasReceivedPayout) {
+    const unpaid = toDecimal(params.unpaidScheduledContributions ?? 0)
+    return roundMoney(Prisma.Decimal.min(advanceAmount, Prisma.Decimal.max(0, unpaid)))
   }
 
   return advanceAmount

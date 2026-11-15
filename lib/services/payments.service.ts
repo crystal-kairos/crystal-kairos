@@ -37,6 +37,11 @@ import {
   prepareSavingsTargetsForConfirmation,
   refreshSavingsSubmissionTargets,
 } from '@/lib/services/savings.service'
+import {
+  afterEAjoAllocationsChanged,
+  getEAjoContributionCreditAccounts,
+} from '@/lib/services/eajo.service'
+import { EAjoMemberStatus } from '@/generated/prisma/enums'
 
 export interface CreatePaymentSubmissionInput {
   memberId: string
@@ -387,8 +392,15 @@ export async function confirmPaymentSubmission(
       } else if (target.targetType === AllocationTargetType.EAJO && target.targetPeriodId) {
         const period = await tx.eAjoContributionPeriod.findUnique({
           where: { id: target.targetPeriodId },
+          include: { eajoMember: { select: { userId: true, status: true } } },
         })
-        if (period) {
+        // P3-05: only the submitting member's own ACTIVE participation can receive the money;
+        // anything else (cancelled/completed participant, foreign period) falls through to the wallet.
+        if (
+          period &&
+          period.eajoMember.userId === submission.memberId &&
+          period.eajoMember.status === EAjoMemberStatus.ACTIVE
+        ) {
           const penaltyDue = Math.max(
             0,
             Number(period.penaltyAssessed) -
@@ -529,6 +541,15 @@ export async function confirmPaymentSubmission(
       }
     }
 
+    // P3-05: e-ajo contributions credit the contribution liability before the participant's
+    // payout and the advance receivable after it (§2.8 rule 5, §2.12)
+    const eajoCreditAccounts = await getEAjoContributionCreditAccounts(
+      tx,
+      allocationResult.allocations
+        .filter((a) => a.targetType === AllocationTargetType.EAJO)
+        .map((a) => a.targetId),
+    )
+
     // 6. Post Double-Entry Journal Entry (§2.12)
     const journalLines: {
       accountType: LedgerAccountType
@@ -561,7 +582,8 @@ export async function confirmPaymentSubmission(
         if (alloc.componentType === PaymentComponentType.PENALTY) {
           accountType = LedgerAccountType.EAJO_PENALTY_RECEIVABLE
         } else {
-          accountType = LedgerAccountType.EAJO_CONTRIBUTION_LIABILITY
+          accountType =
+            eajoCreditAccounts.get(alloc.targetId) ?? LedgerAccountType.EAJO_CONTRIBUTION_LIABILITY
         }
       } else if (alloc.targetType === AllocationTargetType.FEE) {
         accountType = LedgerAccountType.FEE_INCOME
@@ -592,6 +614,15 @@ export async function confirmPaymentSubmission(
       where: { paymentId: payment.id },
       data: { journalEntryId: journalEntry.id },
     })
+
+    // P3-05: re-derive payout eligibility, guarantee reservation and completion
+    await afterEAjoAllocationsChanged(
+      tx,
+      allocationResult.allocations
+        .filter((a) => a.targetType === AllocationTargetType.EAJO)
+        .map((a) => a.targetId),
+      { actorId: confirmedById },
+    )
 
     // 7. Update PaymentSubmission status
     const updatedSubmission = await tx.paymentSubmission.update({
@@ -912,6 +943,15 @@ export async function reversePayment(
         postedById: reversedById,
       })
     }
+
+    // P3-05: e-ajo eligibility/reservation follow the remaining allocations
+    await afterEAjoAllocationsChanged(
+      tx,
+      payment.allocations
+        .filter((a) => a.targetType === AllocationTargetType.EAJO)
+        .map((a) => a.targetId),
+      { actorId: reversedById },
+    )
 
     // 4. Update Payment status
     const updatedPayment = await tx.payment.update({

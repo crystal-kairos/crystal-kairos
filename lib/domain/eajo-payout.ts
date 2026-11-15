@@ -102,3 +102,199 @@ export function calculateMonthlyFundingRequirement(params: {
     netFundingRequirement,
   }
 }
+
+// ---------------------------------------------------------------------------
+// P3-05: slot previews, payout eligibility and the monthly funding schedule
+// ---------------------------------------------------------------------------
+
+/**
+ * Builds the per-slot payout preview shown to admins (group creation) and members (join flow).
+ * Every slot must have a penalty percentage (§2.8 rule 1); a missing slot throws.
+ */
+export function buildEAjoSlotPreviews(params: {
+  monthlyContribution: Prisma.Decimal | number | string
+  totalSlots: number
+  slotPolicies: Array<{
+    slotNumber: number
+    earlySlotPenaltyPercent: Prisma.Decimal | number | string
+  }>
+}): EAjoPayoutCalculationResult[] {
+  const bySlot = new Map(params.slotPolicies.map((p) => [p.slotNumber, p.earlySlotPenaltyPercent]))
+  const previews: EAjoPayoutCalculationResult[] = []
+  for (let s = 1; s <= params.totalSlots; s++) {
+    const pct = bySlot.get(s)
+    if (pct === undefined || pct === null) {
+      throw new Error(`Missing early-slot penalty for slot ${s}`)
+    }
+    previews.push(
+      calculateEAjoPayout({
+        monthlyContribution: params.monthlyContribution,
+        totalSlots: params.totalSlots,
+        slotNumber: s,
+        earlySlotPenaltyPercent: pct,
+      }),
+    )
+  }
+  return previews
+}
+
+export interface EAjoPeriodState {
+  periodNumber: number
+  dueDate: Date | string
+  contributionDue: Prisma.Decimal | number | string
+  contributionPaid: Prisma.Decimal | number | string
+  /** assessed − paid − waived late penalty on this period */
+  penaltyOutstanding: Prisma.Decimal | number | string
+}
+
+export type EAjoPayoutIneligibilityCode =
+  | 'PAYOUT_MONTH_NOT_REACHED'
+  | 'PAYOUT_MONTH_UNPAID'
+  | 'EARLIER_CONTRIBUTION_OVERDUE'
+  | 'SCHEDULE_MISSING'
+
+export interface EAjoPayoutEligibility {
+  eligible: boolean
+  code: EAjoPayoutIneligibilityCode | null
+  reason: string | null
+}
+
+function toDateKey(d: Date | string): string {
+  if (typeof d === 'string') return d.slice(0, 10)
+  return d.toISOString().slice(0, 10)
+}
+
+/**
+ * Payout eligibility (§2.8 rule 4, ASSUMPTION A-09).
+ *
+ * A payout for slot `s` is ELIGIBLE when:
+ *  1. the payout month has been reached (today ≥ due date of contribution period `s`) — slot `s`
+ *     is "the month in which their payout becomes available";
+ *  2. the contribution for month `s` is settled; and
+ *  3. no earlier contribution is overdue.
+ *
+ * Conservative reading (recorded in docs/decisions/open-questions.md, OQ-12): "settled" and
+ * "not overdue" include any assessed late penalty on those periods, and a period that is merely
+ * shielded by a receipt still in review does not count as settled — only confirmed money does.
+ * Because every earlier period is due at least a month before period `s`, condition 3 means
+ * periods 1..s−1 must be fully paid once the payout month is reached.
+ *
+ * Other participants' payments never enter this function (D-03): eligibility depends only on
+ * this participant's own periods.
+ */
+export function evaluateEAjoPayoutEligibility(params: {
+  slotNumber: number
+  periods: EAjoPeriodState[]
+  today: string // Lagos calendar date YYYY-MM-DD
+}): EAjoPayoutEligibility {
+  const { slotNumber, periods, today } = params
+  const payoutPeriod = periods.find((p) => p.periodNumber === slotNumber)
+  if (!payoutPeriod) {
+    return {
+      eligible: false,
+      code: 'SCHEDULE_MISSING',
+      reason: `No contribution period ${slotNumber} exists for this participant.`,
+    }
+  }
+
+  const outstanding = (p: EAjoPeriodState) =>
+    Prisma.Decimal.max(
+      0,
+      new Prisma.Decimal(p.contributionDue).minus(new Prisma.Decimal(p.contributionPaid)),
+    ).plus(Prisma.Decimal.max(0, new Prisma.Decimal(p.penaltyOutstanding)))
+
+  if (today < toDateKey(payoutPeriod.dueDate)) {
+    return {
+      eligible: false,
+      code: 'PAYOUT_MONTH_NOT_REACHED',
+      reason: `The payout month starts on ${toDateKey(payoutPeriod.dueDate)}.`,
+    }
+  }
+
+  const earlierOverdue = periods
+    .filter((p) => p.periodNumber < slotNumber)
+    .filter((p) => toDateKey(p.dueDate) < today && outstanding(p).gt(0))
+    .map((p) => p.periodNumber)
+    .sort((a, b) => a - b)
+  if (earlierOverdue.length > 0) {
+    return {
+      eligible: false,
+      code: 'EARLIER_CONTRIBUTION_OVERDUE',
+      reason: `Earlier contribution(s) still overdue: month ${earlierOverdue.join(', ')}.`,
+    }
+  }
+
+  if (outstanding(payoutPeriod).gt(0)) {
+    return {
+      eligible: false,
+      code: 'PAYOUT_MONTH_UNPAID',
+      reason: `The contribution for month ${slotNumber} is not yet settled.`,
+    }
+  }
+
+  return { eligible: true, code: null, reason: null }
+}
+
+export interface EAjoFundingParticipant {
+  slotNumber: number
+  netPayout: Prisma.Decimal | number | string
+  periods: Array<{
+    periodNumber: number
+    contributionDue: Prisma.Decimal | number | string
+    contributionPaid: Prisma.Decimal | number | string
+  }>
+}
+
+export interface EAjoFundingMonth {
+  month: number
+  dueDate: string
+  payoutCount: number
+  payoutsDue: Prisma.Decimal
+  expectedContributions: Prisma.Decimal
+  confirmedContributions: Prisma.Decimal
+  /** Σ netPayout due that month − Σ confirmed contributions for that month (§2.8 rule 6) */
+  fundingRequirement: Prisma.Decimal
+}
+
+/**
+ * Builds the group's monthly funding requirement (§2.8 rule 6, Appendix C4).
+ *
+ * Month `k` covers the payouts of every (non-cancelled) participant in slot `k` and the
+ * contributions scheduled for period `k`. Callers must exclude cancelled participants: their
+ * payout is never made and their contributions were returned to their wallet.
+ */
+export function calculateEAjoFundingSchedule(params: {
+  totalSlots: number
+  monthDueDates: Array<Date | string> // index 0 = month 1
+  participants: EAjoFundingParticipant[]
+}): EAjoFundingMonth[] {
+  const rows: EAjoFundingMonth[] = []
+  for (let k = 1; k <= params.totalSlots; k++) {
+    const payouts = params.participants.filter((p) => p.slotNumber === k)
+    const periodsForMonth = params.participants
+      .map((p) => p.periods.find((x) => x.periodNumber === k))
+      .filter((x): x is NonNullable<typeof x> => Boolean(x))
+
+    const req = calculateMonthlyFundingRequirement({
+      payoutsDueThisMonth: payouts.map((p) => ({ netPayout: p.netPayout })),
+      contributionsReceivedThisMonth: periodsForMonth.map((x) => ({ amount: x.contributionPaid })),
+    })
+    const expected = roundMoney(
+      periodsForMonth.reduce(
+        (acc, x) => acc.plus(new Prisma.Decimal(x.contributionDue)),
+        new Prisma.Decimal(0),
+      ),
+    )
+    const due = params.monthDueDates[k - 1]
+    rows.push({
+      month: k,
+      dueDate: due ? toDateKey(due) : '',
+      payoutCount: payouts.length,
+      payoutsDue: req.totalPayoutsDue,
+      expectedContributions: expected,
+      confirmedContributions: req.totalContributionsReceived,
+      fundingRequirement: req.netFundingRequirement,
+    })
+  }
+  return rows
+}

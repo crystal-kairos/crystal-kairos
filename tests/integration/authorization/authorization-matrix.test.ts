@@ -708,8 +708,7 @@ describe('Server authorization matrix & invariants (PR P1-04)', () => {
         await submitEAjoContributionAction(
           'member-a',
           'eajo-member-a',
-          5000,
-          'https://cdn.example.com/r.png',
+          { amount: 5000, paidOn: '2026-01-01', receiptFileId: 'file-1', periodIds: ['period-1'] },
         )
       ).success,
     ).toBe(false)
@@ -788,7 +787,6 @@ describe('Server authorization matrix & invariants (PR P1-04)', () => {
       userId: 'admin-reviewer',
       groupId: 'group-1',
       payoutPosition: 1,
-      status: 'APPROVED',
     })
     expect(staffEAjo.success).toBe(false)
     expect(staffEAjo.error).toMatch(

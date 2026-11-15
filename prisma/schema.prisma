@@ -219,6 +219,8 @@ enum EAjoPayoutStatus {
   APPROVED
   PAID
   CANCELLED
+  HELD // admin hold; released back to ELIGIBLE/NOT_ELIGIBLE (P3-05)
+  FAILED // bank transfer failed after approval; retried via APPROVED (P3-09 failed-payout flow)
 }
 
 enum BorrowerOfferDecision {
@@ -728,6 +730,10 @@ model EAjoGroup {
   maxMembersPerSlot       Int?
   contributionFrequency   String          @default("MONTHLY")
   durationMonths          Int?
+  minParticipants         Int? // optional admin setting checked at activation (P3-05)
+  activatedAt             DateTime?
+  activatedById           String?
+  completedAt             DateTime?
   createdAt               DateTime        @default(now())
   updatedAt               DateTime        @updatedAt
 
@@ -767,11 +773,13 @@ model EAjoMember {
   latePenaltyDailyPercent Decimal?         @db.Decimal(7, 4)
   penaltyCapType          PenaltyCapType?
   penaltyCapValue         Decimal?         @db.Decimal(15, 4)
-  guarantorName           String
-  guarantorPhoneNumber    String
-  bankName                String
-  accountNumber           String
-  accountName             String
+  // Legacy free-text fields (pre-P3-05). The guarantor is now a member linked through
+  // GuaranteeReservation and payouts go to the member's verified BankAccount, so these are optional.
+  guarantorName           String?
+  guarantorPhoneNumber    String?
+  bankName                String?
+  accountNumber           String?
+  accountName             String?
   currentBalance          Decimal          @default(0) @db.Decimal(15, 2)
   totalContributed        Decimal          @default(0) @db.Decimal(15, 2)
   hasReceivedPayout       Boolean          @default(false)
@@ -780,6 +788,11 @@ model EAjoMember {
   approvedAt              DateTime?
   approvedBy              String? // Admin User ID
   rejectionReason         String?
+  activatedAt             DateTime?
+  completedAt             DateTime?
+  cancelledAt             DateTime?
+  cancelledById           String?
+  cancellationReason      String?
   createdAt               DateTime         @default(now())
   updatedAt               DateTime         @updatedAt
 
@@ -790,32 +803,46 @@ model EAjoMember {
   guaranteeReservations GuaranteeReservation[]
   payout                EAjoPayout?
 
-  @@unique([groupId, payoutPosition]) // One member per slot per group
+  // Several participants may pick the same slot (§2.8 rule 2); maxMembersPerSlot is enforced
+  // by the e-ajo service under a group advisory lock.
   @@unique([groupId, userId]) // One application per user per group
   @@index([userId])
-  @@index([groupId])
+  @@index([groupId, payoutPosition])
   @@map("e_ajo_members")
 }
 
 model EAjoPayout {
-  id                      String           @id @default(uuid())
-  eajoMemberId            String           @unique
-  expectedPayout          Decimal          @db.Decimal(15, 2)
-  advanceAmount           Decimal          @db.Decimal(15, 2)
-  earlySlotPenaltyPercent Decimal          @db.Decimal(7, 4)
-  earlySlotPenalty        Decimal          @db.Decimal(15, 2)
-  netPayout               Decimal          @db.Decimal(15, 2)
-  status                  EAjoPayoutStatus @default(NOT_ELIGIBLE)
-  approvedAt              DateTime?
-  approvedById            String?
-  disbursedAt             DateTime?        @db.Date
-  disbursementReference   String?
-  disbursementEvidenceUrl String?
-  createdAt               DateTime         @default(now())
-  updatedAt               DateTime         @updatedAt
+  id                         String           @id @default(uuid())
+  eajoMemberId               String           @unique
+  expectedPayout             Decimal          @db.Decimal(15, 2)
+  advanceAmount              Decimal          @db.Decimal(15, 2)
+  earlySlotPenaltyPercent    Decimal          @db.Decimal(7, 4)
+  earlySlotPenalty           Decimal          @db.Decimal(15, 2)
+  netPayout                  Decimal          @db.Decimal(15, 2)
+  status                     EAjoPayoutStatus @default(NOT_ELIGIBLE)
+  payoutDueDate              DateTime?        @db.Date // due date of contribution period s (the payout month)
+  eligibleAt                 DateTime?
+  approvedAt                 DateTime?
+  approvedById               String?
+  heldAt                     DateTime?
+  heldById                   String?
+  holdReason                 String?
+  disbursedAt                DateTime?        @db.Date // value date of the offline payout
+  disbursedById              String?
+  disbursementReference      String?
+  disbursementEvidenceUrl    String?
+  disbursementEvidenceFileId String?
+  disbursementId             String?          @unique
+  contributionsHeldAtPayout  Decimal?         @db.Decimal(15, 2) // EAJO_CONTRIBUTION_LIABILITY balance debited at payout
+  journalEntryId             String?
+  cancelledAt                DateTime?
+  createdAt                  DateTime         @default(now())
+  updatedAt                  DateTime         @updatedAt
 
-  eajoMember EAjoMember @relation(fields: [eajoMemberId], references: [id], onDelete: Restrict)
+  eajoMember   EAjoMember    @relation(fields: [eajoMemberId], references: [id], onDelete: Restrict)
+  disbursement Disbursement? @relation(fields: [disbursementId], references: [id], onDelete: Restrict)
 
+  @@index([status, payoutDueDate])
   @@map("e_ajo_payouts")
 }
 
@@ -1699,6 +1726,7 @@ model Disbursement {
   journalEntry      JournalEntry? @relation(fields: [journalEntryId], references: [id], onDelete: Restrict)
   savingsWithdrawal Savings?      @relation("SavingsWithdrawalDisbursement")
   loan              Loan?
+  eajoPayout        EAjoPayout?
 
   @@index([recipientUserId, status])
   @@index([valueDate])

@@ -1,19 +1,8 @@
 'use server'
 
-import { prisma } from '@/lib/prisma'
-import {
-  AdminPermission,
-  EAjoStatus,
-  EAjoMemberStatus,
-  TransactionCategory,
-  TransactionType,
-  TransactionStatus,
-  UserRole,
-} from '@/generated/prisma/enums'
-import { EAjoMember, Transaction, Prisma } from '@/generated/prisma/client'
+import { AdminPermission, UserRole } from '@/generated/prisma/enums'
 import { revalidatePath } from 'next/cache'
 import { uploadReceipt } from '@/lib/upload'
-import { bindStoredFileToRecord } from '@/lib/storage/cloudinary'
 import {
   isStoredFilePurpose,
   StoredFilePurpose,
@@ -23,143 +12,42 @@ import {
   requireAuthenticatedSession,
   requireMemberOrStaffWithPermission,
 } from '@/lib/authz/guards'
+import { assertProductEligibility } from '@/lib/services/profile.service'
 import { validateAmount } from '@/lib/validation/money'
-import { calculateEAjoPayout } from '@/lib/domain/eajo-payout'
 import { toActionErrorResult } from '@/lib/errors/to-action-result'
 
-const serializeMember = (m: EAjoMember) => ({
-  ...m,
-  feePercentage: Number(m.feePercentage),
-  feeAmount: Number(m.feeAmount),
-  totalExpectedPayout: Number(m.totalExpectedPayout),
-  netPayoutAmount: Number(m.netPayoutAmount),
-  currentBalance: Number(m.currentBalance),
-  totalContributed: Number(m.totalContributed),
-})
-
-const serializeTransaction = (tx: Transaction) => ({
-  ...tx,
-  amount: Number(tx.amount),
-})
-
-import { assertProductEligibility } from '@/lib/services/profile.service'
+import { applyEAjoContribution, applyToEAjoGroup } from '@/lib/services/eajo.service'
 
 /**
- * User applies to join an eAjo group slot
+ * A member applies for a slot in a PENDING group and names a guarantor by email (§2.7, §2.8).
+ * Staff with EAJO_MANAGE may apply on a member's behalf; the same rules apply.
  */
 export const applyToEAjoGroupAction = async (
   userId: string,
   groupId: string,
-  formData: {
-    payoutPosition: number
-    guarantorName: string
-    guarantorPhoneNumber: string
-    bankName: string
-    accountNumber: string
-    accountName: string
-  },
+  formData: { payoutPosition: number; guarantorEmail?: string },
 ) => {
   try {
-    const actor = await requireMemberOrStaffWithPermission(userId, [
-      AdminPermission.EAJO_MANAGE,
-    ])
-    const targetUserId =
-      actor.role === UserRole.USER ? actor.id : userId
+    const actor = await requireMemberOrStaffWithPermission(userId, [AdminPermission.EAJO_MANAGE])
+    const targetUserId = actor.role === UserRole.USER ? actor.id : userId
 
     await assertTargetUserIsMember(targetUserId)
     await assertProductEligibility(targetUserId, 'EAJO')
 
-    // Verify the group exists and is PENDING (accepting applications)
-    const group = await prisma.eAjoGroup.findUnique({ where: { id: groupId } })
-    if (!group) return { success: false, error: 'Ajo group not found.' }
-    if (
-      group.status !== EAjoStatus.PENDING &&
-      group.status !== EAjoStatus.ACTIVE
-    ) {
-      return {
-        success: false,
-        error: 'This group is no longer accepting applications.',
-      }
-    }
-
-    // Verify slot is still available
-    const slotTaken = await prisma.eAjoMember.findUnique({
-      where: {
-        groupId_payoutPosition: {
-          groupId,
-          payoutPosition: formData.payoutPosition,
-        },
-      },
-    })
-    if (slotTaken) {
-      return {
-        success: false,
-        error: 'This slot has already been taken. Please choose another.',
-      }
-    }
-
-    // Verify user hasn't already applied to this group
-    const existingApplication = await prisma.eAjoMember.findUnique({
-      where: { groupId_userId: { groupId, userId: targetUserId } },
-    })
-    if (existingApplication) {
-      return {
-        success: false,
-        error: 'You have already applied to this group.',
-      }
-    }
-
-    // Fetch slot policy for position (§2.8, A-09)
-    const slotPolicy = await prisma.eAjoSlotPolicy.findUnique({
-      where: {
-        groupId_slotNumber: {
-          groupId,
-          slotNumber: formData.payoutPosition,
-        },
-      },
-    })
-
-    const earlySlotPenaltyPercent = slotPolicy
-      ? Number(slotPolicy.earlySlotPenaltyPercent)
-      : 0
-
-    const payoutCalc = calculateEAjoPayout({
-      monthlyContribution: group.contributionAmount,
-      totalSlots: group.totalSlots,
-      slotNumber: formData.payoutPosition,
-      earlySlotPenaltyPercent,
-    })
-
-    const newMember = await prisma.eAjoMember.create({
-      data: {
-        groupId,
-        userId: targetUserId,
-        payoutPosition: formData.payoutPosition,
-        feePercentage: earlySlotPenaltyPercent,
-        feeAmount: payoutCalc.earlySlotPenalty,
-        totalExpectedPayout: payoutCalc.expectedPayout,
-        netPayoutAmount: payoutCalc.netPayout,
-        earlySlotPenaltyPercent: new Prisma.Decimal(earlySlotPenaltyPercent),
-        latePenaltyDailyPercent: group.latePenaltyDailyPercent,
-        penaltyCapType: group.penaltyCapType,
-        penaltyCapValue: group.penaltyCapValue,
-        guarantorName: formData.guarantorName,
-        guarantorPhoneNumber: formData.guarantorPhoneNumber,
-        bankName: formData.bankName,
-        accountNumber: formData.accountNumber,
-        accountName: formData.accountName,
-        status: EAjoMemberStatus.PENDING,
-      },
+    const result = await applyToEAjoGroup({
+      memberId: targetUserId,
+      groupId,
+      slotNumber: Number(formData.payoutPosition),
+      guarantorEmail: formData.guarantorEmail ?? '',
+      actor,
     })
 
     try {
       revalidatePath(`/dashboard/${targetUserId}/eajo`)
+      revalidatePath(`/admin/eajo/${groupId}`)
     } catch {}
 
-    return {
-      success: true,
-      data: serializeMember(newMember),
-    }
+    return { success: true, data: result }
   } catch (error) {
     const err = toActionErrorResult(error, {
       actionName: 'applyToEAjoGroupAction',
@@ -177,78 +65,55 @@ export const applyToEAjoGroupAction = async (
 }
 
 /**
- * User submits a contribution receipt for their eAjo membership
+ * A member uploads a receipt for one or more of their own contribution periods. This creates a
+ * P2-07 payment submission; money is applied only when staff confirm it (§1.2, §2.10).
  */
 export const submitEAjoContributionAction = async (
   userId: string,
   eAjoMemberId: string,
-  amount: number,
-  receiptUrl: string,
-  referenceNumber?: string,
-  notes?: string,
+  input: {
+    amount: number
+    paidOn: string
+    receiptFileId: string
+    periodIds: string[]
+    bankReference?: string
+    narration?: string
+  },
 ) => {
   try {
     const actor = await requireMemberOrStaffWithPermission(userId, [
       AdminPermission.EAJO_MANAGE,
       AdminPermission.EAJO_PAYMENTS_REVIEW,
     ])
-    const targetUserId =
-      actor.role === UserRole.USER ? actor.id : userId
-
-    const validatedAmount = validateAmount(amount)
-
+    const targetUserId = actor.role === UserRole.USER ? actor.id : userId
     await assertTargetUserIsMember(targetUserId)
 
-    // Verify membership record belongs to targetUserId
-    const membership = await prisma.eAjoMember.findFirst({
-      where: { id: eAjoMemberId, userId: targetUserId },
-    })
-    if (!membership) {
-      return { success: false, error: 'Ajo membership record not found.' }
-    }
-    if (
-      membership.status !== EAjoMemberStatus.ACTIVE &&
-      membership.status !== EAjoMemberStatus.APPROVED
-    ) {
-      return { success: false, error: 'Your membership is not yet active.' }
-    }
-
-    const newTransaction = await prisma.transaction.create({
-      data: {
-        userId: targetUserId,
-        amount: validatedAmount,
-        category: TransactionCategory.AJO_CONTRIBUTION,
-        type: TransactionType.DEPOSIT,
-        status: TransactionStatus.PENDING,
-        eAjoMemberId,
-        receiptUrl,
-        referenceNumber,
-        notes,
-        recordedBy: actor.id,
-      },
-    })
-
-    await bindStoredFileToRecord({
-      fileUrl: receiptUrl,
-      ownerUserId: targetUserId,
-      associatedType: 'TRANSACTION',
-      associatedId: newTransaction.id,
+    const amount = validateAmount(input?.amount)
+    const result = await applyEAjoContribution({
+      memberId: targetUserId,
+      eajoMemberId: eAjoMemberId,
+      amount: Number(amount),
+      paidOn: input.paidOn,
+      receiptFileId: input.receiptFileId,
+      periodIds: input.periodIds ?? [],
+      bankReference: input.bankReference,
+      narration: input.narration,
+      actorId: actor.id,
     })
 
     try {
       revalidatePath(`/dashboard/${targetUserId}/eajo`)
-      revalidatePath(`/dashboard/${targetUserId}`)
     } catch {}
 
     return {
       success: true,
-      data: serializeTransaction(newTransaction),
+      data: { submissionNumber: result.submission.submissionNumber, warnings: result.warnings },
     }
   } catch (error) {
     const err = toActionErrorResult(error, {
       actionName: 'submitEAjoContributionAction',
       fallbackMessage: 'Failed to submit contribution receipt.',
-      context: { userId, eAjoMemberId, amount },
+      context: { userId, eAjoMemberId },
     })
     return {
       success: false,
