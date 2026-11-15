@@ -1,19 +1,19 @@
 'use client'
 
 import { useState, Suspense } from 'react'
-import { useRouter, useSearchParams } from 'next/navigation'
+import { useSearchParams } from 'next/navigation'
 import { ShieldCheck, KeyRound, ArrowRight } from 'lucide-react'
 import { toast } from 'sonner'
+import { signOut } from 'next-auth/react'
 import { verifyMfaChallengeAction } from '@/models/auth/mfaActions'
+import { safeInternalPath } from '@/lib/authz/redirects'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 
 function MfaChallengeContent() {
-  const router = useRouter()
   const searchParams = useSearchParams()
-  const userId = searchParams.get('userId') ?? ''
-  const sessionId = searchParams.get('sid') ?? undefined
-  const callbackUrl = searchParams.get('callbackUrl') ?? '/admin'
+  // Only same-origin paths are honoured; the user and session come from the server session.
+  const callbackUrl = safeInternalPath(searchParams.get('callbackUrl'), '/')
 
   const [code, setCode] = useState('')
   const [loading, setLoading] = useState(false)
@@ -28,14 +28,14 @@ function MfaChallengeContent() {
 
     setLoading(true)
     try {
-      const result = await verifyMfaChallengeAction({
-        userId,
-        code: code.trim(),
-        sessionId,
-      })
+      const result = await verifyMfaChallengeAction({ code: code.trim() })
 
       if (!result.success) {
         toast.error(result.error ?? 'Invalid verification code.')
+        if (result.code === 'SESSION_REVOKED' || result.code === 'UNAUTHENTICATED') {
+          await signOut({ callbackUrl: '/login' })
+          return
+        }
         setLoading(false)
         return
       }
@@ -45,7 +45,8 @@ function MfaChallengeContent() {
           ? 'Backup code accepted. Please generate new backup codes in Security Settings if needed.'
           : 'Authentication verified.',
       )
-      router.replace(callbackUrl)
+      // Full navigation so the proxy re-reads the now-verified session.
+      window.location.assign(callbackUrl)
     } catch {
       toast.error('An error occurred during verification.')
       setLoading(false)
@@ -112,6 +113,15 @@ function MfaChallengeContent() {
             {useBackupCode
               ? 'Use authenticator app code instead'
               : 'Lost access to authenticator? Use a backup code'}
+          </Button>
+
+          <Button
+            type='button'
+            variant='link'
+            onClick={() => signOut({ callbackUrl: '/login' })}
+            className='text-xs text-muted-foreground'
+          >
+            Not you? Sign out
           </Button>
         </form>
       </div>
