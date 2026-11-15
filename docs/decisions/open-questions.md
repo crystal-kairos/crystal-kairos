@@ -11,6 +11,7 @@ This document records architectural, financial, and policy open questions arisin
 - **Question:** Does the cooperative's chartered accountant approve this exact chart of accounts for operational tracking, or should specific sub-accounts (e.g., separating bank accounts by commercial institution or distinguishing member equity) be introduced?
 - **Current Assumption (A-24, D-17):** Implement the 22 ledger accounts as defined in §2.12. Each journal line includes `accountRefType` and `accountRefId` for granular reconciliation.
 - **Action Required:** Sign-off by cooperative accountant before PR P2-02 completion.
+- **Resolved:** The owner confirmed the accountant approved the chart of accounts and the Appendix C worked examples (golden fixtures) as specified.
 
 ### OQ-02: Timing of Monthly Savings Interest Recognition
 - **Context:** §2.5 specifies monthly accrual of linear savings interest in the ledger: `accruedToDate(lot, d) = lotInterest * min(1, max(0, d - lot.valueDate) / eligibleDays)`.
