@@ -16,6 +16,7 @@ import { BankSelectCombobox } from '@/components/banking/BankSelectCombobox'
 import { getBankListAction, resolveAccountNameAction } from '@/models/members/actions'
 import { requestBankDetailsChangeAction } from '@/models/members/profile-change-actions'
 import { Bank } from '@/lib/banking/provider'
+import { useStepUp } from '@/components/auth/StepUpDialog'
 import { toast } from 'sonner'
 import { AlertTriangle, Loader2, Pencil, ShieldCheck } from 'lucide-react'
 
@@ -53,6 +54,7 @@ export const EditBankDetailsDialog = ({
   const [nameWarning, setNameWarning] = useState<string | null>(null)
   const [isResolving, setIsResolving] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const { withStepUp, stepUpDialog } = useStepUp()
 
   const reset = () => {
     setBankCode('')
@@ -100,7 +102,10 @@ export const EditBankDetailsDialog = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setIsSubmitting(true)
-    const result = await requestBankDetailsChangeAction(bankAccountId, { bankCode, accountNumber })
+    // With MFA enabled the server asks for a fresh MFA step-up first (P1-07).
+    const result = await withStepUp(() =>
+      requestBankDetailsChangeAction(bankAccountId, { bankCode, accountNumber }),
+    )
     setIsSubmitting(false)
 
     if (result.success) {
@@ -108,12 +113,14 @@ export const EditBankDetailsDialog = ({
       setOpen(false)
       reset()
       onSuccess?.()
-    } else {
+    } else if (result.code !== 'STEP_UP_REQUIRED') {
       toast.error(result.error || 'Failed to submit the change request.')
     }
   }
 
   return (
+    <>
+    {stepUpDialog}
     <Dialog
       open={open}
       onOpenChange={(val) => {
@@ -218,5 +225,6 @@ export const EditBankDetailsDialog = ({
         </form>
       </DialogContent>
     </Dialog>
+    </>
   )
 }

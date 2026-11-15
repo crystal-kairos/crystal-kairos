@@ -10,6 +10,7 @@ const mockSessionState = vi.hoisted(() => ({
       name: string
       role: UserRole
       sessionVersion?: number
+      sid?: string
     }
   } | null,
 }))
@@ -162,24 +163,45 @@ describe('PR P2-06 Integration Tests: Immutable Audit Events & Access Controls',
   })
 
   it('records administrative permission grants and lifecycle mutations', async () => {
-    // 1. Owner grants new permission to Admin
+    // 1. Owner grants new permission to Admin. Permission changes need a fresh step-up on a
+    //    real, MFA-verified session (P1-07), so the owner gets a database session here.
+    const ownerSession = await prisma.userSession.create({
+      data: {
+        userId: ownerUser.id,
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+        idleExpiresAt: new Date(Date.now() + 30 * 60 * 1000),
+        mfaVerifiedAt: new Date(),
+      },
+    })
     mockSessionState.session = {
       user: {
         id: ownerUser.id,
         email: ownerUser.email,
         name: 'System Owner',
         role: UserRole.OWNER,
+        sid: ownerSession.id,
       },
     }
 
-    const grantRes = await setAdminPermissionsAction(adminUser.id, [
+    const grantPermissions = [
       AdminPermission.AUDIT_READ,
       AdminPermission.MEMBERS_APPROVE,
       AdminPermission.MEMBERS_READ,
       AdminPermission.STAFF_MANAGE,
       AdminPermission.LOANS_READ,
-    ])
+    ]
+
+    const withoutStepUp = await setAdminPermissionsAction(adminUser.id, grantPermissions)
+    expect(withoutStepUp.success).toBe(false)
+    expect(withoutStepUp.code).toBe('STEP_UP_REQUIRED')
+
+    await prisma.userSession.update({
+      where: { id: ownerSession.id },
+      data: { stepUpAt: new Date() },
+    })
+    const grantRes = await setAdminPermissionsAction(adminUser.id, grantPermissions)
     expect(grantRes.success).toBe(true)
+    await prisma.userSession.delete({ where: { id: ownerSession.id } })
 
     // Verify audit event exists
     const grantEvent = await prisma.auditEvent.findFirst({

@@ -12,6 +12,7 @@ import { Card } from '@/components/ui/card'
 import { ShieldCheck, Save, CheckSquare, Square } from 'lucide-react'
 import { toast } from 'sonner'
 import { useRouter } from 'next/navigation'
+import { useStepUp } from '@/components/auth/StepUpDialog'
 
 export interface StaffMemberWithPermissions {
   id: string
@@ -69,17 +70,20 @@ export const AdminPermissionsEditor = ({
     setSelected(new Set())
   }
 
+  const { withStepUp, stepUpDialog } = useStepUp()
+
   const handleSave = async () => {
     if (!canEdit || isOwnerTarget) return
     setSaving(true)
     try {
       const nextList = Array.from(selected)
-      const res = await setAdminPermissionsAction(staffMember.id, nextList)
+      // Permission changes require a fresh step-up (P1-07); the hook prompts and retries.
+      const res = await withStepUp(() => setAdminPermissionsAction(staffMember.id, nextList))
       if (res.success && res.data) {
         toast.success(`Updated permissions for ${staffMember.name}.`)
         onSaved?.(res.data.permissions)
         router.refresh()
-      } else {
+      } else if (res.code !== 'STEP_UP_REQUIRED') {
         toast.error(res.error || 'Failed to update permissions.')
       }
     } catch {
@@ -91,6 +95,7 @@ export const AdminPermissionsEditor = ({
 
   return (
     <div className='space-y-4'>
+      {stepUpDialog}
       <div className='flex flex-wrap items-center justify-between gap-3 border-b border-outline-variant/20 pb-3'>
         <div>
           <h4 className='text-sm font-bold text-primary flex items-center gap-1.5'>

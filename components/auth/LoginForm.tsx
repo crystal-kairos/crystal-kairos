@@ -12,7 +12,8 @@ import { Button } from '../ui/button'
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { BankIcon, LoginFoot, ShieldIcon } from './login-icons'
-import { signIn, signOut, useSession } from 'next-auth/react'
+import { getSession, signIn, signOut, useSession } from 'next-auth/react'
+import { homePathFor, mfaChallengePath } from '@/lib/authz/redirects'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { toast } from 'sonner'
 import { Spinner } from '../ui/spinner'
@@ -77,8 +78,14 @@ const LoginForm = () => {
       return
     }
 
+    // P1-07: users with MFA go straight to the challenge; the proxy enforces it either way.
+    const signedIn = await getSession()
+    const user = signedIn?.user as
+      | { id?: string; role?: string; mfaEnabled?: boolean }
+      | undefined
+    const home = homePathFor(user?.role, user?.id)
     setJustLoggedIn(true)
-    window.location.href = '/'
+    window.location.href = user?.mfaEnabled ? mfaChallengePath(home) : home
   }
 
   useEffect(() => {

@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { auth } from './auth'
 import { loggedInRestrictedRoutes, publicRoutes } from './routes-def'
 import { prisma } from './lib/prisma'
+import { homePathFor, mfaChallengePath, safeInternalPath } from './lib/authz/redirects'
 
 function clearAuthCookies(res: NextResponse) {
   res.cookies.delete('authjs.session-token')
@@ -30,6 +31,8 @@ export const proxy = auth(async (req) => {
   // Validate live session from database if session token is presented
   let dbUser = null
   let isSessionValid = false
+  // P1-07: an MFA-enabled user's session must pass the challenge before using the app.
+  let isMfaPending = false
 
   if (session && sessionUser?.id) {
     try {
@@ -57,24 +60,29 @@ export const proxy = auth(async (req) => {
             where: { id: sessionUser.sid },
             select: {
               id: true,
+              userId: true,
               expiresAt: true,
               idleExpiresAt: true,
               revokedAt: true,
+              mfaVerifiedAt: true,
             },
           })
           const now = new Date()
           if (
             userSession &&
+            userSession.userId === dbUser.id &&
             !userSession.revokedAt &&
             userSession.expiresAt > now &&
             userSession.idleExpiresAt > now
           ) {
             isSessionValid = true
+            isMfaPending = Boolean(dbUser.mfaEnabled && !userSession.mfaVerifiedAt)
           } else {
             isSessionValid = false
           }
         } else {
-          isSessionValid = true
+          // Every real sign-in creates a database session (sid); a token without one is stale.
+          isSessionValid = false
         }
       }
     } catch {
@@ -101,6 +109,32 @@ export const proxy = auth(async (req) => {
     const redirectRes = NextResponse.redirect(loginUrl)
     clearAuthCookies(redirectRes)
     return redirectRes
+  }
+
+  // MFA challenge page: only for a signed-in session that still has to pass the challenge.
+  if (pathname === '/login/mfa') {
+    if (!session || !isSessionValid) {
+      return NextResponse.redirect(new URL('/login', req.url))
+    }
+    if (!isMfaPending) {
+      const target = safeInternalPath(
+        req.nextUrl.searchParams.get('callbackUrl'),
+        homePathFor(userRole, userId),
+      )
+      return NextResponse.redirect(new URL(target, req.url))
+    }
+    return NextResponse.next()
+  }
+
+  // A session waiting for the MFA challenge may only see public pages (or switch account).
+  if (session && isSessionValid && isMfaPending && !isSwitchAccount) {
+    const isPlainPublicPage = isPublicRoute && !loggedInRestrictedRoutes.includes(pathname)
+    if (!isPlainPublicPage) {
+      const callbackPath = loggedInRestrictedRoutes.includes(pathname)
+        ? homePathFor(userRole, userId)
+        : `${pathname}${req.nextUrl.search}`
+      return NextResponse.redirect(new URL(mfaChallengePath(callbackPath), req.url))
+    }
   }
 
   // Redirect to admin or user page if user is validly logged in and trying to visit login/register (unless switching accounts)

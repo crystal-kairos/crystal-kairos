@@ -25,6 +25,7 @@ import {
 } from '@/models/auth/sessionActions'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
+import { useStepUp } from '@/components/auth/StepUpDialog'
 
 interface SessionItem {
   id: string
@@ -51,6 +52,11 @@ function SecuritySettingsContent() {
   const [verificationCode, setVerificationCode] = useState('')
   const [enrolling, setEnrolling] = useState(false)
   const [backupCodes, setBackupCodes] = useState<string[] | null>(null)
+
+  const { withStepUp, stepUpDialog } = useStepUp()
+  const mfaAlreadyEnabled = Boolean(
+    (session?.user as { mfaEnabled?: boolean } | undefined)?.mfaEnabled,
+  )
 
   const [sessions, setSessions] = useState<SessionItem[]>([])
   const [loadingSessions, setLoadingSessions] = useState(false)
@@ -84,10 +90,11 @@ function SecuritySettingsContent() {
 
   const handleStartSetup = async () => {
     setLoadingSetup(true)
-    const res = await initiateMfaSetupAction()
+    // Replacing an existing authenticator requires step-up (P1-07).
+    const res = await withStepUp(() => initiateMfaSetupAction())
     if (res.success && res.data) {
       setSetupData(res.data)
-    } else {
+    } else if (res.code !== 'STEP_UP_REQUIRED') {
       toast.error(res.error ?? 'Failed to start MFA setup.')
     }
     setLoadingSetup(false)
@@ -101,10 +108,12 @@ function SecuritySettingsContent() {
     }
 
     setEnrolling(true)
-    const res = await confirmMfaEnrollmentAction({
-      secret: setupData.secret,
-      token: verificationCode.trim(),
-    })
+    const res = await withStepUp(() =>
+      confirmMfaEnrollmentAction({
+        secret: setupData.secret,
+        token: verificationCode.trim(),
+      }),
+    )
 
     if (res.success && res.data) {
       toast.success('MFA successfully enabled!')
@@ -161,6 +170,7 @@ function SecuritySettingsContent() {
 
   return (
     <div className='max-w-4xl mx-auto p-6 flex flex-col gap-8'>
+      {stepUpDialog}
       <div>
         <h1 className='text-3xl font-bold tracking-tight text-foreground'>
           Account Security & MFA
@@ -190,7 +200,7 @@ function SecuritySettingsContent() {
               disabled={loadingSetup}
               variant='secondary'
             >
-              {loadingSetup ? <Spinner /> : 'Configure MFA'}
+              {loadingSetup ? <Spinner /> : mfaAlreadyEnabled ? 'Replace authenticator' : 'Configure MFA'}
             </Button>
           )}
         </div>

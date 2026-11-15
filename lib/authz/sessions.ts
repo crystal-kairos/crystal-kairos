@@ -193,17 +193,83 @@ export async function revokeAllUserSessions(
   ).catch(() => {})
 }
 
+/** Failed MFA challenge / step-up attempts allowed on one session before it is revoked. */
+export const MAX_SESSION_CHALLENGE_FAILURES = 5
+
 /**
- * Marks MFA as verified on an existing session.
+ * Marks the MFA login challenge as passed on the caller's own live session and
+ * clears its failure counter. Never call this for step-up (see `markSessionStepUp`).
  */
 export async function markSessionMfaVerified(
   sessionId: string,
+  userId: string,
   db: typeof prisma = prisma,
-) {
-  return db.userSession.update({
-    where: { id: sessionId },
-    data: {
-      mfaVerifiedAt: new Date(),
-    },
+): Promise<boolean> {
+  const now = new Date()
+  const res = await db.userSession.updateMany({
+    where: { id: sessionId, userId, revokedAt: null },
+    data: { mfaVerifiedAt: now, challengeFailures: 0 },
   })
+  return res.count === 1
+}
+
+/**
+ * Records a successful step-up re-authentication on the caller's own live session.
+ */
+export async function markSessionStepUp(
+  sessionId: string,
+  userId: string,
+  db: typeof prisma = prisma,
+): Promise<boolean> {
+  const res = await db.userSession.updateMany({
+    where: { id: sessionId, userId, revokedAt: null },
+    data: { stepUpAt: new Date(), challengeFailures: 0 },
+  })
+  return res.count === 1
+}
+
+/**
+ * Counts a failed MFA challenge or step-up attempt on a session. When the limit is
+ * reached the session is revoked, so a stolen password cannot brute-force the second factor.
+ */
+export async function recordSessionChallengeFailure(
+  sessionId: string,
+  userId: string,
+  db: typeof prisma = prisma,
+): Promise<{ revoked: boolean; failures: number }> {
+  const updated = await db.userSession.updateMany({
+    where: { id: sessionId, userId, revokedAt: null },
+    data: { challengeFailures: { increment: 1 } },
+  })
+  if (updated.count !== 1) {
+    return { revoked: true, failures: MAX_SESSION_CHALLENGE_FAILURES }
+  }
+
+  const session = await db.userSession.findUnique({
+    where: { id: sessionId },
+    select: { challengeFailures: true },
+  })
+  const failures = session?.challengeFailures ?? MAX_SESSION_CHALLENGE_FAILURES
+
+  if (failures >= MAX_SESSION_CHALLENGE_FAILURES) {
+    await db.userSession.updateMany({
+      where: { id: sessionId, userId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    })
+    await recordAuditEvent(
+      {
+        actorId: userId,
+        affectedUserId: userId,
+        action: AuditAction.AUTH_SESSION_REVOKED,
+        entityType: 'UserSession',
+        entityId: sessionId,
+        outcome: AuditOutcome.BLOCKED,
+        metadata: { reason: 'TOO_MANY_CHALLENGE_FAILURES', failures },
+      },
+      db,
+    ).catch(() => {})
+    return { revoked: true, failures }
+  }
+
+  return { revoked: false, failures }
 }
