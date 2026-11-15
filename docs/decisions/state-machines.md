@@ -23,9 +23,9 @@ This document defines every stateful lifecycle enum, its allowed state transitio
 | `GuaranteeRequest` | `status` | `DECLINED`, `RELEASED`, `REPLACED`, `CANCELLED` | Advisory lock on `guarantorId` |
 | `GuaranteeReservation` | `status` | `RELEASED`, `CONSUMED` | Advisory lock on `guarantorId` |
 | `EAjoGroup` | `status` | `COMPLETED`, `CANCELLED`, `REJECTED` | Conditional update (`count === 1`) |
-| `EAjoMember` | `status` | `COMPLETED`, `CANCELLED`, `REJECTED` | Advisory lock on `groupId` |
+| `EAjoMember` | `status` | `COMPLETED`, `CANCELLED`, `REJECTED` | Advisory lock on `groupId` + member lock + conditional update |
 | `EAjoContributionPeriod` | `status` | `COMPLETED`, `WAIVED` | Derived from payment allocations |
-| `EAjoPayout` | `status` | `PAID` | Dual-control conditional update |
+| `EAjoPayout` | `status` | `PAID`, `CANCELLED` | Member advisory lock + conditional update; dual control on PAID |
 | `Disbursement` | `status` | `PAID`, `CANCELLED`, `FAILED` | Advisory lock on `disbursementId` |
 | `WalletWithdrawal` | `status` | `PAID`, `REJECTED`, `CANCELLED`, `FAILED` | Advisory lock on `memberId` |
 | `RecoveryCase` | `status` | `CLOSED_PAID`, `CLOSED_WAIVED`, `CLOSED_WRITTEN_OFF` | Conditional update on `caseId` |
@@ -237,43 +237,54 @@ stateDiagram-v2
 
 ---
 
-### 2.8 E-Ajo Group & Member Lifecycle
+### 2.8 E-Ajo Group & Member Lifecycle (as implemented in P3-05)
 
 ```mermaid
 stateDiagram-v2
-    [*] --> PENDING: Admin creates group draft
-    PENDING --> ACTIVE: Admin activates group (Roster & terms locked)
-    ACTIVE --> COMPLETED: All slots paid and all payouts disbursed
-    ACTIVE --> CANCELLED: Group aborted before start
+    [*] --> PENDING: Admin creates group (every slot penalty set)
+    PENDING --> ACTIVE: Admin activates (roster, amounts & terms locked; periods + payouts created)
+    ACTIVE --> COMPLETED: Every participant COMPLETED or CANCELLED
 
     state "EAjoMember Lifecycle" as MemberState {
-        [*] --> M_PENDING: Member picks slot
-        M_PENDING --> M_APPROVED: Admin approves slot assignment
+        [*] --> M_PENDING: Member (or staff on their behalf) picks a slot and names a guarantor
+        M_PENDING --> M_APPROVED: Admin approves (guarantor CONSENTED, capacity rechecked)
+        M_PENDING --> M_REJECTED: Admin rejects with reason, or group activated before approval
+        M_PENDING --> M_CANCELLED: Admin cancels before activation
         M_APPROVED --> M_ACTIVE: Group activated
-        M_ACTIVE --> M_COMPLETED: Payout received & all contributions paid
-        M_ACTIVE --> M_CANCELLED: Cancelled BEFORE payout (Refund to wallet)
+        M_APPROVED --> M_CANCELLED: Admin cancels before activation
+        M_ACTIVE --> M_CANCELLED: Admin cancels BEFORE payout approval (contributions → wallet)
+        M_ACTIVE --> M_COMPLETED: Payout PAID and every contribution and assessed penalty settled
     }
 ```
 
+- **Guards & locking:** every roster change takes the group advisory lock (`eajo-group:{id}`) then the member locks (`lockMembers`), and uses `transition()` (conditional `updateMany`). `maxMembersPerSlot` counts PENDING, APPROVED, ACTIVE and COMPLETED participants, so concurrent joins cannot overfill a slot.
 - **Rules:**
-  - Cancellation after payout is strictly forbidden.
-  - Early-slot penalty is fixed at activation from `EAjoSlotPolicy`.
+  - Cancellation is refused once the payout is APPROVED or PAID, and (OQ-13) while late penalties are unpaid.
+  - The early-slot penalty, late-penalty % and cap are snapshotted on the participant at activation.
+  - Guarantee reservation: `c × (N − s)` until the payout is PAID, then `min(advance, unpaid contributions)`; RELEASED on rejection, cancellation or completion.
 
 ---
 
-### 2.9 E-Ajo Payout Lifecycle (`EAjoPayoutStatus`)
+### 2.9 E-Ajo Payout Lifecycle (`EAjoPayoutStatus`, as implemented in P3-05)
 
 ```mermaid
 stateDiagram-v2
     [*] --> NOT_ELIGIBLE: Created at group activation
-    NOT_ELIGIBLE --> ELIGIBLE: Month s contribution settled & no prior overdue
-    ELIGIBLE --> APPROVED: Admin approves payout (EAJO_PAYOUTS_MANAGE)
-    ELIGIBLE --> HELD: Admin places payout on hold
-    HELD --> ELIGIBLE: Admin releases hold
-    APPROVED --> PAID: Disbursement completed (Dual control approver)
-    APPROVED --> FAILED: Bank transfer failed (Hold released)
-    FAILED --> APPROVED: Retried with corrected bank details
+    NOT_ELIGIBLE --> ELIGIBLE: Payout month reached, months 1..s settled (job or after a confirmation)
+    ELIGIBLE --> NOT_ELIGIBLE: A reversal or new penalty undoes the conditions (re-derived)
+    NOT_ELIGIBLE --> HELD: Admin hold with reason
+    ELIGIBLE --> HELD: Admin hold with reason
+    HELD --> NOT_ELIGIBLE: Hold released, then eligibility re-derived immediately
+    ELIGIBLE --> APPROVED: EAJO_PAYOUTS_MANAGE approves (eligibility rechecked; EAJO_PAYOUT disbursement created)
+    APPROVED --> PAID: Different staff member records value date, bank reference and evidence (dual control A-19)
+    NOT_ELIGIBLE --> CANCELLED: Participant cancelled
+    ELIGIBLE --> CANCELLED: Participant cancelled
+    HELD --> CANCELLED: Participant cancelled
+    APPROVED --> FAILED: (P3-09 failed-payout flow; enum value added in P3-05)
+    FAILED --> APPROVED: (P3-09)
 ```
+
+- An EAJO_PAYOUT `Disbursement` is never paid through the generic `disbursePayment` (it refuses with `USE_EAJO_PAYOUT_FLOW`); `recordEAjoPayoutPaid` posts the §2.12/C4 journal and marks the disbursement PAID.
 
 ---
 

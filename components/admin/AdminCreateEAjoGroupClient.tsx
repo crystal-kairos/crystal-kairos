@@ -15,11 +15,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { PenaltyCapType } from '@/generated/prisma/enums'
+import { EAjoDuration, EAjoFrequency, PenaltyCapType } from '@/generated/prisma/enums'
 import {
   createEAjoGroupAction,
   type CreateEAjoSlotPolicyInput,
-} from '@/models/admin/actions'
+} from '@/models/admin/eajoActions'
 
 const DURATIONS = [
   { value: 'FOUR_MONTHS', label: '4 Months (4 slots)', slots: 4 },
@@ -43,6 +43,7 @@ export const AdminCreateEAjoGroupClient = () => {
     penaltyCapType: PenaltyCapType.PERCENT_OF_PRINCIPAL as PenaltyCapType,
     penaltyCapValue: '10',
     maxMembersPerSlot: '',
+    minParticipants: '',
   })
 
   const selectedDuration =
@@ -53,10 +54,8 @@ export const AdminCreateEAjoGroupClient = () => {
   const [slotPenalties, setSlotPenalties] = useState<Record<number, string>>(
     () => {
       const map: Record<number, string> = {}
-      for (let s = 1; s <= 12; s++) {
-        // Default initial penalty values (e.g. 10% for slot 1, decreasing to 0%)
-        map[s] = s === 12 ? '0' : s === 1 ? '15' : s === 2 ? '10' : '5'
-      }
+      // §2.8 rule 1: the admin enters every slot's penalty; nothing is pre-filled
+      for (let s = 1; s <= 12; s++) map[s] = ''
       return map
     },
   )
@@ -99,9 +98,9 @@ export const AdminCreateEAjoGroupClient = () => {
     // Build slot policies for all slots 1..totalSlots
     const slotPolicies: CreateEAjoSlotPolicyInput[] = []
     for (let s = 1; s <= totalSlots; s++) {
-      const penaltyStr = slotPenalties[s] ?? '0'
-      const penaltyNum = parseFloat(penaltyStr)
-      if (isNaN(penaltyNum) || penaltyNum < 0) {
+      const penaltyStr = (slotPenalties[s] ?? '').trim()
+      const penaltyNum = Number(penaltyStr)
+      if (penaltyStr === '' || isNaN(penaltyNum) || penaltyNum < 0 || penaltyNum > 100) {
         return setError(
           `Please enter a valid non-negative early slot penalty for slot ${s}.`,
         )
@@ -117,16 +116,18 @@ export const AdminCreateEAjoGroupClient = () => {
         title: form.title.trim(),
         description: form.description.trim() || undefined,
         contributionAmount: contributionNum,
-        frequency: 'MONTHLY' as any, // Fixed to MONTHLY (A-09)
-        duration: form.duration as any,
+        frequency: EAjoFrequency.MONTHLY, // Fixed to MONTHLY (A-09)
+        duration: form.duration as EAjoDuration,
         startDate: form.startDate || undefined,
-        latePenaltyDailyPercent:
-          parseFloat(form.latePenaltyDailyPercent) || 0.5,
+        latePenaltyDailyPercent: Number(form.latePenaltyDailyPercent),
         penaltyCapType: form.penaltyCapType,
         penaltyCapValue: capVal,
         maxMembersPerSlot: form.maxMembersPerSlot
           ? parseInt(form.maxMembersPerSlot, 10)
-          : undefined,
+          : null,
+        minParticipants: form.minParticipants
+          ? parseInt(form.minParticipants, 10)
+          : null,
         slotPolicies,
       })
 
@@ -281,6 +282,41 @@ export const AdminCreateEAjoGroupClient = () => {
               />
             </div>
 
+            <div className='flex flex-col gap-1.5'>
+              <Label htmlFor='maxMembersPerSlot' className='text-xs font-semibold text-primary'>
+                Max members per slot (optional)
+              </Label>
+              <Input
+                id='maxMembersPerSlot'
+                type='number'
+                min='1'
+                step='1'
+                placeholder='Unlimited'
+                value={form.maxMembersPerSlot}
+                onChange={(e) => setForm({ ...form, maxMembersPerSlot: e.target.value })}
+                className='h-10 text-sm rounded-lg border-outline-variant/40 font-mono'
+              />
+              <p className='text-[11px] text-muted-foreground'>
+                Leave empty to let any number of members pick the same slot. Each one is paid separately.
+              </p>
+            </div>
+
+            <div className='flex flex-col gap-1.5'>
+              <Label htmlFor='minParticipants' className='text-xs font-semibold text-primary'>
+                Minimum participants to activate (optional)
+              </Label>
+              <Input
+                id='minParticipants'
+                type='number'
+                min='1'
+                step='1'
+                placeholder='1'
+                value={form.minParticipants}
+                onChange={(e) => setForm({ ...form, minParticipants: e.target.value })}
+                className='h-10 text-sm rounded-lg border-outline-variant/40 font-mono'
+              />
+            </div>
+
             {/* Daily late penalty % */}
             <div className='flex flex-col gap-1.5'>
               <Label
@@ -328,7 +364,7 @@ export const AdminCreateEAjoGroupClient = () => {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value={PenaltyCapType.PERCENT_OF_PRINCIPAL}>
-                      % of Outstanding
+                      % of total contributions (c × N)
                     </SelectItem>
                     <SelectItem value={PenaltyCapType.FIXED_AMOUNT}>
                       Fixed ₦
@@ -420,7 +456,8 @@ export const AdminCreateEAjoGroupClient = () => {
                               min='0'
                               max='100'
                               step='0.1'
-                              value={slotPenalties[slot] ?? '0'}
+                              value={slotPenalties[slot] ?? ''}
+                              placeholder='%'
                               onChange={(e) =>
                                 handlePenaltyChange(slot, e.target.value)
                               }

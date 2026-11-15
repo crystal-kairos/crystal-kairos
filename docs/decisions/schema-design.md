@@ -973,6 +973,20 @@ Catch-up daily penalty assessment for late e-ajo contributions (§2.3).
 
 ---
 
+#### 3.8.5 As implemented in P3-05 (migration `20261117090000_p3_05_eajo_slots`)
+
+The physical schema keeps the P2 column names (`EAjoMember.payoutPosition` is the slot number; `contributionDue`/`contributionPaid` on periods). P3-05 changed:
+
+- `EAjoMember`: dropped `@@unique([groupId, payoutPosition])` (members may share a slot, §2.8 rule 2) and added `@@index([groupId, payoutPosition])`; `guarantorName`, `guarantorPhoneNumber`, `bankName`, `accountNumber`, `accountName` are now optional legacy fields (the guarantor is a member linked by `GuaranteeReservation`; payouts go to the member's verified `BankAccount`); added `activatedAt`, `completedAt`, `cancelledAt`, `cancelledById`, `cancellationReason`. `feePercentage`/`feeAmount`/`totalExpectedPayout`/`netPayoutAmount` hold the join-time preview and are overwritten with the activation snapshot.
+- `EAjoGroup`: added `minParticipants Int?` (optional activation threshold), `activatedAt`, `activatedById`, `completedAt`.
+- `EAjoPayout`: added `payoutDueDate @db.Date` (due date of period `s`), `eligibleAt`, `heldAt`, `heldById`, `holdReason`, `disbursedById`, `disbursementEvidenceFileId`, `disbursementId String? @unique` (FK → `Disbursement`, back-relation `Disbursement.eajoPayout`), `contributionsHeldAtPayout Decimal(15,2)?`, `journalEntryId`, `cancelledAt`; index `[status, payoutDueDate]`. `disbursedAt @db.Date` is the payout value date.
+- `EAjoPayoutStatus`: added `HELD` and `FAILED` (FAILED is used by P3-09).
+- CHECK constraints: group contribution `> 0`, `totalSlots IN (4,6,12)`, `maxMembersPerSlot`/`minParticipants ≥ 1`, late % in [0,100], cap `> 0`; slot penalty % in [0,100] and slot ≥ 1; participant slot ≥ 1; period amounts non-negative with `contributionPaid ≤ contributionDue`; penalty accrual `> 0`; payout `netPayout = expectedPayout − earlySlotPenalty`, `0 ≤ earlySlotPenalty ≤ advanceAmount < expectedPayout`.
+
+Ledger references: contribution, payout, penalty and cancellation-refund journal lines carry `accountRefId = EAjoMember.id`, so `EAJO_CONTRIBUTION_LIABILITY` / `EAJO_ADVANCE_RECEIVABLE` balances per participant are derived from the journal.
+
+---
+
 ### 3.9 Domain: Recovery & Settlement
 
 #### 3.9.1 `RecoveryCase`

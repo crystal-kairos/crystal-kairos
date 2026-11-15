@@ -1,185 +1,175 @@
 'use client'
 
-import React, { useState, useTransition } from 'react'
+import { useMemo, useState, useTransition } from 'react'
+import { useRouter } from 'next/navigation'
+import { AlertCircle, Loader2 } from 'lucide-react'
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '../ui/dialog'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
 import { Label } from '../ui/label'
-import { Textarea } from '../ui/textarea'
-import { ReceiptDropzone } from '../ui/ReceiptDropzone'
-import { uploadReceiptAction, submitEAjoContributionAction } from '@/models/eajo/actions'
-import { AlertCircle, CheckCircle2, DollarSign } from 'lucide-react'
+import { submitEAjoContributionAction, uploadReceiptAction } from '@/models/eajo/actions'
 
-interface UploadAjoReceiptDialogProps {
-  userId: string
-  eAjoMemberId: string
-  contributionAmount: number
-  open: boolean
-  onOpenChange: (open: boolean) => void
+export interface UploadPeriod {
+  id: string
+  periodNumber: number
+  dueDate: string
+  totalOutstanding: number
+  penaltyOutstanding: number
+  inReview: boolean
 }
 
+interface UploadAjoReceiptDialogProps {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  userId: string
+  eAjoMemberId: string
+  groupTitle: string
+  periods: UploadPeriod[]
+  today: string
+}
+
+const naira = (v: number) =>
+  new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN', minimumFractionDigits: 2 }).format(v)
+
+/**
+ * Member uploads a receipt for one or more of their contribution months (P2-07 submission).
+ * Nothing is credited until staff confirm the money arrived; the confirmed amount pays the
+ * selected months oldest first, penalty before contribution, and any excess goes to the wallet.
+ */
 export const UploadAjoReceiptDialog = ({
-  userId,
-  eAjoMemberId,
-  contributionAmount,
   open,
   onOpenChange,
+  userId,
+  eAjoMemberId,
+  groupTitle,
+  periods,
+  today,
 }: UploadAjoReceiptDialogProps) => {
+  const router = useRouter()
   const [isPending, startTransition] = useTransition()
+  const payable = useMemo(() => periods.filter((p) => p.totalOutstanding > 0 && !p.inReview), [periods])
+  // The dialog is mounted fresh for each participation, so state starts from the oldest open month
+  const [selected, setSelected] = useState<string[]>(() => (payable[0] ? [payable[0].id] : []))
+  const [amount, setAmount] = useState(() => (payable[0] ? String(payable[0].totalOutstanding) : ''))
+  const [paidOn, setPaidOn] = useState(today)
+  const [reference, setReference] = useState('')
   const [file, setFile] = useState<File | null>(null)
-  const [referenceNumber, setReferenceNumber] = useState('')
-  const [notes, setNotes] = useState('')
   const [error, setError] = useState<string | null>(null)
-  const [success, setSuccess] = useState(false)
+  const [done, setDone] = useState<string | null>(null)
 
-  const formatCurrency = (val: number) => {
-    return new Intl.NumberFormat('en-NG', {
-      style: 'currency',
-      currency: 'NGN',
-      minimumFractionDigits: 0,
-    }).format(val)
+  const toggle = (id: string) => {
+    const next = selected.includes(id) ? selected.filter((x) => x !== id) : [...selected, id]
+    setSelected(next)
+    setAmount(String(payable.filter((p) => next.includes(p.id)).reduce((s, p) => s + p.totalOutstanding, 0)))
   }
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!file) {
-      setError('Please select or upload a payment receipt file.')
-      return
-    }
-
+  const submit = () => {
+    const value = Number(amount)
+    if (selected.length === 0) return setError('Select at least one month.')
+    if (!(value > 0)) return setError('Enter the amount you paid.')
+    if (!file) return setError('Attach your payment receipt.')
     setError(null)
-    setSuccess(false)
-
     startTransition(async () => {
-      // 1. Upload receipt file to Cloudinary/Disk via action
-      const uploadFormData = new FormData()
-      uploadFormData.append('file', file)
-
-      const uploadResult = await uploadReceiptAction(uploadFormData)
-      if (!uploadResult.success || !uploadResult.url) {
-        setError(uploadResult.error || 'Failed to upload receipt file.')
+      const fd = new FormData()
+      fd.append('file', file)
+      const up = await uploadReceiptAction(fd)
+      if (!up.success || !('fileId' in up) || !up.fileId) {
+        setError(up.error ?? 'The receipt could not be uploaded.')
         return
       }
-
-      // 2. Submit contribution transaction record
-      const result = await submitEAjoContributionAction(
-        userId,
-        eAjoMemberId,
-        contributionAmount,
-        uploadResult.url,
-        referenceNumber.trim() || undefined,
-        notes.trim() || undefined
-      )
-
-      if (result.success) {
-        setSuccess(true)
-        setFile(null)
-        setReferenceNumber('')
-        setNotes('')
-        setTimeout(() => {
-          setSuccess(false)
-          onOpenChange(false)
-        }, 1500)
-      } else {
-        setError(result.error || 'Failed to submit Ajo contribution receipt.')
+      const res = await submitEAjoContributionAction(userId, eAjoMemberId, {
+        amount: value,
+        paidOn,
+        receiptFileId: up.fileId,
+        periodIds: selected,
+        bankReference: reference || undefined,
+      })
+      if (!res.success) {
+        setError(res.error ?? 'Your receipt could not be submitted.')
+        return
       }
+      setDone(`Receipt ${res.data?.submissionNumber ?? ''} submitted. It shows as “payment under review” until an administrator confirms it.`)
+      router.refresh()
     })
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md bg-surface rounded-md p-6 border-0 shadow-lg">
-        <DialogHeader className="pb-3 border-b border-outline-variant/20 mb-4">
-          <DialogTitle className="text-primary font-bold text-base flex items-center gap-2">
-            <DollarSign className="w-5 h-5 text-secondary" />
-            <span>Upload Ajo Contribution Receipt</span>
-          </DialogTitle>
+    <Dialog open={open} onOpenChange={(o) => !isPending && onOpenChange(o)}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Upload contribution receipt</DialogTitle>
+          <DialogDescription>{groupTitle}</DialogDescription>
         </DialogHeader>
 
-        {success ? (
-          <div className="py-8 flex flex-col items-center justify-center text-center gap-3 animate-in fade-in duration-200">
-            <CheckCircle2 className="w-12 h-12 text-success-green" />
-            <h3 className="font-bold text-sm text-primary">Receipt Submitted Successfully</h3>
-            <p className="text-muted-foreground text-xs">
-              Your proof of payment is pending administrative review.
-            </p>
-          </div>
+        {done ? (
+          <p className="text-sm text-primary">{done}</p>
+        ) : payable.length === 0 ? (
+          <p className="text-sm text-muted-foreground">Nothing is outstanding right now, or your receipts are already under review.</p>
         ) : (
-          <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-            <div className="bg-surface-container-low rounded-lg p-4 flex flex-col gap-1 border border-outline-variant/10 text-xs">
-              <span className="text-muted-foreground font-semibold uppercase tracking-wider text-[9px]">Contribution Amount Due</span>
-              <span className="font-mono font-extrabold text-primary text-lg">{formatCurrency(contributionAmount)}</span>
-            </div>
-
-            {/* Receipt dropzone file uploader */}
+          <div className="flex flex-col gap-3 text-xs">
             <div className="flex flex-col gap-1.5">
-              <Label className="text-xs font-semibold text-muted-foreground">Upload Proof of Payment (Image/PDF)</Label>
-              <ReceiptDropzone
-                onFileSelected={setFile}
-                value={file}
-                maxSizeMb={5}
-                error={error || undefined}
-              />
+              <Label className="text-xs">Months this payment covers</Label>
+              <div className="max-h-44 overflow-y-auto flex flex-col gap-1 border border-outline-variant/20 rounded p-2">
+                {payable.map((p) => (
+                  <label key={p.id} className="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" checked={selected.includes(p.id)} onChange={() => toggle(p.id)} />
+                    <span>
+                      Month {p.periodNumber} · due {p.dueDate} · {naira(p.totalOutstanding)}
+                      {p.penaltyOutstanding > 0 && <span className="text-error"> (incl. penalty {naira(p.penaltyOutstanding)})</span>}
+                    </span>
+                  </label>
+                ))}
+              </div>
             </div>
-
-            {/* Reference & Notes fields */}
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="refNo" className="text-xs font-semibold text-muted-foreground">Reference Number (Optional)</Label>
-              <Input
-                id="refNo"
-                placeholder="e.g. Bank transfer transaction ID"
-                value={referenceNumber}
-                onChange={(e) => setReferenceNumber(e.target.value)}
-                className="rounded-sm h-10 border-outline-variant/30 text-xs"
-              />
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex flex-col gap-1">
+                <Label htmlFor="ajo-amount" className="text-xs">Amount paid (₦)</Label>
+                <Input id="ajo-amount" type="number" min="0" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} />
+              </div>
+              <div className="flex flex-col gap-1">
+                <Label htmlFor="ajo-paidon" className="text-xs">Date you paid</Label>
+                <Input id="ajo-paidon" type="date" max={today} value={paidOn} onChange={(e) => setPaidOn(e.target.value)} />
+              </div>
             </div>
-
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="notes" className="text-xs font-semibold text-muted-foreground">Notes / Comments (Optional)</Label>
-              <Textarea
-                id="notes"
-                placeholder="Add any extra details regarding this payment..."
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                rows={2}
-                className="rounded-sm border-outline-variant/30 text-xs"
-              />
+            <div className="flex flex-col gap-1">
+              <Label htmlFor="ajo-ref" className="text-xs">Bank reference (optional)</Label>
+              <Input id="ajo-ref" value={reference} onChange={(e) => setReference(e.target.value)} />
             </div>
-
+            <div className="flex flex-col gap-1">
+              <Label htmlFor="ajo-file" className="text-xs">Receipt (image or PDF, max 5 MB)</Label>
+              <Input id="ajo-file" type="file" accept="image/*,application/pdf" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+            </div>
+            <p className="text-muted-foreground">
+              Any amount above the selected months goes to your wallet. Penalties are paid before the contribution.
+            </p>
             {error && (
-              <div className="bg-error-container/10 border border-error-container/30 text-error p-3 rounded-lg flex items-start gap-2 text-xs">
-                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                <span>{error}</span>
+              <div className="bg-error-container/10 border border-error-container/30 text-error p-2 rounded flex gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0" /> {error}
               </div>
             )}
-
-            <div className="flex gap-3 justify-end mt-2 pt-3 border-t border-outline-variant/20">
-              <Button
-                type="button"
-                variant="ghost"
-                disabled={isPending}
-                onClick={() => onOpenChange(false)}
-                className="cursor-pointer text-muted-foreground hover:bg-surface-container text-xs h-9 rounded-sm px-4"
-              >
-                Cancel
-              </Button>
-              <Button
-                type="submit"
-                disabled={isPending || !file}
-                className="cursor-pointer rounded-sm bg-primary text-on-primary hover:bg-primary/95 text-xs h-9 px-5 shadow-sm font-semibold"
-              >
-                {isPending ? 'Submitting...' : 'Submit Receipt'}
-              </Button>
-            </div>
-          </form>
+          </div>
         )}
+
+        <DialogFooter>
+          <Button variant="outline" disabled={isPending} onClick={() => onOpenChange(false)}>
+            Close
+          </Button>
+          {!done && payable.length > 0 && (
+            <Button disabled={isPending} onClick={submit}>
+              {isPending && <Loader2 className="w-4 h-4 animate-spin mr-1" />} Submit receipt
+            </Button>
+          )}
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   )
 }
+
 export default UploadAjoReceiptDialog

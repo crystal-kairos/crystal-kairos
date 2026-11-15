@@ -1,414 +1,282 @@
 'use client'
 
-import React, { useState } from 'react'
-import {
-  Users,
-  ArrowRight,
-  Clock,
-  ArrowLeft,
-  Upload,
-  CheckCircle2,
-  XCircle,
-  TrendingUp,
-  Calendar,
-} from 'lucide-react'
+import { useState, useTransition } from 'react'
 import Link from 'next/link'
-import { Card, CardContent } from '../ui/card'
+import { useRouter } from 'next/navigation'
+import { AlertCircle, ArrowRight, Upload } from 'lucide-react'
 import { Button } from '../ui/button'
 import { UploadAjoReceiptDialog } from './UploadAjoReceiptDialog'
+import { decideGuarantorRequestAction } from '@/models/loans/actions'
+import type { getMyEAjoGuaranteeRequests, getOpenEAjoGroups, getUserEAjoMemberships } from '@/models/eajo/query'
 
-type EAjoMemberStatus =
-  | 'PENDING'
-  | 'APPROVED'
-  | 'REJECTED'
-  | 'ACTIVE'
-  | 'COMPLETED'
-  | 'CANCELLED'
-type EAjoGroupStatus =
-  | 'PENDING'
-  | 'ACTIVE'
-  | 'APPROVED'
-  | 'COMPLETED'
-  | 'CANCELLED'
-  | 'REJECTED'
+type Membership = NonNullable<Awaited<ReturnType<typeof getUserEAjoMemberships>>['data']>[number]
+type OpenGroup = NonNullable<Awaited<ReturnType<typeof getOpenEAjoGroups>>['data']>[number]
+type GuaranteeRequest = Awaited<ReturnType<typeof getMyEAjoGuaranteeRequests>>['data'][number]
 
-interface MemberGroup {
-  id: string
-  title: string
-  description: string | null
-  contributionAmount: number
-  frequency: string
-  duration: string
-  totalSlots: number
-  filledSlots: number
-  status: EAjoGroupStatus
-  startDate: Date | null
-}
+const naira = (v: number) =>
+  new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN', minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(v)
 
-interface Membership {
-  id: string
-  groupId: string
-  payoutPosition: number
-  feePercentage: number
-  netPayoutAmount: number
-  totalExpectedPayout: number
-  currentBalance: number
-  totalContributed: number
-  status: EAjoMemberStatus
-  createdAt: Date
-  group: MemberGroup
-}
-
-interface OpenGroup {
-  id: string
-  title: string
-  description: string | null
-  contributionAmount: number
-  frequency: string
-  duration: string
-  totalSlots: number
-  filledSlots: number
-  status: EAjoGroupStatus
-  startDate: Date | null
-  members: { payoutPosition: number; status: string }[]
-}
-
-interface EAjoDashboardClientProps {
-  userId: string
-  memberships: Membership[]
-  openGroups: OpenGroup[]
-}
-
-const MEMBER_STATUS_STYLES: Record<EAjoMemberStatus, string> = {
+const STYLES: Record<string, string> = {
   PENDING: 'bg-amber-50 text-amber-700 border-amber-200',
   APPROVED: 'bg-blue-50 text-blue-700 border-blue-200',
   ACTIVE: 'bg-emerald-50 text-emerald-700 border-emerald-200',
   COMPLETED: 'bg-slate-100 text-slate-600 border-slate-200',
+  ONGOING: 'bg-blue-50 text-blue-700 border-blue-200',
+  IN_REVIEW: 'bg-amber-50 text-amber-700 border-amber-200',
+  OVERDUE: 'bg-red-50 text-red-700 border-red-200',
   REJECTED: 'bg-red-50 text-red-700 border-red-200',
   CANCELLED: 'bg-red-50 text-red-600 border-red-200',
+  NOT_ELIGIBLE: 'bg-slate-100 text-slate-600 border-slate-200',
+  ELIGIBLE: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  HELD: 'bg-amber-50 text-amber-700 border-amber-200',
+  PAID: 'bg-blue-50 text-blue-700 border-blue-200',
+  CONSENTED: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  DECLINED: 'bg-red-50 text-red-700 border-red-200',
+  RELEASED: 'bg-slate-100 text-slate-600 border-slate-200',
 }
 
-const formatCurrency = (val: number) =>
-  new Intl.NumberFormat('en-NG', {
-    style: 'currency',
-    currency: 'NGN',
-    minimumFractionDigits: 0,
-  }).format(val)
+const LABELS: Record<string, string> = {
+  IN_REVIEW: 'Payment under review',
+  ONGOING: 'Part paid',
+  COMPLETED: 'Paid',
+  NOT_ELIGIBLE: 'Not yet eligible',
+  ELIGIBLE: 'Eligible — awaiting approval',
+  APPROVED: 'Approved — being paid',
+  HELD: 'On hold',
+  CONSENTED: 'Consented',
+  WITHDRAWN_BEFORE_ACTIVATION: 'Withdrawn',
+}
 
-const formatFrequency = (freq: string) =>
-  freq.charAt(0) + freq.slice(1).toLowerCase()
+const Pill = ({ status, participation }: { status: string; participation?: boolean }) => (
+  <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-bold uppercase border ${STYLES[status] ?? 'bg-slate-100 text-slate-600 border-slate-200'}`}>
+    {participation && status === 'COMPLETED' ? 'Completed' : participation && status === 'APPROVED' ? 'Approved' : (LABELS[status] ?? status.charAt(0) + status.slice(1).toLowerCase().replace(/_/g, ' '))}
+  </span>
+)
 
-const formatDuration = (d: string) =>
-  d === 'FOUR_MONTHS'
-    ? '4 Months'
-    : d === 'SIX_MONTHS'
-      ? '6 Months'
-      : '12 Months'
+interface Props {
+  userId: string
+  today: string
+  memberships: Membership[]
+  openGroups: OpenGroup[]
+  guaranteeRequests: GuaranteeRequest[]
+  canActAsGuarantor: boolean
+}
 
-export const EAjoDashboardClient = ({
-  userId,
-  memberships,
-  openGroups,
-}: EAjoDashboardClientProps) => {
-  const [activeMemberId, setActiveMemberId] = useState<string | null>(null)
-  const [activeAmount, setActiveAmount] = useState(0)
-  const [uploadDialogOpen, setUploadDialogOpen] = useState(false)
+export const EAjoDashboardClient = ({ userId, today, memberships, openGroups, guaranteeRequests, canActAsGuarantor }: Props) => {
+  const router = useRouter()
+  const [isPending, startTransition] = useTransition()
+  const [uploadFor, setUploadFor] = useState<Membership | null>(null)
+  const [error, setError] = useState<string | null>(null)
 
-  // Groups the user hasn't joined yet
-  const joinedGroupIds = new Set(memberships.map((m) => m.groupId))
-  const availableGroups = openGroups.filter((g) => !joinedGroupIds.has(g.id))
+  const joined = new Set(memberships.map((m) => m.group.id))
+  const available = openGroups.filter((g) => !joined.has(g.id))
+  const pendingRequests = guaranteeRequests.filter((r) => r.state === 'PENDING')
+
+  const decide = (reservationId: string, decision: 'ACCEPT' | 'DECLINE') => {
+    setError(null)
+    startTransition(async () => {
+      const res = await decideGuarantorRequestAction({ reservationId, decision })
+      if (!res.success) setError(res.error ?? 'Your decision could not be saved.')
+      else router.refresh()
+    })
+  }
 
   return (
-    <div className='flex flex-col gap-6 w-full max-w-5xl mx-auto py-6'>
-      {/* Back button */}
-      <div className='flex items-center gap-1.5 text-muted-foreground hover:text-primary cursor-pointer transition-colors w-fit text-xs font-semibold'>
-        <ArrowLeft className='w-4 h-4' />
-        <Link href={`/dashboard/${userId}`}>Back to Dashboard</Link>
+    <div className="flex flex-col gap-6 w-full max-w-6xl mx-auto py-6">
+      <div>
+        <h1 className="text-2xl font-bold text-primary">E-ajo</h1>
+        <p className="text-sm text-muted-foreground">Monthly contributions with a guaranteed payout in the month you choose.</p>
       </div>
 
-      <header className='flex flex-col md:flex-row md:items-end justify-between gap-4'>
-        <div>
-          <h2 className='text-2xl font-bold font-heading text-primary leading-tight'>
-            Digital Ajo Cycles
-          </h2>
-          <p className='text-muted-foreground text-sm mt-1'>
-            Participate in risk-adjusted rotating group savings pools.
-          </p>
+      {error && (
+        <div className="bg-error-container/10 border border-error-container/30 text-error p-3 rounded-lg flex gap-2 text-xs">
+          <AlertCircle className="w-4 h-4 shrink-0" /> {error}
         </div>
-      </header>
+      )}
 
-      {/* 1. My memberships */}
-      <section className='flex flex-col gap-3'>
-        <h3 className='font-bold text-sm text-primary uppercase tracking-wide'>
-          My Ajo Groups
-        </h3>
+      {pendingRequests.length > 0 && (
+        <section className="bg-amber-50/60 border border-amber-200 rounded-xl p-5 flex flex-col gap-3">
+          <h2 className="text-sm font-bold text-primary">Guarantee requests for you</h2>
+          {pendingRequests.map((r) => (
+            <div key={r.id} className="flex flex-col md:flex-row md:items-center justify-between gap-3 bg-surface-container-lowest rounded-lg p-3 border border-outline-variant/10 text-xs">
+              <div>
+                <p className="font-semibold text-primary">
+                  {r.applicantName} asks you to guarantee their e-ajo in “{r.groupTitle}” (slot {r.slotNumber} of {r.totalSlots}).
+                </p>
+                <p className="text-muted-foreground">
+                  {r.amount > 0
+                    ? `If you accept, ${naira(r.amount)} of your savings is reserved until their contributions are complete. It reduces as they pay after their payout.`
+                    : 'This slot needs no advance, so none of your savings is reserved, but your consent is still required.'}
+                </p>
+              </div>
+              {canActAsGuarantor && (
+                <div className="flex gap-2 shrink-0">
+                  <Button size="sm" disabled={isPending} onClick={() => decide(r.id, 'ACCEPT')}>Accept</Button>
+                  <Button size="sm" variant="outline" disabled={isPending} onClick={() => decide(r.id, 'DECLINE')}>Decline</Button>
+                </div>
+              )}
+            </div>
+          ))}
+        </section>
+      )}
 
-        {memberships.length === 0 ? (
-          <div className='border border-dashed border-outline-variant/30 rounded-lg py-12 text-center text-xs text-muted-foreground font-medium bg-surface-container-lowest'>
-            You haven't joined any Ajo group yet. Browse the available offerings
-            below to apply!
-          </div>
-        ) : (
-          <div className='grid grid-cols-1 md:grid-cols-2 gap-4'>
-            {memberships.map((membership) => {
-              const progress = Math.min(
-                100,
-                membership.group.totalSlots > 0
-                  ? (membership.totalContributed /
-                      (membership.group.contributionAmount *
-                        membership.group.totalSlots)) *
-                      100
-                  : 0,
-              )
-              const canUpload =
-                membership.status === 'ACTIVE' ||
-                membership.status === 'APPROVED'
+      <section className="flex flex-col gap-4">
+        <h2 className="text-sm font-bold text-primary uppercase tracking-wide">My groups</h2>
+        {memberships.length === 0 && <p className="text-xs text-muted-foreground">You have not joined an e-ajo group yet.</p>}
+        {memberships.map((m) => {
+          const showSchedule = m.periods.length > 0
+          return (
+            <div key={m.id} className="bg-surface-container-lowest border border-outline-variant/10 rounded-xl p-5 flex flex-col gap-4">
+              <div className="flex flex-col md:flex-row md:items-start justify-between gap-3">
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center gap-2">
+                    <Pill status={m.status} participation />
+                    <span className="text-xs text-muted-foreground">Slot {m.slotNumber} of {m.group.totalSlots}</span>
+                  </div>
+                  <h3 className="text-lg font-bold text-primary">{m.group.title}</h3>
+                  <p className="text-xs text-muted-foreground">
+                    {naira(m.group.contributionAmount)} monthly
+                    {m.group.startDate ? ` · started ${m.group.startDate}` : ' · starts when the group is activated'}
+                  </p>
+                  {m.guarantee && (
+                    <p className="text-xs text-muted-foreground">
+                      Guarantor: {m.guarantee.guarantorName} · <Pill status={m.guarantee.state} />
+                    </p>
+                  )}
+                  {(m.rejectionReason || m.cancellationReason) && (
+                    <p className="text-xs text-error">{m.rejectionReason ?? m.cancellationReason}</p>
+                  )}
+                </div>
 
-              return (
-                <Card
-                  key={membership.id}
-                  className='border-0 bg-surface-container rounded-md shadow-none hover:ring-1 hover:ring-primary/20 transition-all duration-200'
-                >
-                  <CardContent className='p-5 flex flex-col justify-between min-h-50'>
-                    <div className='flex justify-between items-start mb-3'>
-                      <div>
-                        <h4 className='font-bold text-primary text-sm'>
-                          {membership.group.title}
-                        </h4>
-                        <p className='text-[10px] text-muted-foreground mt-0.5'>
-                          Slot {membership.payoutPosition} ·{' '}
-                          {formatDuration(membership.group.duration)}
-                        </p>
-                      </div>
-                      <span
-                        className={`px-2.5 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider border ${MEMBER_STATUS_STYLES[membership.status]}`}
-                      >
-                        {membership.status}
-                      </span>
-                    </div>
-
-                    <div className='grid grid-cols-3 gap-2 py-2 border-y border-outline-variant/20 mb-3 text-xs'>
-                      <div>
-                        <span className='text-[9px] text-muted-foreground uppercase tracking-wider block'>
-                          Contribution
-                        </span>
-                        <span className='font-bold text-primary font-mono'>
-                          {formatCurrency(membership.group.contributionAmount)}/
-                          {formatFrequency(membership.group.frequency)}
-                        </span>
-                      </div>
-                      <div>
-                        <span className='text-[9px] text-muted-foreground uppercase tracking-wider block'>
-                          Position
-                        </span>
-                        <span className='font-bold text-primary font-mono'>
-                          Slot {membership.payoutPosition}
-                        </span>
-                      </div>
-                      <div>
-                        <span className='text-[9px] text-muted-foreground uppercase tracking-wider block'>
-                          Net Payout
-                        </span>
-                        <span className='font-bold text-success-green font-mono'>
-                          {formatCurrency(membership.netPayoutAmount)}
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className='flex flex-col gap-2'>
-                      <div>
-                        <div className='flex justify-between text-[10px] text-muted-foreground mb-1 font-mono'>
-                          <span>
-                            Contributed:{' '}
-                            {formatCurrency(membership.totalContributed)}
-                          </span>
-                          <span>{progress.toFixed(0)}%</span>
-                        </div>
-                        <div className='w-full bg-outline-variant/35 rounded-full h-1.5'>
-                          <div
-                            className='bg-success h-1.5 rounded-full transition-all duration-300'
-                            style={{ width: `${progress}%` }}
-                          />
-                        </div>
-                      </div>
-
-                      {canUpload && (
-                        <Button
-                          size='sm'
-                          onClick={() => {
-                            setActiveMemberId(membership.id)
-                            setActiveAmount(membership.group.contributionAmount)
-                            setUploadDialogOpen(true)
-                          }}
-                          className='cursor-pointer rounded-sm bg-secondary text-white hover:bg-secondary/90 flex items-center gap-1.5 text-[11px] h-8 px-4 border-0 mt-2 self-start font-semibold'
-                        >
-                          <Upload className='w-3.5 h-3.5' />
-                          <span>Upload Contribution Receipt</span>
-                        </Button>
+                <div className="bg-surface-bright border border-outline-variant/10 rounded-lg p-3 text-xs min-w-[240px] flex flex-col gap-1">
+                  <span className="text-muted-foreground uppercase text-[10px] font-semibold">Your payout</span>
+                  <span className="text-xl font-bold font-mono text-success-green">{naira(m.payout?.netPayout ?? m.preview.netPayout)}</span>
+                  <span className="text-muted-foreground">
+                    {naira(m.payout?.expectedPayout ?? m.preview.expectedPayout)} − early-slot penalty{' '}
+                    {naira(m.payout?.earlySlotPenalty ?? m.preview.earlySlotPenalty)}
+                  </span>
+                  {m.payout && (
+                    <>
+                      <span>Payout month: {m.payout.payoutDueDate}</span>
+                      <Pill status={m.payout.status} />
+                      {m.payout.status === 'NOT_ELIGIBLE' && m.payout.eligibilityReason && (
+                        <span className="text-muted-foreground">{m.payout.eligibilityReason}</span>
                       )}
-
-                      {membership.status === 'PENDING' && (
-                        <p className='text-[10px] text-amber-600 bg-amber-50 rounded px-2 py-1 mt-1'>
-                          Application pending admin approval.
-                        </p>
-                      )}
-                      {membership.status === 'REJECTED' && (
-                        <p className='text-[10px] text-error bg-error/5 rounded px-2 py-1 mt-1'>
-                          Application was rejected. You may apply to another
-                          group.
-                        </p>
-                      )}
-                    </div>
-                  </CardContent>
-                </Card>
-              )
-            })}
-          </div>
-        )}
-      </section>
-
-      {/* 2. Available group offerings */}
-      <section className='flex flex-col gap-4 mt-4'>
-        <h3 className='font-bold text-sm text-primary uppercase tracking-wide'>
-          Available Group Offerings
-        </h3>
-
-        {availableGroups.length === 0 ? (
-          <div className='border border-dashed border-outline-variant/30 rounded-lg py-12 text-center text-xs text-muted-foreground font-medium bg-surface-container-lowest'>
-            {openGroups.length === 0
-              ? 'No eAjo groups are currently available. Please check back later.'
-              : 'You have already applied to all available groups.'}
-          </div>
-        ) : (
-          <div className='grid grid-cols-1 md:grid-cols-3 gap-6'>
-            {availableGroups.map((group) => {
-              const filledSlotPositions = new Set(
-                group.members
-                  .filter(
-                    (m) => m.status !== 'REJECTED' && m.status !== 'CANCELLED',
-                  )
-                  .map((m) => m.payoutPosition),
-              )
-              const openSlots = group.totalSlots - filledSlotPositions.size
-
-              return (
-                <Card
-                  key={group.id}
-                  className='bg-surface-container-lowest rounded-md shadow-none flex flex-col justify-between p-6 border border-outline-variant/15 hover:shadow-md transition-all duration-300'
-                >
-                  <div className='flex flex-col gap-2'>
-                    <div className='w-9 h-9 rounded-sm bg-primary/10 text-primary flex items-center justify-center mb-1'>
-                      <Users className='w-5 h-5' />
-                    </div>
-                    <h4 className='font-bold text-primary text-base leading-snug'>
-                      {group.title}
-                    </h4>
-                    {group.description && (
-                      <p className='text-muted-foreground text-xs leading-relaxed mt-1 line-clamp-2'>
-                        {group.description}
-                      </p>
-                    )}
-
-                    <div className='flex flex-col gap-1.5 mt-4 pt-3 border-t border-outline-variant/20'>
-                      <div className='flex justify-between text-xs'>
-                        <span className='text-muted-foreground'>
-                          Contribution size:
-                        </span>
-                        <span className='font-bold text-primary font-mono'>
-                          {formatCurrency(group.contributionAmount)}
-                        </span>
-                      </div>
-                      <div className='flex justify-between text-xs'>
-                        <span className='text-muted-foreground'>
-                          Frequency:
-                        </span>
-                        <span className='font-semibold text-primary'>
-                          {formatFrequency(group.frequency)}
-                        </span>
-                      </div>
-                      <div className='flex justify-between text-xs'>
-                        <span className='text-muted-foreground'>
-                          Duration / Slots:
-                        </span>
-                        <span className='font-semibold text-primary'>
-                          {formatDuration(group.duration)} ({group.totalSlots}{' '}
-                          slots)
-                        </span>
-                      </div>
-                      <div className='flex justify-between text-xs'>
-                        <span className='text-muted-foreground'>
-                          Open slots:
-                        </span>
-                        <span
-                          className={`font-bold ${openSlots === 0 ? 'text-error' : 'text-success-green'}`}
-                        >
-                          {openSlots === 0 ? 'Full' : `${openSlots} available`}
-                        </span>
-                      </div>
-                      <div className='flex justify-between text-xs'>
-                        <span className='text-muted-foreground font-bold'>
-                          Total Pool Size:
-                        </span>
-                        <span className='font-extrabold text-success-green font-mono'>
-                          {formatCurrency(
-                            group.contributionAmount * group.totalSlots,
+                      {m.payout.status === 'PAID' && (
+                        <span>
+                          Paid on {m.payout.paidOn}
+                          {m.payout.evidenceFileId && (
+                            <>
+                              {' · '}
+                              <a className="underline" href={`/api/files/${m.payout.evidenceFileId}`} target="_blank" rel="noreferrer">evidence</a>
+                            </>
                           )}
                         </span>
-                      </div>
-                      {group.startDate && (
-                        <div className='flex justify-between text-xs'>
-                          <span className='text-muted-foreground'>
-                            Start Date:
-                          </span>
-                          <span className='font-semibold text-primary flex items-center gap-1'>
-                            <Calendar className='w-3 h-3' />
-                            {new Date(group.startDate).toLocaleDateString(
-                              'en-NG',
-                              {
-                                day: 'numeric',
-                                month: 'short',
-                                year: 'numeric',
-                              },
-                            )}
-                          </span>
-                        </div>
                       )}
-                    </div>
-                  </div>
+                    </>
+                  )}
+                </div>
+              </div>
 
-                  <Button
-                    asChild
-                    disabled={openSlots === 0}
-                    className='cursor-pointer rounded-sm bg-primary hover:bg-primary/95 text-on-primary font-semibold flex items-center justify-center gap-1.5 w-full mt-6 h-10 disabled:opacity-50 disabled:cursor-not-allowed'
-                  >
-                    <Link
-                      href={
-                        openSlots > 0
-                          ? `/dashboard/${userId}/eajo/new?groupId=${group.id}`
-                          : '#'
-                      }
-                    >
-                      <span>
-                        {openSlots === 0 ? 'Group Full' : 'Apply for a Slot'}
-                      </span>
-                      {openSlots > 0 && <ArrowRight className='w-4 h-4' />}
-                    </Link>
-                  </Button>
-                </Card>
-              )
-            })}
+              {showSchedule && (
+                <>
+                  <div className="flex flex-wrap gap-4 text-xs">
+                    <span>Confirmed: <strong className="font-mono">{naira(m.totals.confirmed)}</strong></span>
+                    <span>Outstanding now: <strong className="font-mono">{naira(m.totals.outstanding)}</strong></span>
+                    {m.totals.overdueCount > 0 && <span className="text-error">{m.totals.overdueCount} overdue month(s)</span>}
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead className="text-muted-foreground text-left">
+                        <tr>
+                          <th className="py-1.5 pr-3">Month</th>
+                          <th className="py-1.5 pr-3">Due</th>
+                          <th className="py-1.5 pr-3">Contribution</th>
+                          <th className="py-1.5 pr-3">Paid</th>
+                          <th className="py-1.5 pr-3">Late penalty</th>
+                          <th className="py-1.5 pr-3">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {m.periods.map((p) => (
+                          <tr key={p.id} className={`border-t border-outline-variant/15 ${p.periodNumber === m.slotNumber ? 'bg-light-blue/40' : ''}`}>
+                            <td className="py-1.5 pr-3 font-mono">
+                              {p.periodNumber}
+                              {p.periodNumber === m.slotNumber && <span className="ml-1 text-[10px] text-primary font-sans">payout</span>}
+                            </td>
+                            <td className="py-1.5 pr-3">{p.dueDate}</td>
+                            <td className="py-1.5 pr-3 font-mono">{naira(p.contributionDue)}</td>
+                            <td className="py-1.5 pr-3 font-mono">{naira(p.contributionPaid)}</td>
+                            <td className="py-1.5 pr-3 font-mono">{p.penaltyOutstanding > 0 ? naira(p.penaltyOutstanding) : '—'}</td>
+                            <td className="py-1.5 pr-3"><Pill status={p.status} /></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {m.status === 'ACTIVE' && (
+                    <Button size="sm" className="w-fit gap-1.5" onClick={() => setUploadFor(m)}>
+                      <Upload className="w-4 h-4" /> Upload contribution receipt
+                    </Button>
+                  )}
+                </>
+              )}
+              {!showSchedule && m.status === 'PENDING' && (
+                <p className="text-xs text-muted-foreground">
+                  {m.guarantee?.state === 'CONSENTED'
+                    ? 'Your guarantor has consented. Waiting for an administrator to approve your application.'
+                    : 'Waiting for your guarantor to consent.'}
+                </p>
+              )}
+              {!showSchedule && m.status === 'APPROVED' && (
+                <p className="text-xs text-muted-foreground">Approved. Your contribution schedule appears when the group is activated.</p>
+              )}
+            </div>
+          )
+        })}
+      </section>
+
+      <section className="flex flex-col gap-3">
+        <h2 className="text-sm font-bold text-primary uppercase tracking-wide">Open groups</h2>
+        {available.length === 0 ? (
+          <p className="text-xs text-muted-foreground">No groups are open for applications right now.</p>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {available.map((g) => (
+              <div key={g.id} className="bg-surface-container-lowest border border-outline-variant/10 rounded-xl p-5 flex flex-col gap-2">
+                <h3 className="font-bold text-primary">{g.title}</h3>
+                {g.description && <p className="text-xs text-muted-foreground line-clamp-2">{g.description}</p>}
+                <p className="text-xs">
+                  {naira(g.contributionAmount)} monthly · {g.totalSlots} months · payout up to {naira(g.expectedPayout)}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {g.availableSlots} of {g.totalSlots} slots open{g.startDate ? ` · starts ${g.startDate}` : ''}
+                </p>
+                <Link href={`/dashboard/${userId}/eajo/new?groupId=${g.id}`} className="mt-auto">
+                  <Button size="sm" className="w-full gap-1.5">Choose a slot <ArrowRight className="w-4 h-4" /></Button>
+                </Link>
+              </div>
+            ))}
           </div>
         )}
       </section>
 
-      {/* Upload Receipt Modal */}
-      {activeMemberId && (
+      {uploadFor && (
         <UploadAjoReceiptDialog
+          open={uploadFor !== null}
+          onOpenChange={(o) => !o && setUploadFor(null)}
           userId={userId}
-          eAjoMemberId={activeMemberId}
-          contributionAmount={activeAmount}
-          open={uploadDialogOpen}
-          onOpenChange={setUploadDialogOpen}
+          eAjoMemberId={uploadFor.id}
+          groupTitle={uploadFor.group.title}
+          today={today}
+          periods={uploadFor.periods.map((p) => ({
+            id: p.id,
+            periodNumber: p.periodNumber,
+            dueDate: p.dueDate,
+            totalOutstanding: p.totalOutstanding,
+            penaltyOutstanding: p.penaltyOutstanding,
+            inReview: p.inReview,
+          }))}
         />
       )}
     </div>

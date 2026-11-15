@@ -1,6 +1,6 @@
 import { auth } from '@/auth'
 import { redirect } from 'next/navigation'
-import { getEAjoGroupById } from '@/models/admin/query'
+import { getAdminEAjoGroupDashboard } from '@/models/eajo/query'
 import { AdminEAjoGroupDetailClient } from '@/components/admin/AdminEAjoGroupDetailClient'
 
 interface Props {
@@ -14,10 +14,10 @@ const EAjoGroupDetailPage = async ({ params }: Props) => {
   if (!session?.user) redirect('/login')
   if (session.user.role !== 'ADMIN' && session.user.role !== 'OWNER') redirect('/dashboard')
 
-  const result = await getEAjoGroupById(groupId)
+  const result = await getAdminEAjoGroupDashboard(groupId)
   if (!result.success || !result.data) redirect('/admin/eajo')
 
-  return <AdminEAjoGroupDetailClient group={result.data as any} />
+  return <AdminEAjoGroupDetailClient data={result.data} />
 }
 
 export default EAjoGroupDetailPage
