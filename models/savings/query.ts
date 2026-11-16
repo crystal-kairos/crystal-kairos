@@ -31,6 +31,7 @@ export const getMemberSavingsPlans = async (userId: string) => {
       AdminPermission.SAVINGS_READ,
       AdminPermission.SAVINGS_MANAGE,
       AdminPermission.SAVINGS_PAYMENTS_REVIEW,
+      AdminPermission.SAVINGS_PAYOUTS_MANAGE,
     ])
     const plans = await prisma.savings.findMany({
       where: { userId },
@@ -97,6 +98,7 @@ export const getSavingsPlanById = async (savingsId: string) => {
       AdminPermission.SAVINGS_READ,
       AdminPermission.SAVINGS_MANAGE,
       AdminPermission.SAVINGS_PAYMENTS_REVIEW,
+      AdminPermission.SAVINGS_PAYOUTS_MANAGE,
     ])
 
     const submissions = await prisma.paymentSubmission.findMany({

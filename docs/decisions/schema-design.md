@@ -723,11 +723,12 @@ Monthly linear accrual per lot (§2.5, D-17, A-07); each row has its own balance
 - **Fields:**
   - `id`, `lotId` → `SavingsLot` (`Restrict`)
   - `accrualDate`: `DateTime @db.Date` (last Lagos day of a month, or the maturity date)
+  - `postingSeq`: `Int @default(0)` — `CHECK (>= 0)`; 0 for the first posting, n for the n-th re-posting of the same date
   - `amount`: `Decimal @db.Decimal(15, 2)` — `CHECK (> 0)`
   - `journalEntryId`: `String?` → `JournalEntry` (`Restrict`)
   - `reversedAt`: `DateTime?`, `reversalReason`: `String?` (forfeiture, early withdrawal, payment reversal — the journal entry is reversed, never edited)
   - `createdAt`
-- **Unique Constraint:** `@@unique([lotId, accrualDate])` (a date whose row was reversed is not re-posted; the next accrual date — or the payout-time catch-up — posts the cumulative difference)
+- **Unique Constraint:** `@@unique([lotId, accrualDate, postingSeq])`. At most one **active** (non-reversed) row per lot and date is enforced by `accrueSavingsPlanInterest` under the member lock. When a forfeiture is cleared, the reversed dates are re-posted immediately with the next `postingSeq`, **back-dated** (journal `effectiveDate` = the original accrual date; owner decision on OQ-12, migration `20261117100000`).
 
 ---
 

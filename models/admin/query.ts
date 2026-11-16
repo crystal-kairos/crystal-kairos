@@ -661,6 +661,7 @@ export const getAllUserSavings = async () => {
       AdminPermission.SAVINGS_READ,
       AdminPermission.SAVINGS_MANAGE,
       AdminPermission.SAVINGS_PAYMENTS_REVIEW,
+      AdminPermission.SAVINGS_PAYOUTS_MANAGE,
     ])
     const savings = await prisma.savings.findMany({
       orderBy: { createdAt: 'desc' },

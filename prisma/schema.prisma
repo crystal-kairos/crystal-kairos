@@ -270,6 +270,7 @@ enum AdminPermission {
   SAVINGS_READ
   SAVINGS_MANAGE
   SAVINGS_PAYMENTS_REVIEW
+  SAVINGS_PAYOUTS_MANAGE
   LOANS_READ
   LOANS_REVIEW
   LOANS_DISBURSE
@@ -1070,6 +1071,7 @@ model SavingsInterestAccrual {
   id             String    @id @default(uuid())
   lotId          String
   accrualDate    DateTime  @db.Date
+  postingSeq     Int       @default(0) // 0 = first posting; n = re-posting after a cleared forfeiture (OQ-12)
   amount         Decimal   @db.Decimal(15, 2) // CHECK > 0
   journalEntryId String?
   reversedAt     DateTime?
@@ -1079,7 +1081,7 @@ model SavingsInterestAccrual {
   lot          SavingsLot    @relation(fields: [lotId], references: [id], onDelete: Restrict)
   journalEntry JournalEntry? @relation("SavingsAccrualJournal", fields: [journalEntryId], references: [id], onDelete: Restrict)
 
-  @@unique([lotId, accrualDate])
+  @@unique([lotId, accrualDate, postingSeq])
   @@map("savings_interest_accruals")
 }
 

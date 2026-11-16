@@ -9,7 +9,8 @@ import {
 
 describe('admin permissions domain helpers (P1-03)', () => {
   it('includes all 31 extended Revision 2 AdminPermission values', () => {
-    expect(ALL_ADMIN_PERMISSIONS.length).toBe(31)
+    expect(ALL_ADMIN_PERMISSIONS.length).toBe(32)
+    expect(ALL_ADMIN_PERMISSIONS).toContain(AdminPermission.SAVINGS_PAYOUTS_MANAGE)
     expect(ALL_ADMIN_PERMISSIONS).toContain(AdminPermission.EAJO_PAYOUTS_MANAGE)
     expect(ALL_ADMIN_PERMISSIONS).toContain(AdminPermission.PAYMENTS_REVERSE)
     expect(ALL_ADMIN_PERMISSIONS).toContain(AdminPermission.WALLET_MANAGE)

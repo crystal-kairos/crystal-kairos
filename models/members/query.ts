@@ -455,6 +455,7 @@ export const getSavingsRecords = async (userId: string) => {
       AdminPermission.SAVINGS_READ,
       AdminPermission.SAVINGS_MANAGE,
       AdminPermission.SAVINGS_PAYMENTS_REVIEW,
+      AdminPermission.SAVINGS_PAYOUTS_MANAGE,
       AdminPermission.MEMBERS_READ,
     ])
     const savingsRecords = await prisma.savings.findMany({

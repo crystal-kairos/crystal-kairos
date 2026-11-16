@@ -364,7 +364,7 @@ export const rejectSavingsSubmissionAction = async (submissionId: string, reject
 
 export const approveSavingsWithdrawalAction = async (savingsId: string) => {
   try {
-    const staff = await requirePermission(AdminPermission.SAVINGS_MANAGE)
+    const staff = await requirePermission(AdminPermission.SAVINGS_PAYOUTS_MANAGE)
     const id = z.string().uuid().parse(savingsId)
     const result = await approveSavingsWithdrawal({ savingsId: id, staff })
     revalidateAdminSavings(id)
@@ -392,10 +392,10 @@ const payoutSchema = z.object({
   evidenceUrl: z.string().min(1, 'Upload the payout evidence.'),
 })
 
-/** Confirms the payout (evidence, value date, bank reference). Dual control vs the approver (A-19). */
+/** Confirms the payout (evidence, value date, bank reference). Dual control vs the approver (A-19). Permission: SAVINGS_PAYOUTS_MANAGE (OQ-11). */
 export const confirmSavingsWithdrawalPayoutAction = async (input: z.input<typeof payoutSchema>) => {
   try {
-    const staff = await requirePermission(AdminPermission.SAVINGS_MANAGE)
+    const staff = await requirePermission(AdminPermission.SAVINGS_PAYOUTS_MANAGE)
     const parsed = payoutSchema.parse(input)
     const evidenceFileId = extractStoredFileIdFromUrl(parsed.evidenceUrl)
     if (!evidenceFileId) {
@@ -432,7 +432,7 @@ export const confirmSavingsWithdrawalPayoutAction = async (input: z.input<typeof
 /** Rejects/cancels a pending withdrawal; the plan returns to ACTIVE or MATURED. */
 export const rejectSavingsWithdrawalAction = async (savingsId: string, reason: string) => {
   try {
-    const staff = await requirePermission(AdminPermission.SAVINGS_MANAGE)
+    const staff = await requirePermission(AdminPermission.SAVINGS_PAYOUTS_MANAGE)
     const parsed = z
       .object({ savingsId: z.string().uuid(), reason: z.string().trim().min(3, 'Give a reason.').max(300) })
       .parse({ savingsId, reason })

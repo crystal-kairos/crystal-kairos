@@ -9,6 +9,7 @@ export const ALL_ADMIN_PERMISSIONS: readonly AdminPermission[] = [
   AdminPermission.SAVINGS_READ,
   AdminPermission.SAVINGS_MANAGE,
   AdminPermission.SAVINGS_PAYMENTS_REVIEW,
+  AdminPermission.SAVINGS_PAYOUTS_MANAGE,
   AdminPermission.LOANS_READ,
   AdminPermission.LOANS_REVIEW,
   AdminPermission.LOANS_DISBURSE,
@@ -90,7 +91,12 @@ export const PERMISSION_GROUPS: readonly PermissionGroup[] = [
       {
         permission: AdminPermission.SAVINGS_PAYMENTS_REVIEW,
         label: 'Review Savings Payments',
-        description: 'Confirm or reject savings deposit and withdrawal receipts.',
+        description: 'Confirm or reject savings deposit receipts.',
+      },
+      {
+        permission: AdminPermission.SAVINGS_PAYOUTS_MANAGE,
+        label: 'Pay Savings Withdrawals',
+        description: 'Approve, pay or reject savings withdrawals (dual control between approver and payer).',
       },
     ],
   },
@@ -268,6 +274,7 @@ export const ADMIN_NAV_SECTION_PERMISSIONS: Record<
     AdminPermission.SAVINGS_READ,
     AdminPermission.SAVINGS_MANAGE,
     AdminPermission.SAVINGS_PAYMENTS_REVIEW,
+    AdminPermission.SAVINGS_PAYOUTS_MANAGE,
   ],
   eajo: [
     AdminPermission.EAJO_READ,
@@ -377,6 +384,7 @@ export function resolveRequiredPermissionsForAdminPath(
       AdminPermission.TRANSACTIONS_READ,
       AdminPermission.TRANSACTIONS_REVIEW,
       AdminPermission.SAVINGS_PAYMENTS_REVIEW,
+      AdminPermission.SAVINGS_PAYOUTS_MANAGE,
       AdminPermission.LOANS_REVIEW,
       AdminPermission.LOANS_DISBURSE,
       AdminPermission.EAJO_PAYMENTS_REVIEW,

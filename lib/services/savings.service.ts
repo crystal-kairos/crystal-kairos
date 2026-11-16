@@ -888,10 +888,17 @@ export async function recalculateSavingsPeriodForfeiture(
       })
     }
   } else {
-    for (const lot of lots.filter((l) => !l.interestBearing && l.forfeitReason === LotForfeitReason.PERIOD_LATE)) {
+    const restored = lots.filter((l) => !l.interestBearing && l.forfeitReason === LotForfeitReason.PERIOD_LATE)
+    for (const lot of restored) {
       await tx.savingsLot.update({
         where: { id: lot.id },
         data: { interestBearing: true, forfeitedAt: null, forfeitReason: null },
+      })
+    }
+    // Re-post the reversed accruals now, back-dated to their original accrual dates (OQ-12).
+    if (restored.length > 0) {
+      await accrueSavingsPlanInterest(tx, period.savingsId, evalDate, actorId, {
+        lotIds: restored.map((l) => l.id),
       })
     }
   }
@@ -952,9 +959,10 @@ async function reverseLotAccruals(tx: Tx, lotId: string, reason: string, actorId
 
 /**
  * Posts the monthly linear accrual for every interest-bearing lot of a plan, for every
- * accrual date (month ends and maturity) up to `asOf` that has no row yet. Catch-up safe and
- * idempotent: unique (lotId, accrualDate) plus a journal idempotency key per lot and date.
- * The caller holds the member lock.
+ * accrual date (month ends and maturity) up to `asOf` that has no active row. Catch-up safe
+ * and idempotent. A date whose earlier row was reversed (forfeiture later cleared) is
+ * re-posted **back-dated** to that same accrual date, with the next `postingSeq` (owner
+ * decision on OQ-12). The caller holds the member lock.
  */
 // ASSUMPTION A-07: linear accrual per lot, posted monthly (month ends + maturity).
 export async function accrueSavingsPlanInterest(
@@ -962,6 +970,7 @@ export async function accrueSavingsPlanInterest(
   savingsId: string,
   asOf: string = lagosToday(),
   actorId: string | null = null,
+  options: { lotIds?: string[] } = {},
 ): Promise<{ postings: number; amount: Prisma.Decimal }> {
   const plan = await tx.savings.findUnique({ where: { id: savingsId } })
   let postings = 0
@@ -970,7 +979,12 @@ export async function accrueSavingsPlanInterest(
   if (!OPEN_PLAN_STATUSES.includes(plan.status)) return { postings, amount }
 
   const lots = await tx.savingsLot.findMany({
-    where: { savingsId, voidedAt: null, interestBearing: true },
+    where: {
+      savingsId,
+      voidedAt: null,
+      interestBearing: true,
+      ...(options.lotIds ? { id: { in: options.lotIds } } : {}),
+    },
     include: { accruals: true },
   })
 
@@ -983,7 +997,9 @@ export async function accrueSavingsPlanInterest(
     const rows = [...lot.accruals]
     for (const d of dates) {
       const iso = toIsoDate(d)
-      if (rows.some((r) => toIsoDate(r.accrualDate) === iso)) continue
+      const sameDate = rows.filter((r) => toIsoDate(r.accrualDate) === iso)
+      if (sameDate.some((r) => !r.reversedAt)) continue
+      const postingSeq = sameDate.length === 0 ? 0 : Math.max(...sameDate.map((r) => r.postingSeq)) + 1
       const previous = sumDecimals(
         rows.filter((r) => !r.reversedAt && isBefore(r.accrualDate, d)).map((r) => r.amount),
       )
@@ -1001,52 +1017,21 @@ export async function accrueSavingsPlanInterest(
         amount: posting,
         memberId: plan.userId,
         savingsId: plan.id,
-        effectiveDate: d,
-        idempotencyKey: `savings-accrual:${lot.id}:${iso}`,
+        effectiveDate: d, // back-dated to the accrual date, also when re-posting
+        idempotencyKey:
+          postingSeq === 0 ? `savings-accrual:${lot.id}:${iso}` : `savings-accrual:${lot.id}:${iso}:${postingSeq}`,
         postedById: actorId,
-        description: `Savings interest accrual ${iso} for lot ${lot.id}`,
+        description:
+          postingSeq === 0
+            ? `Savings interest accrual ${iso} for lot ${lot.id}`
+            : `Savings interest re-posted for ${iso} (lot ${lot.id}, posting ${postingSeq})`,
       })
       const row = await tx.savingsInterestAccrual.create({
-        data: { lotId: lot.id, accrualDate: d, amount: posting, journalEntryId: entry.id },
+        data: { lotId: lot.id, accrualDate: d, postingSeq, amount: posting, journalEntryId: entry.id },
       })
       rows.push(row)
       postings += 1
       amount = amount.plus(posting)
-    }
-
-    // True-up after maturity: if an accrual date's row was reversed (forfeiture later cleared),
-    // that date is never re-posted, so the shortfall is posted on `asOf` (see OQ-12).
-    if (isSameOrBefore(plan.maturityDate, asOf) && isBefore(lot.valueDate, plan.maturityDate)) {
-      const target = roundMoney(
-        lotInterest({
-          principal: lot.principal,
-          ratePercent: plan.ratePercentSnapshot,
-          lotValueDate: lot.valueDate,
-          planStartDate: plan.startDate,
-          maturityDate: plan.maturityDate,
-        }),
-      )
-      const active = sumDecimals(rows.filter((r) => !r.reversedAt).map((r) => r.amount))
-      const shortfall = target.minus(active)
-      const asOfDate = parseDateOnly(asOf)
-      if (shortfall.gt(0) && !rows.some((r) => toIsoDate(r.accrualDate) === asOf)) {
-        const entry = await postSavingsInterestAccrual(tx, {
-          amount: shortfall,
-          memberId: plan.userId,
-          savingsId: plan.id,
-          effectiveDate: asOfDate,
-          idempotencyKey: `savings-accrual:${lot.id}:${asOf}`,
-          postedById: actorId,
-          description: `Savings interest catch-up ${asOf} for lot ${lot.id}`,
-        })
-        rows.push(
-          await tx.savingsInterestAccrual.create({
-            data: { lotId: lot.id, accrualDate: asOfDate, amount: shortfall, journalEntryId: entry.id },
-          }),
-        )
-        postings += 1
-        amount = amount.plus(shortfall)
-      }
     }
   }
 
@@ -1369,7 +1354,7 @@ export async function confirmSavingsWithdrawalPayout(input: ConfirmSavingsPayout
       {
         actor: input.staff,
         previousActorId: disbursement.approvedById,
-        requiredPermission: AdminPermission.SAVINGS_MANAGE,
+        requiredPermission: AdminPermission.SAVINGS_PAYOUTS_MANAGE,
       },
       asDb(tx),
     )

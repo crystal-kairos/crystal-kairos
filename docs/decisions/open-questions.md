@@ -84,14 +84,10 @@ This document records architectural, financial, and policy open questions arisin
 ## 5. Savings workflows (P3-03)
 
 ### OQ-11: Savings payout permission and value-date corrections
-- **Context:** P3-03 lets staff with `SAVINGS_PAYMENTS_REVIEW` confirm/reject savings receipts on the plan page, and staff with `SAVINGS_MANAGE` approve and pay savings withdrawals (dual control, A-19). There is no dedicated "savings payout" permission.
-- **Question:** Should savings payouts use a separate permission (like `LOANS_DISBURSE` for loans)? 
-- **Current behaviour (conservative):** `SAVINGS_MANAGE` for approval and payment, with dual control. A value-date correction after confirmation is not offered in the UI yet: it belongs to the payment review/reversal work (P3-07, P3-09); `recalculateSavingsPeriodForfeiture` already restores interest when a corrected value date falls inside the grace window.
-- **Action Required:** Owner decision on the permission; no change needed for the correction path.
+- **Context:** P3-03 first used the general `SAVINGS_MANAGE` permission to approve and pay savings withdrawals.
+- **Resolved (owner):** a separate permission. `SAVINGS_PAYOUTS_MANAGE` now guards approving, paying and rejecting savings withdrawals, and dual control (A-19) counts staff holding it. `SAVINGS_MANAGE` keeps plan management; `SAVINGS_PAYMENTS_REVIEW` keeps receipt review.
+- **Still open (scheduled):** a screen to correct a payment's value date after confirmation is built in P3-07; reversing a plan's first deposit (§2.10 step 4) in P3-09. Both are in the CLAUDE.md hand-over notes. `recalculateSavingsPeriodForfeiture` already restores interest when a corrected value date falls inside the grace window.
 
-### OQ-12: Re-posting an accrual date after a cleared forfeiture
-- **Context:** `SavingsInterestAccrual` is unique on `(lotId, accrualDate)` (guide P3-03). When a forfeiture is cleared by a value-date correction, the reversed rows keep their dates, so the restored interest is posted on the **next** accrual date (or at withdrawal time for a matured plan), not back-dated to the original month ends.
-- **Question:** Is posting the catch-up on the next accrual date acceptable to the accountant, or must each original month be re-posted (which would need a partial unique index on non-reversed rows)?
-- **Current behaviour:** catch-up on the next accrual date; totals at maturity are exact (tested).
-- **Action Required:** Accountant confirmation.
-
+### OQ-12: Re-posting accruals after a cleared forfeiture
+- **Context:** When a period's forfeiture is cleared (value-date correction), its lots' reversed accruals must be posted again.
+- **Resolved (owner):** back-dated. The reversed dates are re-posted immediately, each with its original accrual date as the journal effective date, using the next `SavingsInterestAccrual.postingSeq` (unique `(lotId, accrualDate, postingSeq)`). The reversed rows and journal reversals stay as history.

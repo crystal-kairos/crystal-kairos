@@ -286,6 +286,7 @@ const FILE_ACCESS_STAFF_PERMISSIONS: readonly AdminPermission[] = [
   AdminPermission.SAVINGS_READ,
   AdminPermission.SAVINGS_MANAGE,
   AdminPermission.SAVINGS_PAYMENTS_REVIEW,
+  AdminPermission.SAVINGS_PAYOUTS_MANAGE,
   AdminPermission.LOANS_READ,
   AdminPermission.LOANS_REVIEW,
   AdminPermission.LOANS_DISBURSE,

@@ -183,9 +183,14 @@ performance work (P5-03) waits for it.
     call `onSavingsAllocationsConfirmed` so lots exist.
   - **P3-07:** savings receipts are confirmed/rejected on the plan page (`confirmSavingsSubmissionAction`,
     `rejectSavingsSubmissionAction`, permission `SAVINGS_PAYMENTS_REVIEW`) until the unified queue replaces them.
-    Value-date corrections after confirmation are not built (OQ-11); the restore logic exists.
+    **Build the screen to correct a payment's value date after confirmation** (not built in P3-03, OQ-11). For
+    savings, after changing the value date call `recalculateSavingsPeriodForfeiture` for the affected periods: it
+    restores the lots and re-posts their interest back-dated (OQ-12).
   - **P3-09:** `onSavingsAllocationsReversed` voids lots and reverses accruals but **refuses** reversing a plan's first
-    deposit (`SAVINGS_FIRST_DEPOSIT_REVERSAL`); implement §2.10 step 4 (manual correction / back to `PENDING`) there.
+    deposit (`SAVINGS_FIRST_DEPOSIT_REVERSAL`). **Implement §2.10 step 4 there:** refuse and raise an OWNER
+    manual-correction task when other confirmed lots exist; return the plan to `PENDING` when it is the only lot.
+  - Savings withdrawals: approve/pay/reject need `SAVINGS_PAYOUTS_MANAGE` (OQ-11; dual control counts its holders).
+    Accrual rows carry `postingSeq`; only one active row per lot and date.
   - **P3-06B / P3-11:** use `Savings.withdrawalKind` `RECOVERY` / `SETTLEMENT`; reverse lot accruals the same way as
     early withdrawal in `confirmSavingsWithdrawalPayout`.
   - Legacy `Transaction` savings categories are disabled (create refused; confirm refused, reject allowed).

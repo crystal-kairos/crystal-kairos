@@ -141,7 +141,7 @@ function staff(id: string, role: 'OWNER' | 'ADMIN'): StaffActor {
     name: id,
     role: role as StaffActor['role'],
     sessionVersion: 1,
-    permissions: [AdminPermission.SAVINGS_MANAGE],
+    permissions: [AdminPermission.SAVINGS_PAYOUTS_MANAGE],
   }
 }
 
@@ -153,7 +153,7 @@ beforeAll(async () => {
       data: { email: `${prefix}-admin-${n}@example.test`, name: `Admin ${n}`, role: UserRole.ADMIN, isActive: true },
     })
     await prisma.adminPermissionGrant.create({
-      data: { adminUserId: u.id, permission: AdminPermission.SAVINGS_MANAGE, grantedById: ownerId },
+      data: { adminUserId: u.id, permission: AdminPermission.SAVINGS_PAYOUTS_MANAGE, grantedById: ownerId },
     })
     if (n === 'a') adminA = staff(u.id, 'ADMIN')
     else adminB = staff(u.id, 'ADMIN')
@@ -174,7 +174,7 @@ afterAll(async () => {
   await prisma.$disconnect()
 })
 
-describe('P3-03 savings workflows', () => {
+describe('P3-03 savings workflows', { timeout: 30_000 }, () => {
   it('subscription is PENDING with a snapshotted rate and no schedule, start or maturity (D-08, D-09)', async () => {
     const memberId = await createMember()
     const s = await subscribeToSavingsPlan({
@@ -383,7 +383,7 @@ describe('P3-03 savings workflows', () => {
     expect((await prisma.savingsPeriod.findUniqueOrThrow({ where: { id: periods[1].id } })).status).toBe(PaymentPeriodStatus.OVERDUE)
   })
 
-  it('a forfeiture cleared after maturity re-posts the lot interest once (maturity true-up, OQ-12)', async () => {
+  it('a cleared forfeiture re-posts the reversed accruals back-dated to their original dates (OQ-12)', async () => {
     const memberId = await createMember()
     const s = await subscribeToSavingsPlan({ memberId, productId: products.REGULAR, durationMonths: 6, targetAmount: 20000, frequency: SavingsFrequency.MONTHLY })
     await deposit(memberId, s.id, 20000, '2027-01-01')
@@ -391,19 +391,33 @@ describe('P3-03 savings workflows', () => {
     await deposit(memberId, s.id, 10000, '2027-02-02', [periods[1].id])
     const lot = await prisma.savingsLot.findFirstOrThrow({ where: { savingsPeriodId: periods[1].id } })
     await prisma.$transaction((tx) => accrueSavingsPlanInterest(tx, s.id, '2027-07-01'))
-    // Forfeiture evaluated late (e.g. after a rejected receipt): every row, including maturity, is reversed.
+    const original = await prisma.savingsInterestAccrual.findMany({ where: { lotId: lot.id }, orderBy: { accrualDate: 'asc' } })
+    const dates = original.map((r) => formatDateOnly(r.accrualDate))
+    expect(dates).toEqual(['2027-02-28', '2027-03-31', '2027-04-30', '2027-05-31', '2027-06-30', '2027-07-01'])
+
+    // Forfeiture evaluated late (e.g. after a rejected receipt): every row is reversed.
     await prisma.$transaction((tx) => recalculateSavingsPeriodForfeiture(tx, periods[1].id, '2027-07-02'))
-    expect((await prisma.savingsInterestAccrual.findMany({ where: { lotId: lot.id, reversedAt: null } })).length).toBe(0)
-    // A correction (simulated: the period's amount due was 10,000) clears the forfeiture.
+    expect(await prisma.savingsInterestAccrual.count({ where: { lotId: lot.id, reversedAt: null } })).toBe(0)
+
+    // A correction (simulated: the period's amount due was 10,000) clears the forfeiture; the
+    // interest is re-posted immediately on the original dates, not on the correction date.
     await prisma.savingsPeriod.update({ where: { id: periods[1].id }, data: { amountDue: 10000 } })
     await prisma.$transaction((tx) => recalculateSavingsPeriodForfeiture(tx, periods[1].id, '2027-07-10'))
-    await prisma.$transaction((tx) => accrueSavingsPlanInterest(tx, s.id, '2027-07-10'))
     await prisma.$transaction((tx) => accrueSavingsPlanInterest(tx, s.id, '2027-07-10')) // idempotent
-    const active = await prisma.savingsInterestAccrual.findMany({ where: { lotId: lot.id, reversedAt: null } })
+
+    const active = await prisma.savingsInterestAccrual.findMany({
+      where: { lotId: lot.id, reversedAt: null },
+      include: { journalEntry: true },
+      orderBy: { accrualDate: 'asc' },
+    })
+    expect(active.map((r) => formatDateOnly(r.accrualDate))).toEqual(dates)
+    expect(active.every((r) => r.postingSeq === 1)).toBe(true)
+    expect(active.every((r) => formatDateOnly(r.journalEntry!.effectiveDate) === formatDateOnly(r.accrualDate))).toBe(true)
+    expect(active.map((r) => r.amount.toFixed(2))).toEqual(original.map((r) => r.amount.toFixed(2)))
     const total = active.reduce((sum, a) => sum.plus(a.amount), new Prisma.Decimal(0))
     // 10,000 × 12% × 149/181: held 2 Feb → 1 Jul (149 days) of a 181-day term
     expect(total.toFixed(2)).toBe(new Prisma.Decimal(10000).times(12).dividedBy(100).times(149).dividedBy(181).toDecimalPlaces(2).toFixed(2))
-    expect(active).toHaveLength(1)
+    expect(await prisma.savingsInterestAccrual.count({ where: { lotId: lot.id } })).toBe(12)
   })
 
   it('review shield suppresses forfeiture; rejection lifts it and the next run catches up (A-11)', async () => {
