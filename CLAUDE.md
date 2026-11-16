@@ -288,7 +288,7 @@ performance work (P5-03) waits for it.
 | P3-04 | Done | Loan workflow in `lib/services/loans.service.ts` (+ `loan-capacity.service.ts`, `lib/domain/loan-workflow.ts`, `lib/jobs/loan-offers.job.ts`); OQ-13 … OQ-15 open |
 | P3-05 | Done | E-ajo slots/payouts; see hand-over notes "P3-05 → …" |
 | P3-06 | Not started | |
-| P4-01 | Not started | |
+| P4-01 | Done | Resend provider migration, signed delivery webhook, stable idempotency, domain runbook |
 | P3-06B | Not started | |
 | P3-07 | Not started | |
 | P3-08 | Not started | |
@@ -349,7 +349,7 @@ su postgres -c "psql -c \"ALTER USER postgres PASSWORD 'postgres';\" -c 'CREATE 
 ```
 
 Create `.env` (git-ignored) from `.env.test.example` and add dummy values for
-`BREVO_API_KEY`, `ADMIN_EMAIL`, `EMAIL_FROM`, `EMAIL_FROM_NAME`, `NEXT_PUBLIC_APP_URL` and
+`RESEND_API_KEY`, `ADMIN_EMAIL`, `EMAIL_FROM_ADDRESS`, `EMAIL_FROM_NAME`, `NEXT_PUBLIC_APP_URL` and
 `MFA_ENCRYPTION_KEY` (`openssl rand -base64 32`) — modules read these at import time. Leave
 `PAYSTACK_SECRET_KEY` unset to use the deterministic mock bank resolver.
 
