@@ -321,13 +321,25 @@ export const rejectEAjoMemberAction = async (eajoMemberId: string, rejectionReas
 }
 
 /** Cancels a participant before payout; contributions go to the wallet (§2.8 rule 7). */
-export const cancelEAjoParticipantAction = async (eajoMemberId: string, reason: string) => {
+export const cancelEAjoParticipantAction = async (
+  eajoMemberId: string,
+  reason: string,
+  options: { deductPenalties?: boolean } = {},
+) => {
   try {
     const actor = await requirePermission(AdminPermission.EAJO_MANAGE)
-    const result = await prisma.$transaction((tx) => cancelEAjoParticipant(tx, { eajoMemberId, actor, reason }))
+    const result = await prisma.$transaction((tx) =>
+      cancelEAjoParticipant(tx, { eajoMemberId, actor, reason, deductPenalties: options.deductPenalties === true }),
+    )
     const m = await prisma.eAjoMember.findUnique({ where: { id: eajoMemberId }, select: { groupId: true, userId: true } })
     revalidateEAjo(m?.groupId, m?.userId)
-    return { success: true, data: { refundedToWallet: result.refundedToWallet.toFixed(2) } }
+    return {
+      success: true,
+      data: {
+        refundedToWallet: result.refundedToWallet.toFixed(2),
+        penaltiesDeducted: result.penaltiesDeducted.toFixed(2),
+      },
+    }
   } catch (error) {
     const err = toActionErrorResult(error, {
       actionName: 'cancelEAjoParticipantAction',

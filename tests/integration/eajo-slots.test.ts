@@ -472,7 +472,7 @@ describe('E-ajo slots, payouts, cancellation and penalties (PR P3-05, §2.8, §2
     expect(res.reservedAmount.toFixed(2)).toBe('0.00')
   })
 
-  it('accrues late penalties after grace, stops at the cap and never duplicates', async () => {
+  it('accrues late penalties after grace, stops at the cap, never duplicates; fees can be deducted on cancellation', async () => {
     const p3 = await prisma.eAjoContributionPeriod.findFirstOrThrow({
       where: { eajoMemberId: participant.c, periodNumber: 3 },
     })
@@ -499,10 +499,37 @@ describe('E-ajo slots, payouts, cancellation and penalties (PR P3-05, §2.8, §2
     const job = await runEAjoPenaltyJob({ groupId, throughDate: day(addDays(p3.dueDate, 20)), today: through })
     expect(job.accruals).toBe(0)
 
-    // Unpaid penalties block cancellation (OQ-13)
+    // Unpaid late fees block cancellation (OQ-13)…
     await expect(
       prisma.$transaction((tx) => cancelEAjoParticipant(tx, { eajoMemberId: participant.c, actor: ownerActor, reason: 'x' })),
     ).rejects.toMatchObject({ code: 'PENALTIES_OUTSTANDING' })
+
+    // …unless the admin deducts them from the contributions: 20,000 held − 250 fees = 19,750 refunded
+    const walletBefore = await getWalletBalance(users.c)
+    const out = await prisma.$transaction((tx) =>
+      cancelEAjoParticipant(tx, {
+        eajoMemberId: participant.c,
+        actor: ownerActor,
+        reason: 'Member leaving',
+        deductPenalties: true,
+      }),
+    )
+    expect(out.penaltiesDeducted.toFixed(2)).toBe('250.00')
+    expect(out.refundedToWallet.toFixed(2)).toBe('19750.00')
+    expect((await getWalletBalance(users.c)).minus(walletBefore).toFixed(2)).toBe('19750.00')
+    const p3After = await prisma.eAjoContributionPeriod.findUniqueOrThrow({ where: { id: p3.id } })
+    expect(p3After.penaltyPaid.toFixed(2)).toBe('250.00')
+    const lines = await prisma.journalLine.findMany({ where: { journalEntryId: out.journalEntryId! } })
+    const credit = (t: LedgerAccountType) =>
+      lines.filter((l) => l.accountType === t).reduce((acc, l) => acc.plus(l.credit), new Prisma.Decimal(0)).toFixed(2)
+    expect(credit(LedgerAccountType.EAJO_PENALTY_RECEIVABLE)).toBe('250.00')
+    expect(credit(LedgerAccountType.MEMBER_WALLET_LIABILITY)).toBe('19750.00')
+    expect(
+      (await getEAjoParticipantLedgerBalance(prisma, participant.c, LedgerAccountType.EAJO_CONTRIBUTION_LIABILITY)).toFixed(2),
+    ).toBe('0.00')
+    expect((await prisma.eAjoMember.findUniqueOrThrow({ where: { id: participant.c } })).status).toBe(
+      EAjoMemberStatus.CANCELLED,
+    )
   })
 
   it('rejects a pending application with a reason', async () => {

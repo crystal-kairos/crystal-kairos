@@ -91,6 +91,8 @@ export const AdminEAjoGroupDetailClient = ({ data }: { data: Dashboard }) => {
   const [reference, setReference] = useState('')
   const [evidence, setEvidence] = useState<File | null>(null)
   const [cashBalance, setCashBalance] = useState('')
+  // Late fees block cancellation; the popup offers to deduct them from the contributions (OQ-13)
+  const [feesBlock, setFeesBlock] = useState<{ participant: Participant; reason: string; message: string } | null>(null)
 
   const { group, participants, funding, pendingContributions, slots } = data
   const can = (p: string) => data.viewerRole === 'OWNER' || (data.permissions as readonly string[]).includes(p)
@@ -129,13 +131,26 @@ export const AdminEAjoGroupDetailClient = ({ data }: { data: Dashboard }) => {
     switch (dialog.kind) {
       case 'reject-app':
         return run(() => rejectEAjoMemberAction(dialog.participant.id, reason), 'Application rejected.')
-      case 'cancel':
-        return run(async () => {
-          const res = await cancelEAjoParticipantAction(dialog.participant.id, reason)
-          return res.success
-            ? { success: true, error: undefined }
-            : { success: false, error: res.error }
-        }, 'Participant cancelled. Confirmed contributions were credited to the member’s wallet.')
+      case 'cancel': {
+        const participant = dialog.participant
+        const cancelReason = reason
+        setError(null)
+        setNotice(null)
+        startTransition(async () => {
+          const res = await cancelEAjoParticipantAction(participant.id, cancelReason)
+          if (res.success) {
+            setDialog(null)
+            setNotice('Participant cancelled. Confirmed contributions were credited to the member’s wallet.')
+            router.refresh()
+          } else if (res.code === 'PENALTIES_OUTSTANDING') {
+            setDialog(null)
+            setFeesBlock({ participant, reason: cancelReason, message: res.error ?? '' })
+          } else {
+            setError(res.error ?? 'Something went wrong.')
+          }
+        })
+        return
+      }
       case 'hold':
         return run(() => holdEAjoPayoutAction(dialog.participant.payout!.id, reason), 'Payout put on hold.')
       case 'reject-receipt':
@@ -534,6 +549,71 @@ export const AdminEAjoGroupDetailClient = ({ data }: { data: Dashboard }) => {
           </table>
         </section>
       )}
+
+      <Dialog open={feesBlock !== null} onOpenChange={(o) => !o && !isPending && setFeesBlock(null)}>
+        <DialogContent>
+          {feesBlock && (
+            <>
+              <DialogHeader>
+                <DialogTitle>Late fees must be paid first</DialogTitle>
+                <DialogDescription>{feesBlock.message}</DialogDescription>
+              </DialogHeader>
+              <div className='text-xs flex flex-col gap-1.5'>
+                <div className='flex justify-between'>
+                  <span className='text-muted-foreground'>Contributions paid</span>
+                  <span className='font-mono'>{naira(feesBlock.participant.confirmed)}</span>
+                </div>
+                <div className='flex justify-between'>
+                  <span className='text-muted-foreground'>Late fees owed</span>
+                  <span className='font-mono text-error'>−{naira(feesBlock.participant.penaltyOutstanding)}</span>
+                </div>
+                <div className='flex justify-between border-t border-dashed border-outline-variant/30 pt-1.5 font-semibold'>
+                  <span>Refund to wallet if deducted</span>
+                  <span className='font-mono'>
+                    {naira(Math.max(0, feesBlock.participant.confirmed - feesBlock.participant.penaltyOutstanding))}
+                  </span>
+                </div>
+                <p className='text-muted-foreground mt-1'>
+                  Deduct the late fees from {feesBlock.participant.name}’s contributions, refund the rest to their wallet and
+                  cancel? This cannot be undone.
+                </p>
+              </div>
+              {error && (
+                <div className='bg-error-container/10 border border-error-container/30 text-error p-2 rounded text-xs flex gap-2'>
+                  <AlertCircle className='w-4 h-4 shrink-0' /> {error}
+                </div>
+              )}
+              <DialogFooter>
+                <Button variant='outline' disabled={isPending} onClick={() => setFeesBlock(null)}>
+                  Close
+                </Button>
+                <Button
+                  disabled={isPending}
+                  onClick={() => {
+                    const fb = feesBlock
+                    setError(null)
+                    startTransition(async () => {
+                      const res = await cancelEAjoParticipantAction(fb.participant.id, fb.reason, { deductPenalties: true })
+                      if (!res.success) {
+                        setError(res.error ?? 'Something went wrong.')
+                        return
+                      }
+                      setFeesBlock(null)
+                      setNotice(
+                        `Participant cancelled. ${naira(Number(res.data?.penaltiesDeducted ?? 0))} in late fees deducted; ${naira(Number(res.data?.refundedToWallet ?? 0))} refunded to the wallet.`,
+                      )
+                      router.refresh()
+                    })
+                  }}
+                >
+                  {isPending && <Loader2 className='w-4 h-4 animate-spin mr-1' />}
+                  Deduct and refund the rest
+                </Button>
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={dialog !== null} onOpenChange={(o) => !o && !isPending && setDialog(null)}>
         <DialogContent>

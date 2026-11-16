@@ -32,7 +32,7 @@ import { planEAjoPenaltyAccruals } from '@/lib/domain/eajo-penalty'
 import { enforceDualControl, type StaffActor } from '@/lib/authz/guards'
 import { getMemberUnencumberedSavings, requestEAjoGuarantor } from '@/lib/services/guarantees.service'
 import { generateAndPersistEAjoSchedule, recordEAjoPenaltyAccrual } from '@/lib/services/schedules.service'
-import { postEajoPayout, postJournalEntry } from '@/lib/services/ledger.service'
+import { postEajoPayout, postJournalEntry, type JournalLineInput } from '@/lib/services/ledger.service'
 import { assertProductEligibility } from '@/lib/services/profile.service'
 import { AuditAction, AuditOutcome, recordAuditEvent } from '@/lib/services/audit.service'
 
@@ -782,12 +782,13 @@ export async function afterEAjoAllocationsChanged(
  * Admin cancels a participant before their payout. Before activation the application simply
  * ends. After activation, confirmed contributions held for the participant go to their wallet
  * (no early-slot penalty), the payout is cancelled and the reservation released.
- * Refused after the payout has been approved or paid (A-09), and — conservatively, OQ-13 — while
- * late penalties are still unpaid, so no receivable is left without an obligation.
+ * Refused after the payout has been approved or paid (A-09). Unpaid late fees block it
+ * (`PENALTIES_OUTSTANDING`) unless the admin passes `deductPenalties`: the fees are then paid out of
+ * the contributions held and only the remainder is refunded (owner decision OQ-13).
  */
 export async function cancelEAjoParticipant(
   tx: Tx,
-  params: { eajoMemberId: string; actor: EAjoActorRef; reason: string },
+  params: { eajoMemberId: string; actor: EAjoActorRef; reason: string; deductPenalties?: boolean },
 ) {
   const reason = params.reason?.trim()
   if (!reason) throw new AppError('REASON_REQUIRED', 'A cancellation reason is required.', { statusCode: 422 })
@@ -800,6 +801,7 @@ export async function cancelEAjoParticipant(
   if (!state) throw new AppError('NOT_FOUND', 'E-ajo participant not found.', { statusCode: 404 })
 
   let refunded = ZERO
+  let penaltiesDeducted = ZERO
   let journalEntryId: string | null = null
 
   if (state.status === EAjoMemberStatus.PENDING || state.status === EAjoMemberStatus.APPROVED) {
@@ -827,42 +829,81 @@ export async function cancelEAjoParticipant(
       (acc, p) => acc.plus(Prisma.Decimal.max(0, p.penaltyAssessed.minus(p.penaltyPaid).minus(p.penaltyWaived))),
       ZERO,
     )
+    const held = Prisma.Decimal.max(
+      0,
+      await getEAjoParticipantLedgerBalance(tx, state.id, LedgerAccountType.EAJO_CONTRIBUTION_LIABILITY),
+    )
+
+    // OQ-13 (owner decision): unpaid late fees block cancellation unless the admin chooses to deduct
+    // them from the contributions held; the remainder is refunded to the wallet.
     if (penaltyOutstanding.gt(0)) {
-      throw new AppError(
-        'PENALTIES_OUTSTANDING',
-        `Late penalties of ₦${penaltyOutstanding.toFixed(2)} are still unpaid. Collect or waive them before cancelling.`,
-        { statusCode: 409 },
-      )
+      if (!params.deductPenalties) {
+        throw new AppError(
+          'PENALTIES_OUTSTANDING',
+          `This member can't leave the group until their late fees of ₦${penaltyOutstanding.toFixed(2)} are paid.`,
+          { statusCode: 409 },
+        )
+      }
+      if (held.lt(penaltyOutstanding)) {
+        throw new AppError(
+          'INSUFFICIENT_CONTRIBUTIONS',
+          `The member's contributions (₦${held.toFixed(2)}) are less than the late fees owed (₦${penaltyOutstanding.toFixed(2)}). The fees must be paid before they can leave.`,
+          { statusCode: 409 },
+        )
+      }
+      // Settle the fees, oldest period first
+      for (const p of state.contributionPeriods) {
+        const owed = Prisma.Decimal.max(0, p.penaltyAssessed.minus(p.penaltyPaid).minus(p.penaltyWaived))
+        if (owed.gt(0)) {
+          await tx.eAjoContributionPeriod.update({ where: { id: p.id }, data: { penaltyPaid: { increment: owed } } })
+        }
+      }
+      penaltiesDeducted = roundMoney(penaltyOutstanding)
     }
 
-    refunded = await getEAjoParticipantLedgerBalance(tx, state.id, LedgerAccountType.EAJO_CONTRIBUTION_LIABILITY)
-    if (refunded.gt(0)) {
+    refunded = roundMoney(held.minus(penaltiesDeducted))
+    if (held.gt(0)) {
+      const lines: JournalLineInput[] = [
+        {
+          accountType: LedgerAccountType.EAJO_CONTRIBUTION_LIABILITY,
+          debit: held,
+          credit: 0,
+          memberId: state.userId,
+          accountRefType: 'EAJO_MEMBER',
+          accountRefId: state.id,
+        },
+      ]
+      if (penaltiesDeducted.gt(0)) {
+        lines.push({
+          accountType: LedgerAccountType.EAJO_PENALTY_RECEIVABLE,
+          debit: 0,
+          credit: penaltiesDeducted,
+          memberId: state.userId,
+          accountRefType: 'EAJO_MEMBER',
+          accountRefId: state.id,
+        })
+      }
+      if (refunded.gt(0)) {
+        lines.push({
+          accountType: LedgerAccountType.MEMBER_WALLET_LIABILITY,
+          debit: 0,
+          credit: refunded,
+          memberId: state.userId,
+          accountRefType: 'WALLET',
+          accountRefId: state.userId,
+        })
+      }
       const entry = await postJournalEntry(tx, {
         sourceType: 'EAJO_CANCELLATION',
         sourceId: state.id,
         idempotencyKey: `eajo-cancel-refund:${state.id}`,
-        description: 'E-ajo participation cancelled before payout: contributions returned to wallet',
+        description: penaltiesDeducted.gt(0)
+          ? 'E-ajo participation cancelled before payout: late fees deducted, remaining contributions returned to wallet'
+          : 'E-ajo participation cancelled before payout: contributions returned to wallet',
         effectiveDate: parseDateOnly(lagosToday()),
         postedById: params.actor.id,
         reason,
-        lines: [
-          {
-            accountType: LedgerAccountType.EAJO_CONTRIBUTION_LIABILITY,
-            debit: refunded,
-            credit: 0,
-            memberId: state.userId,
-            accountRefType: 'EAJO_MEMBER',
-            accountRefId: state.id,
-          },
-          {
-            accountType: LedgerAccountType.MEMBER_WALLET_LIABILITY,
-            debit: 0,
-            credit: refunded,
-            memberId: state.userId,
-            accountRefType: 'WALLET',
-            accountRefId: state.userId,
-          },
-        ],
+        lines,
       })
       journalEntryId = entry.id
     }
@@ -896,6 +937,7 @@ export async function cancelEAjoParticipant(
         groupId: state.groupId,
         previousStatus: state.status,
         refundedToWallet: refunded.toFixed(2),
+        penaltiesDeducted: penaltiesDeducted.toFixed(2),
         journalEntryId,
         reason,
       },
@@ -907,7 +949,7 @@ export async function cancelEAjoParticipant(
     await completeEAjoGroupIfFinished(tx, state.groupId, params.actor.id)
   }
 
-  return { refundedToWallet: refunded, journalEntryId }
+  return { refundedToWallet: refunded, penaltiesDeducted, journalEntryId }
 }
 
 // ---------------------------------------------------------------------------

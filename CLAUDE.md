@@ -240,8 +240,7 @@ performance work (P5-03) waits for it.
   (`refreshEAjoParticipant`, `approveEAjoPayout`, `recordEAjoPayoutPaid`), contribution receipt
   confirmed/rejected. Guarantor requests are currently only shown on the member's e-ajo dashboard.
 - **P3-05 → P5-04.** `AjoFeeConfig` and the legacy free-text guarantor/bank columns on `EAjoMember`
-  are no longer read by the e-ajo flow. Open owner question: OQ-13 (cancellation with unpaid
-  penalties); OQ-11 and OQ-12 are resolved.
+  are no longer read by the e-ajo flow. OQ-11, OQ-12 and OQ-13 are resolved (owner decisions).
 
 ### Status
 

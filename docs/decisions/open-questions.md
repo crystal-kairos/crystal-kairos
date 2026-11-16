@@ -71,9 +71,8 @@ This document records architectural, financial, and policy open questions arisin
 
 ### OQ-13: Cancelling a participant who owes late penalties (P3-05)
 - **Context:** §2.8 rule 7 says a participant cancelled before payout gets their confirmed contributions back in the wallet with no early-slot penalty, but is silent on late penalties already assessed and unpaid.
-- **Current implementation (conservative):** cancellation is refused (`PENALTIES_OUTSTANDING`) until the unpaid penalties are paid (or waived once a waiver flow exists), so no penalty receivable is left behind without an obligation. Paid penalties stay as penalty income.
-- **Options:** (a) keep blocking; (b) deduct unpaid penalties from the wallet refund; (c) waive them automatically on cancellation.
-- **Action Required:** Owner decision.
+- **Decision (owner, 2026-11-16):** cancellation is blocked while late fees are unpaid. The admin sees a popup saying the member can't leave until the fees are paid, with a button to deduct the fees from the member's contributions instead: the fees are then marked paid (oldest month first), the rest of the contributions is refunded to the wallet and the participant is cancelled. If the contributions are less than the fees, deduction is refused. Journal: Dr `EAJO_CONTRIBUTION_LIABILITY` (held) / Cr `EAJO_PENALTY_RECEIVABLE` (fees) + Cr `MEMBER_WALLET_LIABILITY` (remainder). See `cancelEAjoParticipant(..., { deductPenalties })`.
+- **Status:** Resolved.
 
 ---
 
