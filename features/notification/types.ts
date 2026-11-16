@@ -9,6 +9,16 @@ export interface SendEmailOptions {
   templateId?: string
   variables?: Record<string, string>
   triggeredBy?: string
+  notificationId?: string
+  throwOnError?: boolean
+}
+
+export interface SendEmailResult {
+  success: boolean
+  notificationId?: string
+  notificationIds?: string[]
+  externalId?: string
+  error?: string
 }
 
 export interface TemplateVariables {
