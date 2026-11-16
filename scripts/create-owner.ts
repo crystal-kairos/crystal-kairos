@@ -62,13 +62,17 @@ export async function bootstrapInitialOwner(
       role: UserRole.OWNER,
       passwordHash,
       hasSetPassword: true,
-      mfaEnabled: true,
+      // MFA starts OFF: the owner has no authenticator yet. With MFA "on" but no secret, the
+      // sign-in challenge (P1-07) could never be passed. Staff without MFA are sent to
+      // /security on their first sign-in and must enrol before using any admin page or action.
+      mfaEnabled: false,
     },
     select: {
       id: true,
       name: true,
       email: true,
       role: true,
+      mfaEnabled: true,
       createdAt: true,
     },
   })
@@ -90,6 +94,9 @@ async function main() {
     const created = await bootstrapInitialOwner({ name, email, password })
     console.log(
       `Successfully created initial OWNER account: ${created.name} <${created.email}> (${created.id})`,
+    )
+    console.log(
+      'Next: sign in with this email and password. You will be asked to set up an authenticator app (MFA) before using the admin area.',
     )
   } finally {
     rl.close()

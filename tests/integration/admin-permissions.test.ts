@@ -468,6 +468,11 @@ describe('permission-based admin access integration (P1-03)', () => {
     )
 
     expect(firstOwner.role).toBe(UserRole.OWNER)
+    // No authenticator exists yet, so MFA must start off; the owner enrols at first sign-in.
+    expect(
+      (emptyDb.user.create as unknown as { mock: { calls: [{ data: { mfaEnabled: boolean } }][] } }).mock.calls[0][0].data
+        .mfaEnabled,
+    ).toBe(false)
 
     await expect(
       bootstrapInitialOwner(
