@@ -1,7 +1,6 @@
 import { prisma } from '@/lib/prisma'
 import { Prisma } from '@/generated/prisma/client'
 import {
-  BorrowerOfferDecision,
   GuaranteeState,
   GuaranteeType,
   LoanStatus,
@@ -9,18 +8,16 @@ import {
   UserRole,
 } from '@/generated/prisma/enums'
 import { AppError } from '@/lib/errors/app-error'
-import { roundMoney, toDecimal } from '@/lib/domain/money'
+import { toDecimal } from '@/lib/domain/money'
 import { lockMembers } from '@/lib/db/concurrency'
 import {
-  calculateAdditionalSupportNeeded,
   calculateEAjoAdvanceExposure,
-  calculateRequiredGuaranteeSupport,
   checkGuarantorEligibility,
   evaluateOwnSavingsLien,
-  getBorrowerStandaloneLimit,
-  getGuarantorAvailableCapacity,
 } from '@/lib/domain/capacity'
 import { createAndStoreConsentEvidence } from './guarantor-evidence.service'
+import { computeLoanSupportNeeded } from './loan-capacity.service'
+import { LOAN_PRE_DISBURSEMENT_STATUSES } from '@/lib/domain/loan-workflow'
 
 /**
  * Returns total confirmed active savings principal eligible to support lending (§2.1).
@@ -59,16 +56,23 @@ export async function getGuarantorActiveReservations(
     where: {
       guarantorId,
       id: excludeReservationId ? { not: excludeReservationId } : undefined,
-      state: { in: [GuaranteeState.PENDING, GuaranteeState.CONSENTED] },
+      state: {
+        in: [
+          GuaranteeState.PENDING,
+          GuaranteeState.CONSENTED,
+          // P3-04: a guarantee awaiting re-consent keeps holding its reservation
+          GuaranteeState.AWAITING_RECONSENT,
+        ],
+      },
     },
     select: { reservedAmount: true, requestedAmount: true, state: true },
   })
 
   let total = new Prisma.Decimal(0)
   for (const r of reservations) {
-    // For CONSENTED, use reservedAmount; for PENDING, conservative reservation equals requested
+    // For CONSENTED / AWAITING_RECONSENT use reservedAmount; for PENDING, conservative reservation equals requested
     const amount =
-      r.state === GuaranteeState.CONSENTED ? r.reservedAmount : r.requestedAmount
+      r.state === GuaranteeState.PENDING ? r.requestedAmount : r.reservedAmount
     total = total.plus(amount)
   }
   return total
@@ -146,62 +150,14 @@ export async function requestLoanGuarantor(
     )
   }
 
-  // 4. Calculate required guarantee support
-  const applicantSavings = await getMemberEligibleSavingsPrincipal(
-    params.applicantId,
-    tx,
-  )
-  const standaloneLimit = getBorrowerStandaloneLimit(applicantSavings)
-
-  const activeLoans = await tx.loan.findMany({
-    where: {
-      userId: params.applicantId,
-      id: { not: params.loanId },
-      status: {
-        in: [
-          LoanStatus.APPROVED,
-          LoanStatus.ACCEPTED,
-          LoanStatus.DISBURSED,
-          LoanStatus.ACTIVE,
-          LoanStatus.OVERDUE,
-          LoanStatus.DEFAULTED,
-        ],
-      },
-    },
-    select: { approvedAmount: true, requestedAmount: true, outstandingBalance: true },
-  })
-
-  let existingExposure = new Prisma.Decimal(0)
-  for (const l of activeLoans) {
-    existingExposure = existingExposure.plus(l.approvedAmount || l.requestedAmount)
-  }
-
-  const proposedPrincipal = toDecimal(params.requestedAmount)
-  const projectedExposure = existingExposure.plus(proposedPrincipal)
-  const requiredSupport = calculateRequiredGuaranteeSupport(
-    projectedExposure,
-    standaloneLimit,
-  )
-
-  // Fetch existing reservations for this applicant
-  const existingApplicantReservations = await tx.guaranteeReservation.findMany({
-    where: {
+  // 4. Calculate required guarantee support (portfolio-wide, principal only; §2.1, P3-04)
+  const { needed: additionalSupportNeeded } = await computeLoanSupportNeeded(
+    {
       applicantId: params.applicantId,
-      loanId: { not: params.loanId },
-      state: GuaranteeState.CONSENTED,
-      guaranteeType: GuaranteeType.LOAN,
+      loanId: params.loanId,
+      principal: params.requestedAmount,
     },
-    select: { reservedAmount: true },
-  })
-
-  let totalExistingSupport = new Prisma.Decimal(0)
-  for (const r of existingApplicantReservations) {
-    totalExistingSupport = totalExistingSupport.plus(r.reservedAmount)
-  }
-
-  const additionalSupportNeeded = calculateAdditionalSupportNeeded(
-    requiredSupport,
-    totalExistingSupport,
+    tx,
   )
 
   if (additionalSupportNeeded.gt(guarantorUnencumbered)) {
@@ -447,60 +403,28 @@ export async function decideGuarantorRequest(
   let loanPrincipal = reservation.requestedAmount
 
   if (reservation.guaranteeType === GuaranteeType.LOAN) {
-    const applicantSavings = await getMemberEligibleSavingsPrincipal(
-      reservation.applicantId,
+    // P3-04: consent is only possible while the application or re-consent offer is open
+    if (
+      !reservation.loan ||
+      (reservation.loan.status !== LoanStatus.PENDING &&
+        reservation.loan.status !== LoanStatus.AWAITING_RECONSENT)
+    ) {
+      throw new AppError(
+        'INVALID_STATE',
+        'This loan application is no longer awaiting your consent.',
+        { statusCode: 422 },
+      )
+    }
+    loanPrincipal = reservation.loan.approvedAmount || reservation.loan.requestedAmount
+    const support = await computeLoanSupportNeeded(
+      {
+        applicantId: reservation.applicantId,
+        loanId: reservation.loan.id,
+        principal: loanPrincipal,
+      },
       tx,
     )
-    const standaloneLimit = getBorrowerStandaloneLimit(applicantSavings)
-    const activeLoans = await tx.loan.findMany({
-      where: {
-        userId: reservation.applicantId,
-        id: reservation.loanId ? { not: reservation.loanId } : undefined,
-        status: {
-          in: [
-            LoanStatus.APPROVED,
-            LoanStatus.ACCEPTED,
-            LoanStatus.DISBURSED,
-            LoanStatus.ACTIVE,
-            LoanStatus.OVERDUE,
-            LoanStatus.DEFAULTED,
-          ],
-        },
-      },
-      select: { approvedAmount: true, requestedAmount: true },
-    })
-
-    let existingExposure = new Prisma.Decimal(0)
-    for (const l of activeLoans) {
-      existingExposure = existingExposure.plus(l.approvedAmount || l.requestedAmount)
-    }
-
-    loanPrincipal = reservation.loan
-      ? (reservation.loan.approvedAmount || reservation.loan.requestedAmount)
-      : reservation.requestedAmount
-
-    const totalExposure = existingExposure.plus(loanPrincipal)
-    const requiredSupport = calculateRequiredGuaranteeSupport(
-      totalExposure,
-      standaloneLimit,
-    )
-
-    // Other consented reservations for this applicant (excluding this one)
-    const otherReservations = await tx.guaranteeReservation.findMany({
-      where: {
-        applicantId: reservation.applicantId,
-        state: GuaranteeState.CONSENTED,
-        id: { not: reservation.id },
-      },
-      select: { reservedAmount: true },
-    })
-
-    let otherSupport = new Prisma.Decimal(0)
-    for (const r of otherReservations) {
-      otherSupport = otherSupport.plus(r.reservedAmount)
-    }
-
-    neededSupport = calculateAdditionalSupportNeeded(requiredSupport, otherSupport)
+    neededSupport = support.needed
   } else {
     // E-Ajo guarantee: advance exposure
     if (reservation.eajoMember) {
@@ -586,12 +510,21 @@ export async function withdrawGuarantorConsent(
     throw new AppError('FORBIDDEN', 'Not authorised.', { statusCode: 403 })
   }
 
-  // Check that application is NOT yet disbursed or activated
+  if (
+    reservation.state !== GuaranteeState.PENDING &&
+    reservation.state !== GuaranteeState.CONSENTED &&
+    reservation.state !== GuaranteeState.AWAITING_RECONSENT
+  ) {
+    throw new AppError(
+      'INVALID_STATE',
+      `Guarantee in state ${reservation.state} cannot be withdrawn.`,
+      { statusCode: 422 },
+    )
+  }
+
+  // Check that application is NOT yet disbursed or activated (P3-04: only before disbursement)
   if (reservation.loan) {
-    if (
-      reservation.loan.status === LoanStatus.DISBURSED ||
-      reservation.loan.status === LoanStatus.ACTIVE
-    ) {
+    if (!LOAN_PRE_DISBURSEMENT_STATUSES.includes(reservation.loan.status)) {
       throw new AppError(
         'FORBIDDEN',
         'Cannot revoke guarantee after the loan has been disbursed. A replacement guarantor must be approved.',
@@ -613,105 +546,6 @@ export async function withdrawGuarantorConsent(
   })
 
   return updated
-}
-
-export interface AcceptBorrowerOfferParams {
-  loanId: string
-  borrowerId: string
-  decision: 'ACCEPT' | 'DECLINE'
-  offeredPrincipal: Prisma.Decimal | string | number
-  offeredTermMonths: number
-  offeredMonthlyInterestRate: Prisma.Decimal | string | number
-  totalScheduledRepayment: Prisma.Decimal | string | number
-  monthlyInstalment: Prisma.Decimal | string | number
-  termsVersion?: number
-}
-
-/**
- * Records the borrower's explicit acceptance or decline of the final offer (§2.7, §2.9).
- */
-export async function recordBorrowerOfferAcceptance(
-  tx: Prisma.TransactionClient,
-  params: AcceptBorrowerOfferParams,
-) {
-  await lockMembers(tx, [params.borrowerId])
-
-  const loan = await tx.loan.findUnique({
-    where: { id: params.loanId },
-    include: {
-      user: { select: { id: true, name: true, email: true } },
-    },
-  })
-
-  if (!loan) {
-    throw new AppError('NOT_FOUND', 'Loan not found.', { statusCode: 404 })
-  }
-
-  if (loan.userId !== params.borrowerId) {
-    throw new AppError('FORBIDDEN', 'Not authorised.', { statusCode: 403 })
-  }
-
-  const decisionEnum =
-    params.decision === 'ACCEPT'
-      ? BorrowerOfferDecision.ACCEPTED
-      : BorrowerOfferDecision.DECLINED
-
-  // Generate evidence PDF for the borrower's offer decision
-  const evidence = await createAndStoreConsentEvidence({
-    evidenceType: 'BORROWER_OFFER_ACCEPTANCE',
-    applicationId: params.loanId,
-    borrower: loan.user,
-    consentedTerms: {
-      amount: toDecimal(params.offeredPrincipal).toNumber(),
-      termMonths: params.offeredTermMonths,
-      monthlyInterestRate: toDecimal(params.offeredMonthlyInterestRate).toNumber(),
-      termsVersion: params.termsVersion || 1,
-    },
-    decision: params.decision === 'ACCEPT' ? 'ACCEPTED' : 'DECLINED',
-    uploadedById: params.borrowerId,
-  })
-
-  const offerAcceptance = await tx.borrowerOfferAcceptance.upsert({
-    where: { loanId: params.loanId },
-    create: {
-      loanId: params.loanId,
-      borrowerId: params.borrowerId,
-      decision: decisionEnum,
-      offeredPrincipal: toDecimal(params.offeredPrincipal),
-      offeredTermMonths: params.offeredTermMonths,
-      offeredMonthlyInterestRate: toDecimal(params.offeredMonthlyInterestRate),
-      totalScheduledRepayment: toDecimal(params.totalScheduledRepayment),
-      monthlyInstalment: toDecimal(params.monthlyInstalment),
-      termsVersion: params.termsVersion || 1,
-      decidedAt: new Date(),
-      evidenceCloudinaryPublicId: evidence.publicId,
-      evidenceDocumentId: evidence.documentId,
-      evidenceSha256: evidence.sha256,
-    },
-    update: {
-      decision: decisionEnum,
-      offeredPrincipal: toDecimal(params.offeredPrincipal),
-      offeredTermMonths: params.offeredTermMonths,
-      offeredMonthlyInterestRate: toDecimal(params.offeredMonthlyInterestRate),
-      totalScheduledRepayment: toDecimal(params.totalScheduledRepayment),
-      monthlyInstalment: toDecimal(params.monthlyInstalment),
-      decidedAt: new Date(),
-      evidenceCloudinaryPublicId: evidence.publicId,
-      evidenceDocumentId: evidence.documentId,
-      evidenceSha256: evidence.sha256,
-    },
-  })
-
-  // Update loan status accordingly
-  await tx.loan.update({
-    where: { id: params.loanId },
-    data: {
-      status:
-        params.decision === 'ACCEPT' ? LoanStatus.ACCEPTED : LoanStatus.DECLINED,
-    },
-  })
-
-  return { offerAcceptance, evidence }
 }
 
 /**

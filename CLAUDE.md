@@ -196,6 +196,25 @@ performance work (P5-03) waits for it.
   - Legacy `Transaction` savings categories are disabled (create refused; confirm refused, reject allowed).
   - Submission/payment/disbursement numbers now use "highest existing + 1" (`nextSequenceAfter`) instead of `count() + 1`;
     concurrent writers can still collide on the unique key, so callers retry (`withSequenceRetry` in savings).
+- **From P3-04 (loans).** `refreshLoanAfterPayment(tx, loanId)` re-derives instalment and loan statuses
+  (ACTIVE ↔ OVERDUE, COMPLETED + guarantee release + reservation re-allocation); P3-06 should call it after
+  penalty accruals/waivers and from `recalculateLateness`. `payLoanFromWallet()` already pays a loan (or its
+  settlement quote) from the wallet — P3-06's `applyWallet` should reuse it, not duplicate it. The interest-recognition
+  job must also recognise instalments that were paid early or settled (OQ-14). P3-07 must restrict/remove the
+  legacy `createLoanForMemberAction` (admin creates loans in any status with fallback rates) and give loan receipts
+  a place in the general queue (the admin loan page confirms them via `confirmPaymentSubmissionAction` for now).
+  P3-09: reversing LOAN allocations must call `refreshLoanAfterPayment` and, for a loan that was COMPLETED, reopen
+  it and re-reserve its guarantee (not handled yet). P4-04 registers `runLoanOfferExpiryJob`. P4-02: loans send no
+  notifications yet (consent request, offer ready, re-consent, expiry, disbursement).
+  Reference numbers: `lockSequence(tx, prefix)` (`lib/db/sequence.ts`) now serialises `PAY-`/`DSB-`/`SUB-`
+  numbering in payment confirmation, submission creation, savings payouts and loan disbursement/wallet payments;
+  every new writer of those numbers must call it inside its transaction. `disbursement.service#requestDisbursement`
+  still numbers outside a transaction (P3-08 should move it into one).
+  **Migrations are applied as soon as a branch is pushed:** the build script (`pnpm run build`) runs
+  `prisma migrate deploy`, so a Vercel preview deployment applies the branch's migrations to its database.
+  Treat any pushed migration as applied to a shared database: never rename or edit it afterwards, even when
+  rebasing (out-of-order timestamps are fine for independent migrations). P3-04's migration keeps its original name
+  `20261117090000_p3_04_loan_workflow` for this reason.
 
 ### Status
 
@@ -204,7 +223,7 @@ performance work (P5-03) waits for it.
 | Step | Status | Notes |
 |---|---|---|
 | P3-03 | Done | Savings lots/accruals, jobs in `lib/jobs/`, see hand-over notes |
-| P3-04 | Not started | |
+| P3-04 | Done | Loan workflow in `lib/services/loans.service.ts` (+ `loan-capacity.service.ts`, `lib/domain/loan-workflow.ts`, `lib/jobs/loan-offers.job.ts`); OQ-13 … OQ-15 open |
 | P3-05 | Not started | |
 | P3-06 | Not started | |
 | P4-01 | Not started | |

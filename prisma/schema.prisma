@@ -164,10 +164,13 @@ enum SavingsWithdrawalKind {
 enum LoanStatus {
   PENDING
   APPROVED
+  AWAITING_RECONSENT // P3-04: approved with changed terms; borrower acceptance + guarantor re-consent needed (D-10)
   ACCEPTED
   DECLINED
   REJECTED
-  DISBURSED
+  CANCELLED // P3-04: application withdrawn by the member before approval
+  EXPIRED // P3-04: offer not accepted before offerExpiresAt
+  DISBURSED // legacy (pre-P3-04); disbursement now moves ACCEPTED -> ACTIVE
   ACTIVE
   COMPLETED
   DEFAULTED
@@ -1126,10 +1129,20 @@ model Loan {
   actualRepaymentDate        DateTime?       @db.Date
   rejectionReason            String?
   isDefaulted                Boolean         @default(false)
+  // P3-04 loan workflow
+  requestedDurationMonths    Int? // term the member applied for (duration holds the offered/approved term)
+  termsVersion               Int             @default(1) // bumped whenever the offered terms change (re-consent, D-10)
+  approvalNote               String?
+  offerExpiresAt             DateTime?
+  disbursementValueDate      DateTime?       @db.Date
+  disbursementId             String?         @unique
+  cancelledAt                DateTime?
+  completedAt                DateTime?
   createdAt                  DateTime        @default(now())
   updatedAt                  DateTime        @updatedAt
 
   user                  User                     @relation(fields: [userId], references: [id], onDelete: Restrict)
+  disbursement          Disbursement?            @relation(fields: [disbursementId], references: [id], onDelete: Restrict)
   // guarantor           User?                    @relation("LoanGuarantor", fields: [guarantorId], references: [id])
   transactions          Transaction[]
   instalments           LoanInstalment[]
@@ -1139,6 +1152,7 @@ model Loan {
   @@index([userId])
   @@index([guarantorId])
   @@index([status])
+  @@index([status, offerExpiresAt])
   @@map("loans")
 }
 
@@ -1684,6 +1698,7 @@ model Disbursement {
   disbursedBy       User?         @relation("DisbursementDisburser", fields: [disbursedById], references: [id], onDelete: Restrict)
   journalEntry      JournalEntry? @relation(fields: [journalEntryId], references: [id], onDelete: Restrict)
   savingsWithdrawal Savings?      @relation("SavingsWithdrawalDisbursement")
+  loan              Loan?
 
   @@index([recipientUserId, status])
   @@index([valueDate])

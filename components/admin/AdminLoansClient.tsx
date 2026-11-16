@@ -1,5 +1,6 @@
 'use client'
 
+import { loanStatusLabel } from '../loans/loanDisplay'
 import { useState } from 'react'
 import Link from 'next/link'
 import {
@@ -112,7 +113,7 @@ export const AdminLoansClient = ({ loans }: AdminLoansClientProps) => {
       {/* Filters and Search */}
       <div className="flex flex-col sm:flex-row justify-between gap-4 items-center bg-surface-container/50 p-2 rounded-xl border border-outline-variant/20">
         <div className="flex gap-1 w-full sm:w-auto overflow-x-auto pb-1 sm:pb-0 scrollbar-none">
-          {['ALL', 'PENDING', 'APPROVED', 'ACTIVE', 'REJECTED', 'COMPLETED'].map((status) => (
+          {['ALL', 'PENDING', 'APPROVED', 'AWAITING_RECONSENT', 'ACCEPTED', 'ACTIVE', 'OVERDUE', 'COMPLETED', 'REJECTED'].map((status) => (
             <button
               key={status}
               onClick={() => setStatusFilter(status)}
@@ -122,7 +123,7 @@ export const AdminLoansClient = ({ loans }: AdminLoansClientProps) => {
                   : 'text-muted-foreground hover:bg-outline-variant/20'
               }`}
             >
-              {status}
+              {status === 'ALL' ? 'All' : loanStatusLabel(status)}
             </button>
           ))}
         </div>
@@ -171,7 +172,7 @@ export const AdminLoansClient = ({ loans }: AdminLoansClientProps) => {
                       </div>
                       <span className={`inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full border shrink-0 ${STATUS_STYLES[loan.status]}`}>
                         <StatusIcon className="w-3 h-3" />
-                        {loan.status}
+                        {loanStatusLabel(loan.status)}
                       </span>
                     </div>
 

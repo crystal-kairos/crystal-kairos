@@ -29,6 +29,7 @@ import {
 } from '@/generated/prisma/enums'
 import { AppError } from '@/lib/errors/app-error'
 import { lockMembers, transition } from '@/lib/db/concurrency'
+import { lockSequence } from '@/lib/db/sequence'
 import { roundMoney, sumDecimals, toDecimal, type DecimalValue } from '@/lib/domain/money'
 import {
   addDays,
@@ -1218,6 +1219,7 @@ export async function requestSavingsWithdrawal(
       })
     }
 
+    await lockSequence(tx, 'DSB') // shared with loan disbursement (P3-04)
     const lastDisbursement = await tx.disbursement.findFirst({
       orderBy: { disbursementNumber: 'desc' },
       select: { disbursementNumber: true },

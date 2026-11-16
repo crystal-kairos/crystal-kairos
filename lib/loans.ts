@@ -1,20 +1,12 @@
-import { addMonthsClamped } from '@/lib/domain/dates'
-import { generateLoanSchedule } from '@/lib/domain/loan-schedule'
-import { PenaltyCapType } from '@/generated/prisma/enums'
-import {
-  calculateDailyPenaltyAccrual,
-  deriveUnaccruedPenaltyDates,
-} from '@/lib/domain/penalty-calculation'
-import { roundMoney } from '@/lib/domain/money'
+import type { LoanQuote, SettlementQuote } from '@/lib/domain/loan-workflow'
 
-interface Installment {
-  installmentNumber: number
-  dueDate: Date
-  principalAmount: number
-  interestAmount: number
-  totalAmount: number
-  status: 'PAID' | 'PENDING' | 'OVERDUE'
-}
+/**
+ * Serialisers for loan data crossing the server/client boundary. Money is
+ * calculated with Prisma.Decimal on the server; numbers are for display only.
+ * (P3-04 removed the tier pricing and the client-side schedule maths.)
+ */
+
+const num = (v: unknown) => (v === null || v === undefined ? null : Number(v))
 
 // Helper to serialize Decimal fields to numbers to prevent RSC boundary serialization errors
 export const serializeLoan = (loan: any) => {
@@ -22,8 +14,11 @@ export const serializeLoan = (loan: any) => {
   return {
     ...loan,
     requestedAmount: Number(loan.requestedAmount),
-    approvedAmount: loan.approvedAmount ? Number(loan.approvedAmount) : null,
+    approvedAmount: num(loan.approvedAmount),
     interestRate: Number(loan.interestRate),
+    monthlyInterestRatePercent: num(loan.monthlyInterestRatePercent),
+    latePenaltyDailyPercent: num(loan.latePenaltyDailyPercent),
+    penaltyCapValue: num(loan.penaltyCapValue),
     applicationFee: Number(loan.applicationFee),
     outstandingBalance: Number(loan.outstandingBalance),
     totalRepaid: Number(loan.totalRepaid),
@@ -39,98 +34,60 @@ export const serializeTransaction = (tx: any) => {
   }
 }
 
-/**
- * Calculates a standard loan amortization schedule based on simple cooperative interest
- */
-export const calculateRepaymentSchedule = (
-  approvedAmount: number,
-  interestRatePct: number,
-  durationMonths: number,
-  startDate: Date | null,
-  totalRepaid: number,
-  gracePeriodDays: number = 7
-): Installment[] => {
-  const schedule: Installment[] = []
-  if (durationMonths <= 0 || approvedAmount <= 0) return schedule
+type DecimalLike = { toString(): string } | number | string
 
-  const baseDate = startDate ? new Date(startDate) : new Date()
+export const serializeInstalment = (inst: {
+  id: string
+  instalmentNumber: number
+  dueDate: Date
+  status: string
+  principalDue: DecimalLike
+  interestDue: DecimalLike
+  principalPaid: DecimalLike
+  interestPaid: DecimalLike
+  penaltyAssessed: DecimalLike
+  penaltyPaid: DecimalLike
+  penaltyWaived: DecimalLike
+}) => ({
+  id: inst.id,
+  instalmentNumber: inst.instalmentNumber,
+  dueDate: inst.dueDate,
+  status: inst.status,
+  principalDue: Number(inst.principalDue),
+  interestDue: Number(inst.interestDue),
+  principalPaid: Number(inst.principalPaid),
+  interestPaid: Number(inst.interestPaid),
+  penaltyAssessed: Number(inst.penaltyAssessed),
+  penaltyPaid: Number(inst.penaltyPaid),
+  penaltyWaived: Number(inst.penaltyWaived),
+})
 
-  const gen = generateLoanSchedule({
-    principal: approvedAmount,
-    termMonths: durationMonths,
-    monthlyInterestRatePercent: interestRatePct,
-    anchorDate: baseDate,
-  })
+export type SerializedLoanQuote = ReturnType<typeof serializeLoanQuote>
 
-  let runningRepaid = totalRepaid
+export const serializeLoanQuote = (q: LoanQuote) => ({
+  principal: q.principal.toNumber(),
+  termMonths: q.termMonths,
+  monthlyInterestRatePercent: q.monthlyInterestRatePercent.toNumber(),
+  monthlyInterest: q.monthlyInterest.toNumber(),
+  totalInterest: q.totalInterest.toNumber(),
+  totalScheduledRepayment: q.totalScheduledRepayment.toNumber(),
+  monthlyInstalment: q.monthlyInstalment.toNumber(),
+  finalInstalment: q.finalInstalment.toNumber(),
+  applicationFee: q.applicationFee.toNumber(),
+  totalCostIncludingFee: q.totalCostIncludingFee.toNumber(),
+  latePenaltyDailyPercent: q.latePenaltyDailyPercent.toNumber(),
+  dailyPenaltyPerOverdueInstalment: q.dailyPenaltyPerOverdueInstalment.toNumber(),
+  penaltyCapType: q.penaltyCapType as string,
+  penaltyCapValue: q.penaltyCapValue.toNumber(),
+  penaltyCapAmount: q.penaltyCapAmount.toNumber(),
+  graceDays: q.graceDays,
+})
 
-  for (const item of gen.instalments) {
-    const installmentTotal = Number(item.totalDue)
-    let status: 'PAID' | 'PENDING' | 'OVERDUE' = 'PENDING'
-    if (runningRepaid >= installmentTotal) {
-      status = 'PAID'
-      runningRepaid -= installmentTotal
-    } else {
-      const graceLimit = new Date(item.dueDate)
-      graceLimit.setDate(item.dueDate.getDate() + gracePeriodDays)
-      if (new Date() > graceLimit) {
-        status = 'OVERDUE'
-      }
-    }
+export const serializeSettlementQuote = (q: SettlementQuote) => ({
+  remainingPrincipal: q.remainingPrincipal.toNumber(),
+  remainingInterest: q.remainingInterest.toNumber(),
+  unpaidPenalties: q.unpaidPenalties.toNumber(),
+  total: q.total.toNumber(),
+})
 
-    schedule.push({
-      installmentNumber: item.instalmentNumber,
-      dueDate: item.dueDate,
-      principalAmount: Number(item.principalDue),
-      interestAmount: Number(item.interestDue),
-      totalAmount: installmentTotal,
-      status,
-    })
-  }
-
-  return schedule
-}
-
-/**
- * Calculates late penalty fee for an overdue loan obligation based on snapshotted rate parameters (§2.2, D-05).
- * Due date is Day 0. Grace period is Days 1..7. First penalty day is Day +8.
- * Daily penalty = original principal * dailyPercent / 100, subject to mandatory cap.
- */
-export const calculateLoanPenaltyAmount = (
-  approvedAmount: number,
-  repaymentEndDate: Date | null,
-  currentDate: Date = new Date(),
-  dailyPenaltyPct: number = 0.5,
-  gracePeriodDays: number = 7,
-  penaltyCapType: PenaltyCapType = PenaltyCapType.PERCENT_OF_PRINCIPAL,
-  penaltyCapValue: number = 10,
-  penaltiesAssessedNet: number = 0
-): number => {
-  if (!repaymentEndDate || approvedAmount <= 0) return 0
-
-  const unaccruedDates = deriveUnaccruedPenaltyDates({
-    dueDate: repaymentEndDate,
-    evaluationDate: currentDate,
-  })
-
-  if (unaccruedDates.length === 0) return 0
-
-  let totalAccrued = penaltiesAssessedNet
-  let newPenaltyAccrued = 0
-
-  for (const _d of unaccruedDates) {
-    const res = calculateDailyPenaltyAccrual({
-      base: approvedAmount,
-      latePenaltyDailyPercent: dailyPenaltyPct,
-      penaltyCapType,
-      penaltyCapValue,
-      penaltiesAssessedNet: totalAccrued,
-    })
-
-    const dayAmount = res.accrualAmount.toNumber()
-    newPenaltyAccrued += dayAmount
-    totalAccrued += dayAmount
-  }
-
-  return Number(roundMoney(newPenaltyAccrued).toNumber())
-}
+export type SerializedSettlementQuote = ReturnType<typeof serializeSettlementQuote>

@@ -46,7 +46,7 @@ const LoanDetailsPage = async ({ params }: PageProps) => {
 
   const loan = res.data
 
-  return <LoanDetailsClient userId={profileId} loan={loan as any} />
+  return <LoanDetailsClient userId={profileId} loan={loan} />
 }
 
 export default LoanDetailsPage

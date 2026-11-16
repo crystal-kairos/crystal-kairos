@@ -12,11 +12,20 @@ import {
 } from '@/generated/prisma/client'
 import { AppError } from '@/lib/errors/app-error'
 import { lockMembers } from '@/lib/db/concurrency'
+import { lockSequence } from '@/lib/db/sequence'
 import {
   calculatePaymentAllocation,
   AllocationPeriodItem,
+  CalculatedAllocation,
 } from '@/lib/services/allocation.service'
 import { formatSequentialNumber, nextSequenceAfter } from '@/lib/domain/payment-reference'
+import {
+  applyLoanAllocation,
+  getFeeOutstanding,
+  getLoanAllocationPeriods,
+  refreshFeeAssessment,
+  refreshLoanAfterPayment,
+} from '@/lib/services/loans.service'
 import { postJournalEntry, reverseJournalEntry } from '@/lib/services/ledger.service'
 import { LedgerAccountType } from '@/generated/prisma/enums'
 import { recordAuditEvent, AuditAction, AuditOutcome } from '@/lib/services/audit.service'
@@ -190,40 +199,49 @@ export async function createPaymentSubmission(
     }
   }
 
-  // Generate sequential submissionNumber (SUB-000001)
-  const last = await db.paymentSubmission.findFirst({
-    orderBy: { submissionNumber: 'desc' },
-    select: { submissionNumber: true },
-  })
-  const submissionNumber = formatSequentialNumber('SUB', nextSequenceAfter(last?.submissionNumber))
+  // Generate sequential submissionNumber (SUB-000001) under the shared sequence lock, so
+  // concurrent submitters cannot pick the same number (runs inside the caller's
+  // transaction when one is passed in).
+  const createWithNumber = async (client: Prisma.TransactionClient) => {
+    await lockSequence(client, 'SUB')
+    const last = await client.paymentSubmission.findFirst({
+      orderBy: { submissionNumber: 'desc' },
+      select: { submissionNumber: true },
+    })
+    const submissionNumber = formatSequentialNumber('SUB', nextSequenceAfter(last?.submissionNumber))
 
-  const submission = await db.paymentSubmission.create({
-    data: {
-      submissionNumber,
-      memberId,
-      purpose: input.purpose,
-      receivingBankAccountId: input.receivingBankAccountId,
-      claimedAmount: numAmount,
-      paidOn: paymentDate,
-      bankReference: input.bankReference,
-      payerAccountName: input.payerAccountName,
-      receiptFileId: input.receiptFileId,
-      fileHash: input.fileHash,
-      narration: input.narration,
-      status: PaymentSubmissionStatus.SUBMITTED,
-      targets: {
-        create: targets.map((t) => ({
-          targetType: t.targetType,
-          targetId: t.targetId,
-          targetPeriodId: t.targetPeriodId,
-          requestedAmount: Number(t.requestedAmount),
-        })),
+    return client.paymentSubmission.create({
+      data: {
+        submissionNumber,
+        memberId,
+        purpose: input.purpose,
+        receivingBankAccountId: input.receivingBankAccountId,
+        claimedAmount: numAmount,
+        paidOn: paymentDate,
+        bankReference: input.bankReference,
+        payerAccountName: input.payerAccountName,
+        receiptFileId: input.receiptFileId,
+        fileHash: input.fileHash,
+        narration: input.narration,
+        status: PaymentSubmissionStatus.SUBMITTED,
+        targets: {
+          create: targets.map((t) => ({
+            targetType: t.targetType,
+            targetId: t.targetId,
+            targetPeriodId: t.targetPeriodId,
+            requestedAmount: Number(t.requestedAmount),
+          })),
+        },
       },
-    },
-    include: {
-      targets: true,
-    },
-  })
+      include: {
+        targets: true,
+      },
+    })
+  }
+  const submission =
+    typeof (db as { $transaction?: unknown }).$transaction === 'function'
+      ? await db.$transaction((tx) => createWithNumber(tx))
+      : await createWithNumber(db as unknown as Prisma.TransactionClient)
 
   await recordAuditEvent({
     actorId: memberId,
@@ -233,7 +251,7 @@ export async function createPaymentSubmission(
     entityId: submission.id,
     outcome: AuditOutcome.SUCCESS,
     metadata: {
-      submissionNumber,
+      submissionNumber: submission.submissionNumber,
       claimedAmount: numAmount,
       paidOn: paymentDate.toISOString(),
       bankReference: input.bankReference,
@@ -354,36 +372,15 @@ export async function confirmPaymentSubmission(
     periodItems.push(...savingsPrep.periodItems)
 
     for (const target of submission.targets) {
-      if (target.targetType === AllocationTargetType.LOAN && target.targetPeriodId) {
-        const instalment = await tx.loanInstalment.findUnique({
-          where: { id: target.targetPeriodId },
+      if (target.targetType === AllocationTargetType.LOAN) {
+        // P3-04: a period pays that instalment; no period pays the whole loan oldest first
+        const loanPeriods = await getLoanAllocationPeriods(tx, {
+          memberId: submission.memberId,
+          loanId: target.targetId,
+          instalmentId: target.targetPeriodId,
         })
-        if (instalment) {
-          const penaltyDue = Math.max(
-            0,
-            Number(instalment.penaltyAssessed) -
-              Number(instalment.penaltyPaid) -
-              Number(instalment.penaltyWaived),
-          )
-          const interestDue = Math.max(
-            0,
-            Number(instalment.interestDue) - Number(instalment.interestPaid),
-          )
-          const principalDue = Math.max(
-            0,
-            Number(instalment.principalDue) - Number(instalment.principalPaid),
-          )
-
-          periodItems.push({
-            periodId: instalment.id,
-            targetType: 'LOAN',
-            targetId: instalment.loanId,
-            periodNumber: instalment.instalmentNumber,
-            dueDate: instalment.dueDate,
-            penaltyDue,
-            interestDue,
-            principalDue,
-          })
+        for (const lp of loanPeriods) {
+          if (!periodItems.some((p) => p.periodId === lp.periodId)) periodItems.push(lp)
         }
       } else if (target.targetType === AllocationTargetType.SAVINGS) {
         // handled by prepareSavingsTargetsForConfirmation above
@@ -417,9 +414,31 @@ export async function confirmPaymentSubmission(
       }
     }
 
+    // 2b. Loan application fees (P3-04, A-14) are paid before any period
+    const feeAllocations: CalculatedAllocation[] = []
+    let amountForPeriods = Math.round(confirmedAmount * 100) / 100
+    for (const target of submission.targets) {
+      if (target.targetType !== AllocationTargetType.FEE || amountForPeriods <= 0) continue
+      const { fee, outstanding } = await getFeeOutstanding(tx, target.targetId)
+      if (fee.memberId !== submission.memberId) {
+        throw new AppError('INVALID_TARGET', 'The fee does not belong to this member.', { statusCode: 422 })
+      }
+      const pay = Math.min(amountForPeriods, outstanding.toNumber())
+      if (pay > 0) {
+        feeAllocations.push({
+          targetType: AllocationTargetType.FEE,
+          targetId: fee.id,
+          periodId: null,
+          componentType: PaymentComponentType.FEE,
+          amount: pay,
+        })
+        amountForPeriods = Math.round((amountForPeriods - pay) * 100) / 100
+      }
+    }
+
     // 3. Compute allocation waterfall
     const baseAllocation = calculatePaymentAllocation({
-      amount: confirmedAmount,
+      amount: amountForPeriods,
       memberId: submission.memberId,
       periods: periodItems,
     })
@@ -430,11 +449,13 @@ export async function confirmPaymentSubmission(
     )
     const allocationResult = {
       ...baseAllocation,
-      allocations: savingsAdjusted.allocations,
+      // P3-04: loan application fees were allocated first
+      allocations: [...feeAllocations, ...savingsAdjusted.allocations].filter((a) => a.amount > 0),
       excessToWallet: savingsAdjusted.excessToWallet,
     }
 
     // 4. Create Payment record
+    await lockSequence(tx, 'PAY') // shared with the wallet payment paths
     const lastPayment = await tx.payment.findFirst({
       orderBy: { paymentNumber: 'desc' },
       select: { paymentNumber: true },
@@ -475,34 +496,8 @@ export async function confirmPaymentSubmission(
       // Apply to periods
       if (alloc.periodId) {
         if (alloc.targetType === AllocationTargetType.LOAN) {
-          const updateData: Prisma.LoanInstalmentUpdateInput = {}
-          if (alloc.componentType === PaymentComponentType.PENALTY) {
-            updateData.penaltyPaid = { increment: alloc.amount }
-          } else if (alloc.componentType === PaymentComponentType.INTEREST) {
-            updateData.interestPaid = { increment: alloc.amount }
-          } else if (alloc.componentType === PaymentComponentType.PRINCIPAL) {
-            updateData.principalPaid = { increment: alloc.amount }
-          }
-          await tx.loanInstalment.update({
-            where: { id: alloc.periodId },
-            data: updateData,
-          })
-          // Update status if fully paid
-          const refreshed = await tx.loanInstalment.findUnique({
-            where: { id: alloc.periodId },
-          })
-          if (
-            refreshed &&
-            Number(refreshed.principalPaid) >= Number(refreshed.principalDue) &&
-            Number(refreshed.interestPaid) >= Number(refreshed.interestDue) &&
-            Number(refreshed.penaltyPaid) >=
-              Number(refreshed.penaltyAssessed) - Number(refreshed.penaltyWaived)
-          ) {
-            await tx.loanInstalment.update({
-              where: { id: alloc.periodId },
-              data: { status: PaymentPeriodStatus.COMPLETED },
-            })
-          }
+          // P3-04: balances here; statuses are derived in refreshLoanAfterPayment below
+          await applyLoanAllocation(tx, alloc)
         } else if (alloc.targetType === AllocationTargetType.SAVINGS) {
           // Savings periods, lots and balances: onSavingsAllocationsConfirmed below (P3-03)
         } else if (alloc.targetType === AllocationTargetType.EAJO) {
@@ -618,6 +613,19 @@ export async function confirmPaymentSubmission(
     })
     await refreshSavingsSubmissionTargets(tx, submission.id, confirmedById)
 
+    // 7b. P3-04 (after the submission left review, so it no longer shields): derive loan/instalment statuses (completion releases guarantees) and fee status
+    const confirmedLoanIds = new Set(
+      allocationResult.allocations
+        .filter((a) => a.targetType === AllocationTargetType.LOAN)
+        .map((a) => a.targetId),
+    )
+    for (const loanId of confirmedLoanIds) {
+      await refreshLoanAfterPayment(tx, loanId, { actorId: confirmedById, valueDate })
+    }
+    for (const feeAlloc of feeAllocations) {
+      await refreshFeeAssessment(tx, feeAlloc.targetId, confirmedById)
+    }
+
     await recordAuditEvent(
       {
         actorId: confirmedById,
@@ -667,6 +675,7 @@ export async function rejectPaymentSubmission(params: {
 
   const submission = await prisma.paymentSubmission.findUnique({
     where: { id: submissionId },
+    include: { targets: true },
   })
 
   if (!submission) {
@@ -708,6 +717,14 @@ export async function rejectPaymentSubmission(params: {
       rejectionReason: rejectionReason.trim(),
     },
   })
+
+  // P3-04: the review shield ends; re-derive the loan's instalment statuses
+  const loanIds = new Set(
+    submission.targets.filter((t) => t.targetType === AllocationTargetType.LOAN).map((t) => t.targetId),
+  )
+  for (const loanId of loanIds) {
+    await prisma.$transaction((tx) => refreshLoanAfterPayment(tx, loanId, { actorId: reviewerId }))
+  }
 
   return updated
 }
