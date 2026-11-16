@@ -54,8 +54,11 @@ export async function getProfileCompletion(
       bankAccounts: { where: { isPrimary: true } },
       nextOfKin: true,
       membership: true,
-      uploadedFiles: {
-        where: { purpose: 'PASSPORT_PHOTO' },
+      // Passport photos are stored with the storage purpose 'passport-photos'
+      // (lib/storage/file-validation.ts); 'PASSPORT_PHOTO' is kept for older rows.
+      ownedFiles: {
+        where: { purpose: { in: ['passport-photos', 'PASSPORT_PHOTO'] } },
+        select: { id: true },
         take: 1,
       },
     },
@@ -137,7 +140,7 @@ export async function getProfileCompletion(
 
   // 4. Passport Photo Requirement
   const hasPassportPhoto = Boolean(
-    user.photoUrl || user.uploadedFiles.length > 0,
+    user.photoUrl || user.ownedFiles.length > 0,
   )
   const passportRequirements: ProfileRequirementStatus[] = [
     {

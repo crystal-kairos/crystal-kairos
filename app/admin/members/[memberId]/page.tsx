@@ -1,3 +1,4 @@
+import { PassportPhotoCard } from '@/components/members/PassportPhotoCard'
 import { auth } from '@/auth'
 import Details from '@/components/admin/members/Details'
 import DetailsHeader from '@/components/admin/members/DetailsHeader'
@@ -57,6 +58,9 @@ const MemberDetailsPage = async ({
         adminId={adminId}
         userEmail={memberDetails.email}
       />
+      <div className='max-w-md mt-4'>
+        <PassportPhotoCard photoUrl={memberDetails.photoUrl ?? null} canEdit={false} />
+      </div>
       <Details
         personalInfo={{
           name: memberDetails.name,

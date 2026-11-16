@@ -154,9 +154,8 @@ describe('Profile Completion & Product Gates (Unit Tests)', () => {
       membership: {
         status: MembershipStatus.APPROVED,
       },
-      uploadedFiles: [
-        { id: 'file-1', purpose: 'PASSPORT_PHOTO' },
-      ],
+      // Passport photos are files the member owns with purpose 'passport-photos'.
+      ownedFiles: [{ id: 'file-1' }],
       ...overrides,
     })
 
@@ -176,7 +175,7 @@ describe('Profile Completion & Product Gates (Unit Tests)', () => {
       const mockUser = createMockUser({
         bankAccounts: [],
         nextOfKin: null,
-        uploadedFiles: [],
+        ownedFiles: [],
         photoUrl: null,
       })
 

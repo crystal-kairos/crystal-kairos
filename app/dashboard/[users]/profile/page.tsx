@@ -9,6 +9,7 @@ import {
   getMyProfileChangeHistoryAction,
 } from '@/models/members/profile-change-actions'
 import { ProfileChangeHistory } from '@/components/members/ProfileChangeHistory'
+import { PassportPhotoCard } from '@/components/members/PassportPhotoCard'
 import { ProfileChangeType } from '@/generated/prisma/enums'
 import {
   Card,
@@ -256,6 +257,13 @@ export default async function ProfilePage({ params }: PageProps) {
 
         {/* Right Column: Next of Kin & Bank Routing Link */}
         <div className='flex flex-col gap-6'>
+          <div className='flex flex-col gap-3'>
+            <h3 className='font-bold text-sm text-primary uppercase tracking-wide'>
+              Passport Photo
+            </h3>
+            <PassportPhotoCard photoUrl={member.photoUrl ?? null} canEdit={isSelf} />
+          </div>
+
           <div className='flex flex-col gap-3'>
             <div className='flex items-center justify-between'>
               <h3 className='font-bold text-sm text-primary uppercase tracking-wide'>

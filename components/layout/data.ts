@@ -4,6 +4,7 @@ import {
   Handshake,
   History,
   LayoutDashboard,
+  ShieldCheck,
   Users,
   Wallet,
 } from 'lucide-react'
@@ -166,5 +167,11 @@ export const userNavItems = [
     label: 'layout.sidebar.menu-items.eajo',
     href: '/eajo',
     icon: Handshake,
+  },
+  {
+    id: 'guarantees',
+    label: 'layout.sidebar.menu-items.guarantees',
+    href: '/guarantees',
+    icon: ShieldCheck,
   },
 ]
