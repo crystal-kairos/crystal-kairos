@@ -242,13 +242,6 @@ performance work (P5-03) waits for it.
 - **P3-05 → P5-04.** `AjoFeeConfig` and the legacy free-text guarantor/bank columns on `EAjoMember`
   are no longer read by the e-ajo flow. E-ajo owner decisions: OQ-16, OQ-17, OQ-18 (all resolved).
 
-- **Migrations already deployed by Vercel (learned in P3-05).** The build script runs
-  `prisma migrate deploy`, so a pushed branch's preview deployment applies its migrations to the
-  deployment database. Treat a migration as applied once its branch has been pushed: **never rename it
-  afterwards**, even when a later-timestamped migration lands on `dev` (Prisma applies out-of-order
-  migrations fine). If a rename already happened, restore the original name and run
-  `pnpm prisma migrate resolve --rolled-back <renamed_migration>` against that database.
-
 ### Status
 
 `Done` = merged into `dev`. Only a step's own PR edits its row.
