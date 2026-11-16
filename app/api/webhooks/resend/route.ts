@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { resend, redactErrorMessage } from '@/features/notification/providers/resend.provider'
 import { NotificationStatus } from '@/generated/prisma/enums'
+import type { WebhookEventPayload } from 'resend'
 
 /**
  * Resend Signed Delivery Webhooks Handler
@@ -40,12 +41,7 @@ export async function POST(req: NextRequest) {
   // Read raw request body string for cryptographic signature verification
   const rawBody = await req.text()
 
-  let event: {
-    type?: string
-    created_at?: string
-    id?: string
-    data?: { email_id?: string; [key: string]: unknown }
-  }
+  let event: WebhookEventPayload
   try {
     event = resend.webhooks.verify({
       payload: rawBody,
@@ -62,8 +58,8 @@ export async function POST(req: NextRequest) {
     )
   }
 
-  // Idempotency: Deduplicate by webhook-id
-  const webhookId = id || event?.id
+  // Idempotency: Deduplicate by webhook-id (svix-id / webhook-id header, checked above)
+  const webhookId = id
 
   if (webhookId) {
     const alreadyProcessed = await prisma.auditEvent.findFirst({
@@ -79,8 +75,12 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const eventType = event.type as string
-  const emailId = event.data?.email_id
+  const eventType: string = event.type
+  // Only email.* events carry an email_id; contact/domain/inbox events are ignored.
+  const emailId =
+    event.data && 'email_id' in event.data && typeof event.data.email_id === 'string'
+      ? event.data.email_id
+      : undefined
 
   if (emailId) {
     const notification = await prisma.notification.findFirst({
