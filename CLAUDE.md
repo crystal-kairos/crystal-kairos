@@ -53,7 +53,8 @@ session, then the relevant section of the implementation guide.
   Use this to run one session per step; a whole wave in one session is a lot of work.
 - **`Continue wave N`** — resume unfinished steps of wave N from their existing branches.
 - **`Rebase wave N`** — after the owner merged some of wave N, rebase its other open branches onto
-  `origin/dev`, fix conflicts/migration order, re-test and push.
+  `origin/dev`, fix conflicts, re-test and push. **Never rename or edit a migration while rebasing**
+  (see "Database migrations" below).
 - **`Wave status`** — report merged / in-progress / not-started steps and the current wave.
 
 ### How a session uses this plan
@@ -85,11 +86,8 @@ session, then the relevant section of the implementation guide.
 - **After any merge into `dev`, rebase the wave's other open branches onto `origin/dev`**, re-run
   `pnpm prisma generate`, the tests and the build, and push (`git push --force-with-lease` on
   that step's own branch only).
-- **Migrations in parallel branches:** each branch adds its own migration folder. After rebasing,
-  if `dev` now has a migration with a later timestamp than yours and your migration has never been
-  applied to a shared database, rename your folder to a fresh timestamp and confirm with
-  `pnpm prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --script`
-  (run on a test DB at the latest migration) that nothing is missing. Never edit a merged migration.
+- **Migrations in parallel branches:** see "Database migrations" below — in short, never rename,
+  edit or delete a migration once its branch has been pushed.
 - **Shared files:** keep edits to shared files small and in your own area so parallel branches
   merge cleanly — `prisma/schema.prisma` (your models/enums only), `lib/services/payments.service.ts`
   (only your product's `targetType` branch in confirmation/reversal; put the logic in your own
@@ -99,6 +97,43 @@ session, then the relevant section of the implementation guide.
   notes for later steps. Don't rewrite other rows or the plan itself in a step PR.
 - Anything a later step must remember (a hook to wire, a step-up to add, an assumption) goes into
   the "Hand-over notes" column/paragraphs below in the same PR.
+
+### Database migrations (read before creating, rebasing or pushing a migration)
+
+Every Vercel deployment — previews of step branches included — runs `pnpm run build`, which runs
+`prisma migrate deploy`. **Pushing a branch therefore applies its migrations to that deployment's
+database**, and Prisma records each migration by folder name and checksum. Renaming or editing a
+migration after that makes the next deploy fail (a renamed folder is re-run as "new"; an edited one
+fails the checksum) and blocks every later deploy until the owner repairs the database by hand. This
+happened in P3-04 and P3-05.
+
+1. **A pushed migration is frozen.** Never rename, edit, squash or delete a migration folder once its
+   branch has been pushed — not when rebasing, not when `dev` gets a later timestamp, not to tidy up.
+   Prisma applies independent migrations out of timestamp order without complaint.
+2. **Fix forward.** A mistake or a review change in a pushed migration is fixed with a **new**
+   migration folder in the same branch.
+3. **Get it right before the first push.** Before pushing a branch that adds a migration: apply it to a
+   fresh local test database (`DROP`/`CREATE DATABASE`, `pnpm prisma migrate deploy`), check
+   `pnpm prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --script` prints
+   an empty migration, and run the tests.
+4. **One step, own objects.** Name folders `<YYYYMMDDHHMMSS>_<step>_<what>` using the time you create
+   them (e.g. `20261120143000_p3_06_wallet_lateness`). A migration changes only its own step's tables
+   and enums; changes to another step's area go through the owner first.
+5. **Write re-runnable SQL** where PostgreSQL allows it, so a migration that meets an object which
+   already exists does not fail: `ALTER TYPE … ADD VALUE IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`,
+   `ADD COLUMN IF NOT EXISTS`, `DROP … IF EXISTS`; wrap `ADD CONSTRAINT` in a `DO $$ … $$` block that
+   skips an existing constraint name. Edit the generated SQL this way **before** the first push.
+6. **After a rebase, verify — don't rename.** Rebuild the local test database from scratch, run
+   `prisma migrate deploy` and the empty-diff check from rule 3. If something is missing, add a new
+   migration. Before `git push --force-with-lease`, run
+   `git diff --name-status --find-renames origin/<branch> HEAD -- prisma/migrations`: it may only show
+   `A` (added) lines. Any `R`, `M` or `D` line means a pushed migration changed — undo that first.
+7. **If a deploy fails with a migration error** (`P3009`, `P3018`, "already exists"), stop. Do not edit
+   or rename migrations to make it pass. Report the failing migration and the exact recovery command to
+   the owner (usually `pnpm prisma migrate resolve --rolled-back <failed_migration>` against that
+   database, after restoring any renamed folder). Only the owner runs commands against deployed databases.
+8. **Never reset or `db push`** against any deployed database; `migrate reset` is for local test
+   databases only.
 
 ### Waves
 
@@ -210,11 +245,7 @@ performance work (P5-03) waits for it.
   numbering in payment confirmation, submission creation, savings payouts and loan disbursement/wallet payments;
   every new writer of those numbers must call it inside its transaction. `disbursement.service#requestDisbursement`
   still numbers outside a transaction (P3-08 should move it into one).
-  **Migrations are applied as soon as a branch is pushed:** the build script (`pnpm run build`) runs
-  `prisma migrate deploy`, so a Vercel preview deployment applies the branch's migrations to its database.
-  Treat any pushed migration as applied to a shared database: never rename or edit it afterwards, even when
-  rebasing (out-of-order timestamps are fine for independent migrations). P3-04's migration keeps its original name
-  `20261117090000_p3_04_loan_workflow` for this reason.
+  P3-04's migration keeps its original name `20261117090000_p3_04_loan_workflow` (see "Database migrations").
 
 - **P3-05 → P3-06 (lateness/wallet).** E-ajo pieces to wire into `recalculateLateness()`:
   `accrueEAjoPenaltiesForParticipant` (catch-up, cap, shield; assesses only completed days) and
