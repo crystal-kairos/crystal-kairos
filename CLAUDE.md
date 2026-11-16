@@ -210,6 +210,11 @@ performance work (P5-03) waits for it.
   numbering in payment confirmation, submission creation, savings payouts and loan disbursement/wallet payments;
   every new writer of those numbers must call it inside its transaction. `disbursement.service#requestDisbursement`
   still numbers outside a transaction (P3-08 should move it into one).
+  **Migrations are applied as soon as a branch is pushed:** the build script (`pnpm run build`) runs
+  `prisma migrate deploy`, so a Vercel preview deployment applies the branch's migrations to its database.
+  Treat any pushed migration as applied to a shared database: never rename or edit it afterwards, even when
+  rebasing (out-of-order timestamps are fine for independent migrations). P3-04's migration keeps its original name
+  `20261117090000_p3_04_loan_workflow` for this reason.
 
 ### Status
 
