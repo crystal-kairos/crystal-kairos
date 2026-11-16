@@ -973,7 +973,7 @@ Catch-up daily penalty assessment for late e-ajo contributions (§2.3).
 
 ---
 
-#### 3.8.5 As implemented in P3-05 (migration `20261118090000_p3_05_eajo_slots`)
+#### 3.8.5 As implemented in P3-05 (migration `20261117090000_p3_05_eajo_slots`)
 
 The physical schema keeps the P2 column names (`EAjoMember.payoutPosition` is the slot number; `contributionDue`/`contributionPaid` on periods). P3-05 changed:
 
