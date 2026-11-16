@@ -2,12 +2,14 @@ import { prisma } from '@/lib/prisma'
 import { Prisma } from '@/generated/prisma/client'
 import {
   AdminPermission,
+  AllocationStatus,
   AllocationTargetType,
   EAjoMemberStatus,
   EAjoPayoutStatus,
   EAjoStatus,
   GuaranteeType,
   PaymentPeriodStatus,
+  PaymentStatus,
   PaymentSubmissionStatus,
 } from '@/generated/prisma/enums'
 import {
@@ -22,6 +24,8 @@ import {
   evaluateEAjoPayoutEligibility,
 } from '@/lib/domain/eajo-payout'
 import { computePeriodStatus } from '@/lib/services/schedules.service'
+import { getWalletSummary } from '@/lib/services/wallet.service'
+import { summarizePaymentBreakdown } from '@/lib/services/allocation.service'
 
 /*
  * E-ajo read models (PR P3-05). Money leaves this file as numbers for display only; every
@@ -208,6 +212,32 @@ export const getUserEAjoMemberships = async (userId: string) => {
       },
     })
     const reviewSet = await inReviewPeriods(memberships.flatMap((m) => m.contributionPeriods.map((p) => p.id)))
+    const walletSummary = await getWalletSummary(userId, prisma)
+    const membershipIds = memberships.map((m) => m.id)
+    const confirmedPayments = membershipIds.length
+      ? await prisma.payment.findMany({
+          where: {
+            memberId: userId,
+            status: PaymentStatus.CONFIRMED,
+            allocations: {
+              some: {
+                targetType: AllocationTargetType.EAJO,
+                targetId: { in: membershipIds },
+                status: AllocationStatus.ACTIVE,
+              },
+            },
+          },
+          orderBy: { valueDate: 'desc' },
+          include: {
+            allocations: {
+              where: {
+                targetType: AllocationTargetType.EAJO,
+                status: AllocationStatus.ACTIVE,
+              },
+            },
+          },
+        })
+      : []
 
     const data = memberships.map((m) => {
       const periods = m.contributionPeriods.map((p) => periodView(p, reviewSet, today))
@@ -226,12 +256,38 @@ export const getUserEAjoMemberships = async (userId: string) => {
             })
           : null
       const guarantee = m.guaranteeReservations[0]
+      const mPayments = confirmedPayments
+        .map((p) => {
+          const mAllocs = p.allocations.filter((a) => a.targetId === m.id)
+          if (mAllocs.length === 0) return null
+          return {
+            id: p.id,
+            paymentNumber: p.paymentNumber,
+            source: p.source,
+            valueDate: dateKey(p.valueDate)!,
+            breakdown: summarizePaymentBreakdown(mAllocs),
+          }
+        })
+        .filter(Boolean) as Array<{
+        id: string
+        paymentNumber: string
+        source: string
+        valueDate: string
+        breakdown: ReturnType<typeof summarizePaymentBreakdown>
+      }>
+
       return {
         id: m.id,
         status: m.status,
         slotNumber: m.payoutPosition,
         rejectionReason: m.rejectionReason,
         cancellationReason: m.cancellationReason,
+        availableWallet: n(walletSummary.availableBalance),
+        walletSummary: {
+          totalBalance: n(walletSummary.totalBalance),
+          heldBalance: n(walletSummary.heldBalance),
+          availableBalance: n(walletSummary.availableBalance),
+        },
         group: {
           id: m.group.id,
           title: m.group.title,
@@ -264,6 +320,7 @@ export const getUserEAjoMemberships = async (userId: string) => {
           ? { guarantorName: guarantee.guarantor.name, state: guarantee.state, reservedAmount: n(guarantee.reservedAmount) }
           : null,
         periods,
+        payments: mPayments,
         totals: {
           confirmed: periods.reduce((s, p) => s + p.contributionPaid, 0),
           outstanding: periods.filter((p) => p.dueDate <= today).reduce((s, p) => s + p.totalOutstanding, 0),

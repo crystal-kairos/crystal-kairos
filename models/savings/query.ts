@@ -4,7 +4,9 @@ import { prisma } from '@/lib/prisma'
 import { Prisma } from '@/generated/prisma/client'
 import {
   AdminPermission,
+  AllocationStatus,
   AllocationTargetType,
+  PaymentStatus,
   SavingsStatus,
 } from '@/generated/prisma/enums'
 import {
@@ -19,6 +21,8 @@ import { generateMemberPaymentReference } from '@/lib/domain/payment-reference'
 import { maskAccountNumber } from '@/lib/domain/profile-change'
 import { getAccruedInterest, pendingPlanExpiresOn } from '@/lib/services/savings.service'
 import { getSocietySetting } from '@/lib/services/society-settings.service'
+import { getWalletSummary } from '@/lib/services/wallet.service'
+import { summarizePaymentBreakdown } from '@/lib/services/allocation.service'
 
 const iso = (d: Date | null | undefined) => (d ? formatDateOnly(d) : null)
 
@@ -130,6 +134,31 @@ export const getSavingsPlanById = async (savingsId: string) => {
       }
     }
 
+    const walletSummary = await getWalletSummary(savings.userId, prisma)
+    const confirmedPayments = await prisma.payment.findMany({
+      where: {
+        memberId: savings.userId,
+        status: PaymentStatus.CONFIRMED,
+        allocations: {
+          some: {
+            targetType: AllocationTargetType.SAVINGS,
+            targetId: savings.id,
+            status: AllocationStatus.ACTIVE,
+          },
+        },
+      },
+      orderBy: { valueDate: 'desc' },
+      include: {
+        allocations: {
+          where: {
+            targetType: AllocationTargetType.SAVINGS,
+            targetId: savings.id,
+            status: AllocationStatus.ACTIVE,
+          },
+        },
+      },
+    })
+
     const windowDays = await getSocietySetting('savingsFirstDepositWindowDays')
     const membershipNumber = savings.user.membership?.membershipNumber ?? null
     const receivingAccount = await prisma.societyBankAccount.findFirst({
@@ -156,6 +185,12 @@ export const getSavingsPlanById = async (savingsId: string) => {
         totalDeposited: Number(savings.totalDeposited),
         accruedInterest: accruedInterest.toNumber(),
         projectedInterest: roundMoney(projectedInterest).toNumber(),
+        availableWallet: walletSummary.availableBalance.toNumber(),
+        walletSummary: {
+          totalBalance: walletSummary.totalBalance.toNumber(),
+          heldBalance: walletSummary.heldBalance.toNumber(),
+          availableBalance: walletSummary.availableBalance.toNumber(),
+        },
         status: savings.status,
         startDate: iso(savings.startDate),
         maturityDate: iso(savings.maturityDate),
@@ -216,6 +251,14 @@ export const getSavingsPlanById = async (savingsId: string) => {
           bankReference: s.bankReference,
           receiptFileId: s.receiptFileId,
           periodIds: s.targets.map((t) => t.targetPeriodId).filter(Boolean) as string[],
+        })),
+        payments: confirmedPayments.map((p) => ({
+          id: p.id,
+          paymentNumber: p.paymentNumber,
+          source: p.source,
+          valueDate: iso(p.valueDate) as string,
+          totalConfirmedAmount: Number(p.totalConfirmedAmount),
+          breakdown: summarizePaymentBreakdown(p.allocations),
         })),
       },
     }

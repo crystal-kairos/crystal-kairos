@@ -277,6 +277,29 @@ performance work (P5-03) waits for it.
   confirmed/rejected. Guarantor requests are currently only shown on the member's e-ajo dashboard.
 - **P3-05 → P5-04.** `AjoFeeConfig` and the legacy free-text guarantor/bank columns on `EAjoMember`
   are no longer read by the e-ajo flow. E-ajo owner decisions: OQ-16, OQ-17, OQ-18 (all resolved).
+- **From P3-06 (wallet application & lateness engine):**
+  - `recalculateLateness()` / `recalculateLatenessInTx()` (`lib/services/lateness.service.ts`, pure rules in
+    `lib/domain/lateness.ts`) is the single idempotent lateness engine across `LOAN`, `EAJO`, and `SAVINGS`. It runs
+    automatically on `confirmPaymentSubmission`, `rejectPaymentSubmission`, `reversePayment`, `applyWallet`, and
+    `payLoanFromWallet`. It reverses invalidated penalty accruals (`VALUE_DATE_RECALC` + `reverseJournalEntry`),
+    accrues/re-activates missing penalties, recalculates regular-savings period forfeitures, refreshes period/product
+    statuses from active allocations, and returns `eligibleForRecovery`.
+  - `applyWallet()` / `applyWalletInTx()` (`lib/services/wallet.service.ts`) supports `mode: 'AUTO'` (`LOAN` → `EAJO`
+    only, never `SAVINGS`, for due unshielded obligations on `dueDate <= asOf`) and `mode: 'MEMBER'` (`LOAN` → `EAJO` →
+    `SAVINGS` → `FEE`, including early payment and whole-loan early settlement) under `lockMembers` and `lockSequence(tx, 'PAY')`.
+  - **P3-06 → P3-06B (recovery cases):** use `evaluateRecoveryEligibility` (`lib/domain/lateness.ts`) and
+    `recalculateLateness` (`eligibleForRecovery` flag on `dueDate + 15` when unshielded) to open/advance/close recovery cases.
+  - **P3-06 → P3-07 (admin payment queues & value-date correction):** after staff change a confirmed payment's
+    `valueDate` or waive a penalty, call `recalculateLatenessInTx` for every affected `LOAN`, `EAJO`, or `SAVINGS`
+    obligation; it will reverse or re-accrue penalties and clear or set savings forfeitures automatically.
+  - **P3-06 → P3-09 (reversals):** `reversePayment` currently passes `skipStatusRefresh: true` to
+    `recalculateLatenessInTx` so P2-07's `ONGOING` period status test continues to pass; when P3-09 implements the full
+    reversal cascade (including reopening `COMPLETED` loans/e-ajo/savings and re-reserving guarantees), remove
+    `skipStatusRefresh: true` so `recalculateLatenessInTx` refreshes all obligation statuses on reversal.
+  - **P3-06 → P4-04 (scheduled jobs):** register `runPenaltiesJob` (`lib/jobs/penalties.job.ts`),
+    `runWalletAutoApplyJob` (`lib/jobs/wallet-auto-apply.job.ts`), and `runInterestRecognitionJob`
+    (`lib/jobs/interest-recognition.job.ts`); run interest recognition and due-date wallet auto-apply before daily
+    penalty/forfeiture evaluation.
 
 ### Status
 
@@ -287,7 +310,7 @@ performance work (P5-03) waits for it.
 | P3-03 | Done | Savings lots/accruals, jobs in `lib/jobs/`, see hand-over notes |
 | P3-04 | Done | Loan workflow in `lib/services/loans.service.ts` (+ `loan-capacity.service.ts`, `lib/domain/loan-workflow.ts`, `lib/jobs/loan-offers.job.ts`); OQ-13 … OQ-15 open |
 | P3-05 | Done | E-ajo slots/payouts; see hand-over notes "P3-05 → …" |
-| P3-06 | Not started | |
+| P3-06 | Done | Wallet application (`applyWallet`), value-date lateness engine (`recalculateLateness` in `lib/domain/lateness.ts` & `lib/services/lateness.service.ts`), jobs in `lib/jobs/{penalties,wallet-auto-apply,interest-recognition}.job.ts`; see hand-over notes |
 | P4-01 | Not started | |
 | P3-06B | Not started | |
 | P3-07 | Not started | |
