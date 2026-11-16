@@ -2,7 +2,7 @@
 
 import { prisma } from '@/lib/prisma'
 import { getRequiredEnv } from '@/lib/env'
-import { brevo } from '../providers/email.provider'
+import { getBrevoClient } from '../providers/email.provider'
 import { SendEmailOptions } from '../types'
 import {
   NotificationChannel,
@@ -38,7 +38,7 @@ export const sendEmail = async (options: SendEmailOptions) => {
 
   try {
     // 2. Send email via Brevo
-    const data = await brevo.transactionalEmails.sendTransacEmail({
+    const data = await getBrevoClient().transactionalEmails.sendTransacEmail({
       sender: {
         email: getRequiredEnv('EMAIL_FROM'),
         name: getRequiredEnv('EMAIL_FROM_NAME'),
