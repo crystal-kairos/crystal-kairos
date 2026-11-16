@@ -1,7 +1,8 @@
 import { auth } from '@/auth'
 import { redirect } from 'next/navigation'
 import { ShieldAlert } from 'lucide-react'
-import { getUserEAjoMemberships, getOpenEAjoGroups } from '@/models/eajo/query'
+import { getUserEAjoMemberships, getOpenEAjoGroups, getMyEAjoGuaranteeRequests } from '@/models/eajo/query'
+import { lagosToday } from '@/lib/domain/dates'
 import { EAjoDashboardClient } from '@/components/eajo/EAjoDashboardClient'
 
 interface PageProps {
@@ -28,19 +29,20 @@ const EAjoPage = async ({ params }: PageProps) => {
     )
   }
 
-  const [membershipsResult, openGroupsResult] = await Promise.all([
+  const [membershipsResult, openGroupsResult, guaranteeResult] = await Promise.all([
     getUserEAjoMemberships(profileId),
     getOpenEAjoGroups(),
+    getMyEAjoGuaranteeRequests(profileId),
   ])
-
-  const memberships = membershipsResult.success && membershipsResult.data ? membershipsResult.data : []
-  const openGroups = openGroupsResult.success && openGroupsResult.data ? openGroupsResult.data : []
 
   return (
     <EAjoDashboardClient
       userId={profileId}
-      memberships={memberships as any}
-      openGroups={openGroups as any}
+      today={lagosToday()}
+      memberships={membershipsResult.success ? membershipsResult.data : []}
+      openGroups={openGroupsResult.success ? openGroupsResult.data : []}
+      guaranteeRequests={guaranteeResult.success ? guaranteeResult.data : []}
+      canActAsGuarantor={isSelf && guaranteeResult.viewerIsGuarantor}
     />
   )
 }

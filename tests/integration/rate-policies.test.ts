@@ -37,7 +37,8 @@ import {
   getActiveLoanTermRates,
   setSavingsProductTermRates,
 } from '@/lib/services/rate-policy.service'
-import { createEAjoGroupAction, activateEAjoGroupAction } from '@/models/admin/actions'
+import { createEAjoGroupAction, activateEAjoGroupAction } from '@/models/admin/eajoActions'
+import { GuaranteeState, GuaranteeType } from '@/generated/prisma/enums'
 import { toLagosDateString } from '@/lib/domain/dates'
 
 describe('PR P2-05 Integration Tests: Rates, Penalties, Savings Plan Terms & E-Ajo Policies', () => {
@@ -46,12 +47,13 @@ describe('PR P2-05 Integration Tests: Rates, Penalties, Savings Plan Terms & E-A
 
   const cleanUpTestData = async () => {
     await prisma.policyUpdateDraft.deleteMany()
-    // Scoped to this suite's groups so parallel suites keep their e-ajo data.
-    const ratesGroup = { group: { createdByUser: { email: { contains: '-rates-' } } } }
-    await prisma.eAjoPayout.deleteMany({ where: { eajoMember: ratesGroup } })
-    await prisma.eAjoContributionPeriod.deleteMany({ where: { eajoMember: ratesGroup } })
-    await prisma.eAjoSlotPolicy.deleteMany({ where: ratesGroup })
-    await prisma.eAjoMember.deleteMany({ where: ratesGroup })
+    // Scoped to this file's data so parallel e-ajo suites are not affected
+    const ratesGroups = { group: { createdByUser: { email: { contains: '-rates-' } } } }
+    await prisma.eAjoPayout.deleteMany({ where: { eajoMember: ratesGroups } })
+    await prisma.eAjoContributionPeriod.deleteMany({ where: { eajoMember: ratesGroups } })
+    await prisma.guaranteeReservation.deleteMany({ where: { eajoMember: ratesGroups } })
+    await prisma.eAjoSlotPolicy.deleteMany({ where: { group: { createdByUser: { email: { contains: '-rates-' } } } } })
+    await prisma.eAjoMember.deleteMany({ where: ratesGroups })
     await prisma.eAjoGroup.deleteMany({ where: { createdByUser: { email: { contains: '-rates-' } } } })
     // Scoped to this suite's rows so parallel suites keep their data.
     await prisma.savingsProductTermRate.deleteMany({ where: { product: { createdByUser: { email: { contains: '-rates-' } } } } })
@@ -60,7 +62,9 @@ describe('PR P2-05 Integration Tests: Rates, Penalties, Savings Plan Terms & E-A
     await prisma.savingsProduct.deleteMany({ where: { createdByUser: { email: { contains: '-rates-' } } } })
     await prisma.loanInstalment.deleteMany({ where: { loan: { user: { email: { contains: '-rates-' } } } } })
     await prisma.borrowerOfferAcceptance.deleteMany()
-    await prisma.guaranteeReservation.deleteMany()
+    await prisma.guaranteeReservation.deleteMany({
+      where: { OR: [{ applicant: { email: { contains: '-rates-' } } }, { guarantor: { email: { contains: '-rates-' } } }] },
+    })
     await prisma.loan.deleteMany({ where: { user: { email: { contains: '-rates-' } } } })
     await prisma.loanTermRate.deleteMany()
     await prisma.bankAccount.deleteMany({ where: { user: { email: { contains: '-rates-' } } } })
@@ -386,6 +390,20 @@ describe('PR P2-05 Integration Tests: Rates, Penalties, Savings Plan Terms & E-A
         accountNumber: '0123456789',
         accountName: 'Rates Borrower',
         status: EAjoMemberStatus.APPROVED,
+      },
+    })
+
+    // Activation requires a consented guarantee for every approved participant (P3-05, §2.7)
+    await prisma.guaranteeReservation.create({
+      data: {
+        guaranteeType: GuaranteeType.EAJO,
+        guarantorId: adminUser.id,
+        applicantId: memberUser.id,
+        eajoMemberId: member.id,
+        requestedAmount: 100000,
+        consentedAmount: 100000,
+        reservedAmount: 100000,
+        state: GuaranteeState.CONSENTED,
       },
     })
 

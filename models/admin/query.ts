@@ -406,65 +406,6 @@ export const getAllEAjoGroups = async () => {
   }
 }
 
-/**
- * Fetches a single eAjo group with full member details
- */
-export const getEAjoGroupById = async (groupId: string) => {
-  try {
-    await requireAnyPermission([
-      AdminPermission.EAJO_READ,
-      AdminPermission.EAJO_MANAGE,
-      AdminPermission.EAJO_PAYMENTS_REVIEW,
-      AdminPermission.EAJO_PAYOUTS_MANAGE,
-    ])
-
-    const group = await prisma.eAjoGroup.findUnique({
-      where: { id: groupId },
-      include: {
-        createdByUser: { select: { name: true, email: true } },
-        members: {
-          orderBy: { payoutPosition: 'asc' },
-          include: {
-            user: {
-              select: {
-                id: true,
-                name: true,
-                email: true,
-                userInfo: { select: { phoneNumber: true } },
-                membership: { select: { membershipNumber: true } },
-              },
-            },
-          },
-        },
-      },
-    })
-
-    if (!group) return { success: false, error: 'Group not found.' }
-
-    const serialized = {
-      ...group,
-      contributionAmount: Number(group.contributionAmount),
-      members: group.members.map((m) => ({
-        ...m,
-        feePercentage: Number(m.feePercentage),
-        feeAmount: Number(m.feeAmount),
-        totalExpectedPayout: Number(m.totalExpectedPayout),
-        netPayoutAmount: Number(m.netPayoutAmount),
-        currentBalance: Number(m.currentBalance),
-        totalContributed: Number(m.totalContributed),
-      })),
-    }
-
-    return { success: true, data: serialized }
-  } catch (error) {
-    console.error('Error fetching eAjo group:', error)
-    return {
-      success: false,
-      error:
-        error instanceof Error ? error.message : 'Failed to fetch eAjo group.',
-    }
-  }
-}
 
 /**
  * Fetches all pending member applications across all groups

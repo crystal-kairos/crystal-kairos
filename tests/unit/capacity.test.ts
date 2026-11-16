@@ -194,35 +194,41 @@ describe('Capacity, Guarantee Reservation & Savings Lock Primitives (§2.1, Appe
     ).toBe(false)
   })
 
-  it('calculates E-Ajo advance exposure before and after member payout (§2.8, §2.1)', () => {
-    // Slot 1 (payout in Month 1): advance exposure is 0 (member pays before collecting)
-    const slot1 = calculateEAjoAdvanceExposure({
-      payoutPosition: 1,
-      contributionAmount: '20000.00',
-    })
-    expect(slot1.toFixed(2)).toBe('0.00')
+  it('calculates E-Ajo advance exposure c × (N − s) before and after member payout (§2.8, §2.1)', () => {
+    // C4: c = 10,000, N = 12
+    expect(
+      calculateEAjoAdvanceExposure({ payoutPosition: 1, totalSlots: 12, contributionAmount: '10000.00' }).toFixed(2),
+    ).toBe('110000.00')
+    expect(
+      calculateEAjoAdvanceExposure({ payoutPosition: 2, totalSlots: 12, contributionAmount: '10000.00' }).toFixed(2),
+    ).toBe('100000.00')
+    // Last slot: nothing is advanced, the guarantee is a zero reservation
+    expect(
+      calculateEAjoAdvanceExposure({ payoutPosition: 12, totalSlots: 12, contributionAmount: '10000.00' }).toFixed(2),
+    ).toBe('0.00')
 
-    // Slot 2: (2 - 1) * 20,000 = 20,000
-    const slot2Before = calculateEAjoAdvanceExposure({
-      payoutPosition: 2,
-      contributionAmount: '20000.00',
-    })
-    expect(slot2Before.toFixed(2)).toBe('20000.00')
+    // After payout: remaining unpaid scheduled contributions, never above the advance
+    expect(
+      calculateEAjoAdvanceExposure({
+        payoutPosition: 4,
+        totalSlots: 6,
+        contributionAmount: '20000.00',
+        hasReceivedPayout: true,
+        unpaidScheduledContributions: '20000.00',
+      }).toFixed(2),
+    ).toBe('20000.00')
+    expect(
+      calculateEAjoAdvanceExposure({
+        payoutPosition: 4,
+        totalSlots: 6,
+        contributionAmount: '20000.00',
+        hasReceivedPayout: true,
+        unpaidScheduledContributions: '60000.00', // e.g. month 3 still unpaid
+      }).toFixed(2),
+    ).toBe('40000.00')
 
-    // Slot 4 in a 6-month group: (4 - 1) * 20,000 = 60,000 advance
-    const slot4Before = calculateEAjoAdvanceExposure({
-      payoutPosition: 4,
-      contributionAmount: '20000.00',
-    })
-    expect(slot4Before.toFixed(2)).toBe('60000.00')
-
-    // After payout: remaining unpaid contributions (e.g. 40,000 remaining)
-    const slot4After = calculateEAjoAdvanceExposure({
-      payoutPosition: 4,
-      contributionAmount: '20000.00',
-      hasReceivedPayout: true,
-      unpaidScheduledContributions: '40000.00',
-    })
-    expect(slot4After.toFixed(2)).toBe('40000.00')
+    expect(() =>
+      calculateEAjoAdvanceExposure({ payoutPosition: 7, totalSlots: 6, contributionAmount: 1 }),
+    ).toThrow()
   })
 })

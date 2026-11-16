@@ -226,11 +226,7 @@ describe('Registration Simplification & Profile-Completion Gates (PR P3-01)', ()
 
     const ajoResult = await applyToEAjoGroupAction(user1Id, testGroupId, {
       payoutPosition: 1,
-      guarantorName: 'Guarantor Test',
-      guarantorPhoneNumber: '+2348099887766',
-      bankName: 'Zenith Bank',
-      accountNumber: '2233445566',
-      accountName: 'P301 Test Member',
+      guarantorEmail: 'guarantor@example.test',
     })
 
     expect(ajoResult.success).toBe(false)

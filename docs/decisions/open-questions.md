@@ -58,6 +58,22 @@ This document records architectural, financial, and policy open questions arisin
 - **Current Assumption (A-09):** Voluntary cancellation requires an admin action (`EAJO_MANAGE`) to prevent group destabilization.
 - **Action Required:** Confirmation by cooperative owner.
 
+### OQ-16: Base of an e-ajo `PERCENT_OF_PRINCIPAL` late-penalty cap (P3-05)
+- **Context:** §2.3 reuses the loan cap fields for e-ajo ("the same as for loans"), but an e-ajo participant has no "amount borrowed".
+- **Question:** What is the base of a percentage cap for e-ajo late penalties?
+- **Decision (owner, 2026-11-16):** the participant's total scheduled contributions `c × N` (e.g. 10% of ₦120,000 = ₦12,000 per participant per group). Implemented as `capBase` in `lib/services/eajo.service.ts` → `accrueEAjoPenaltiesForParticipant`. Fixed-amount caps are unaffected.
+- **Status:** Resolved.
+
+### OQ-17: What counts as "settled" for payout eligibility (P3-05)
+- **Context:** §2.8 rule 4 / A-09: a payout is eligible "when the participant's contribution for month s is settled and no earlier contribution is overdue". A-09 lists "is netting overdue amounts from payout preferred to blocking?" as something to observe in testing; no later guide step decides it.
+- **Decision (owner, 2026-11-16: follow the guide; no later step changes it):** only contributions count. From the payout month's due date, the contributions for months 1..s must be paid with confirmed money (a receipt still in review does not count, §1.2). Unpaid late penalties do **not** block the payout and are **not** deducted from it; they stay owed on their periods and are collected first from the member's next payment (penalty-first allocation) or through recovery (P3-06B). See `evaluateEAjoPayoutEligibility` in `lib/domain/eajo-payout.ts`.
+- **Status:** Resolved. Netting stays a candidate for the next iteration if testing shows members prefer it.
+
+### OQ-18: Cancelling a participant who owes late penalties (P3-05)
+- **Context:** §2.8 rule 7 says a participant cancelled before payout gets their confirmed contributions back in the wallet with no early-slot penalty, but is silent on late penalties already assessed and unpaid.
+- **Decision (owner, 2026-11-16):** cancellation is blocked while late fees are unpaid. The admin sees a popup saying the member can't leave until the fees are paid, with a button to deduct the fees from the member's contributions instead: the fees are then marked paid (oldest month first), the rest of the contributions is refunded to the wallet and the participant is cancelled. If the contributions are less than the fees, deduction is refused. Journal: Dr `EAJO_CONTRIBUTION_LIABILITY` (held) / Cr `EAJO_PENALTY_RECEIVABLE` (fees) + Cr `MEMBER_WALLET_LIABILITY` (remainder). See `cancelEAjoParticipant(..., { deductPenalties })`.
+- **Status:** Resolved.
+
 ---
 
 ## 4. Identity, Profile & Governance

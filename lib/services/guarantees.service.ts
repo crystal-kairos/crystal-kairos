@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/prisma'
 import { Prisma } from '@/generated/prisma/client'
 import {
+  EAjoMemberStatus,
   GuaranteeState,
   GuaranteeType,
   LoanStatus,
@@ -261,6 +262,7 @@ export async function requestEAjoGuarantor(
 
   const advanceExposure = calculateEAjoAdvanceExposure({
     payoutPosition: params.slotNumber,
+    totalSlots: params.totalSlots,
     contributionAmount: params.monthlyContribution,
   })
 
@@ -426,13 +428,9 @@ export async function decideGuarantorRequest(
     )
     neededSupport = support.needed
   } else {
-    // E-Ajo guarantee: advance exposure
-    if (reservation.eajoMember) {
-      neededSupport = calculateEAjoAdvanceExposure({
-        payoutPosition: reservation.eajoMember.payoutPosition,
-        contributionAmount: reservation.requestedAmount,
-      })
-    }
+    // E-Ajo guarantee: requestedAmount already holds the advance exposure c × (N − s)
+    // computed by requestEAjoGuarantor (§2.1, §2.8), so it is the support needed.
+    neededSupport = reservation.requestedAmount
   }
 
   if (neededSupport.gt(guarantorUnencumbered)) {
@@ -531,6 +529,31 @@ export async function withdrawGuarantorConsent(
         { statusCode: 403 },
       )
     }
+  }
+
+  // E-ajo: once the group has activated the guarantee cannot be revoked unilaterally (§2.7)
+  if (
+    reservation.eajoMember &&
+    reservation.eajoMember.status !== EAjoMemberStatus.PENDING &&
+    reservation.eajoMember.status !== EAjoMemberStatus.APPROVED
+  ) {
+    throw new AppError(
+      'FORBIDDEN',
+      'Cannot revoke an e-ajo guarantee after the group has been activated. A replacement guarantor must be approved.',
+      { statusCode: 403 },
+    )
+  }
+
+  if (
+    reservation.eajoMember &&
+    reservation.state !== GuaranteeState.PENDING &&
+    reservation.state !== GuaranteeState.CONSENTED
+  ) {
+    throw new AppError(
+      'INVALID_STATE',
+      `Guarantee cannot be withdrawn in state ${reservation.state}.`,
+      { statusCode: 422 },
+    )
   }
 
   await lockMembers(tx, [reservation.applicantId, params.guarantorId])

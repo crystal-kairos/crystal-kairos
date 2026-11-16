@@ -216,6 +216,32 @@ performance work (P5-03) waits for it.
   rebasing (out-of-order timestamps are fine for independent migrations). P3-04's migration keeps its original name
   `20261117090000_p3_04_loan_workflow` for this reason.
 
+- **P3-05 → P3-06 (lateness/wallet).** E-ajo pieces to wire into `recalculateLateness()`:
+  `accrueEAjoPenaltiesForParticipant` (catch-up, cap, shield; assesses only completed days) and
+  `refreshEAjoParticipant` (payout eligibility, reservation, completion) in `lib/services/eajo.service.ts`.
+  Value-date **reversal** of e-ajo accruals is not built — do it in P3-06 (accruals are on
+  `EAjoPenaltyAccrual`, journal key `eajo-penalty:{periodId}:{date}`). Wallet-paid contributions must
+  credit `getEAjoContributionCreditAccounts()` (liability before payout, advance receivable after) with
+  `accountRefId = EAjoMember.id`, then call `afterEAjoAllocationsChanged()`. Cancellation refunds to the
+  wallet with journal key `eajo-cancel-refund:{eajoMemberId}`.
+- **P3-05 → P3-07.** E-ajo receipts can be confirmed from the group page
+  (`confirmEAjoContributionAction`, `EAJO_PAYMENTS_REVIEW`) until the unified queue exists; keep the
+  EAJO branch hooks in `payments.service.ts`. The old admin "add member" no longer creates ACTIVE
+  members or confirmed transactions — it files a normal application (`joinEAjoGroup`).
+- **P3-05 → P3-09.** `EAjoPayoutStatus.FAILED` exists but has no flow. EAJO_PAYOUT disbursements are paid
+  only by `recordEAjoPayoutPaid` (generic `disbursePayment` refuses them). Reversing a contribution
+  that was confirmed *before* the payout, after the payout is PAID, must hit `EAJO_ADVANCE_RECEIVABLE`,
+  not the (already debited) contribution liability.
+- **P3-05 → P4-04.** Register `runPayoutEligibilityJob` (`lib/jobs/payout-eligibility.job.ts`) and
+  `runEAjoPenaltyJob` (`lib/jobs/eajo-penalties.job.ts`); both are idempotent and take `today`.
+- **P3-05 → P4-02.** E-ajo sends no notifications yet. Add (guide P4-02 catalogue): guarantor
+  consent requested (on `joinEAjoGroup`), guarantor decision to the applicant, application
+  approved/rejected, participant cancelled (with wallet refund), payout eligible/approved/paid
+  (`refreshEAjoParticipant`, `approveEAjoPayout`, `recordEAjoPayoutPaid`), contribution receipt
+  confirmed/rejected. Guarantor requests are currently only shown on the member's e-ajo dashboard.
+- **P3-05 → P5-04.** `AjoFeeConfig` and the legacy free-text guarantor/bank columns on `EAjoMember`
+  are no longer read by the e-ajo flow. E-ajo owner decisions: OQ-16, OQ-17, OQ-18 (all resolved).
+
 ### Status
 
 `Done` = merged into `dev`. Only a step's own PR edits its row.
@@ -224,7 +250,7 @@ performance work (P5-03) waits for it.
 |---|---|---|
 | P3-03 | Done | Savings lots/accruals, jobs in `lib/jobs/`, see hand-over notes |
 | P3-04 | Done | Loan workflow in `lib/services/loans.service.ts` (+ `loan-capacity.service.ts`, `lib/domain/loan-workflow.ts`, `lib/jobs/loan-offers.job.ts`); OQ-13 … OQ-15 open |
-| P3-05 | Not started | |
+| P3-05 | Done | E-ajo slots/payouts; see hand-over notes "P3-05 → …" |
 | P3-06 | Not started | |
 | P4-01 | Not started | |
 | P3-06B | Not started | |
