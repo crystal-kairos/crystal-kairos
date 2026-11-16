@@ -143,8 +143,12 @@ export interface EAjoPeriodState {
   dueDate: Date | string
   contributionDue: Prisma.Decimal | number | string
   contributionPaid: Prisma.Decimal | number | string
-  /** assessed − paid − waived late penalty on this period */
-  penaltyOutstanding: Prisma.Decimal | number | string
+  /**
+   * assessed − paid − waived late penalty on this period. Informational only: late penalties do
+   * NOT block the payout (OQ-12, resolved) — they stay owed and are collected first from the
+   * member's next payment, or through recovery.
+   */
+  penaltyOutstanding?: Prisma.Decimal | number | string
 }
 
 export type EAjoPayoutIneligibilityCode =
@@ -173,11 +177,11 @@ function toDateKey(d: Date | string): string {
  *  2. the contribution for month `s` is settled; and
  *  3. no earlier contribution is overdue.
  *
- * Conservative reading (recorded in docs/decisions/open-questions.md, OQ-12): "settled" and
- * "not overdue" include any assessed late penalty on those periods, and a period that is merely
- * shielded by a receipt still in review does not count as settled — only confirmed money does.
- * Because every earlier period is due at least a month before period `s`, condition 3 means
- * periods 1..s−1 must be fully paid once the payout month is reached.
+ * As the guide words it (OQ-12, resolved): only *contributions* count. Unpaid late penalties do
+ * not block the payout and are not deducted from it; they remain owed on their periods. Only
+ * confirmed money settles a contribution (§1.2): a receipt still in review does not.
+ * Because every earlier period is due at least a month before period `s`, condition 3 means the
+ * contributions for months 1..s−1 must be fully paid once the payout month is reached.
  *
  * Other participants' payments never enter this function (D-03): eligibility depends only on
  * this participant's own periods.
@@ -201,7 +205,7 @@ export function evaluateEAjoPayoutEligibility(params: {
     Prisma.Decimal.max(
       0,
       new Prisma.Decimal(p.contributionDue).minus(new Prisma.Decimal(p.contributionPaid)),
-    ).plus(Prisma.Decimal.max(0, new Prisma.Decimal(p.penaltyOutstanding)))
+    )
 
   if (today < toDateKey(payoutPeriod.dueDate)) {
     return {

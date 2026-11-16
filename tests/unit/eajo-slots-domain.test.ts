@@ -52,7 +52,7 @@ describe('P3-05 e-ajo domain rules', () => {
       })
       expect(r.code).toBe('PAYOUT_MONTH_UNPAID')
     })
-    it('blocks while an earlier contribution or its penalty is overdue', () => {
+    it('blocks while an earlier contribution is overdue', () => {
       expect(
         evaluateEAjoPayoutEligibility({
           slotNumber: 2,
@@ -60,13 +60,15 @@ describe('P3-05 e-ajo domain rules', () => {
           today: '2027-02-10',
         }).code,
       ).toBe('EARLIER_CONTRIBUTION_OVERDUE')
+    })
+    it('does not block on unpaid late penalties once the contributions are paid (OQ-12)', () => {
       expect(
         evaluateEAjoPayoutEligibility({
           slotNumber: 2,
-          periods: [period(1, '2027-01-10', 10000, 300), period(2, '2027-02-10', 10000)],
+          periods: [period(1, '2027-01-10', 10000, 300), period(2, '2027-02-10', 10000, 100)],
           today: '2027-02-10',
-        }).code,
-      ).toBe('EARLIER_CONTRIBUTION_OVERDUE')
+        }).eligible,
+      ).toBe(true)
     })
   })
 

@@ -1289,7 +1289,7 @@ export async function accrueEAjoPenaltiesForParticipant(
       latePenaltyDailyPercent: participant.latePenaltyDailyPercent,
       penaltyCapType: participant.penaltyCapType,
       penaltyCapValue: participant.penaltyCapValue,
-      // ASSUMPTION A-02 / OQ-11: PERCENT_OF_PRINCIPAL cap base = c × N
+      // Owner decision OQ-11: PERCENT_OF_PRINCIPAL cap base = c × N
       capBase: participant.group.contributionAmount.mul(participant.group.totalSlots),
     },
     penaltiesAssessedNet: assessedNet,

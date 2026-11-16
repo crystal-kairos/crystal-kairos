@@ -234,9 +234,14 @@ performance work (P5-03) waits for it.
   not the (already debited) contribution liability.
 - **P3-05 → P4-04.** Register `runPayoutEligibilityJob` (`lib/jobs/payout-eligibility.job.ts`) and
   `runEAjoPenaltyJob` (`lib/jobs/eajo-penalties.job.ts`); both are idempotent and take `today`.
+- **P3-05 → P4-02.** E-ajo sends no notifications yet. Add (guide P4-02 catalogue): guarantor
+  consent requested (on `joinEAjoGroup`), guarantor decision to the applicant, application
+  approved/rejected, participant cancelled (with wallet refund), payout eligible/approved/paid
+  (`refreshEAjoParticipant`, `approveEAjoPayout`, `recordEAjoPayoutPaid`), contribution receipt
+  confirmed/rejected. Guarantor requests are currently only shown on the member's e-ajo dashboard.
 - **P3-05 → P5-04.** `AjoFeeConfig` and the legacy free-text guarantor/bank columns on `EAjoMember`
-  are no longer read by the e-ajo flow. Open owner questions: OQ-11 (cap base), OQ-12 (eligibility),
-  OQ-13 (cancellation with unpaid penalties).
+  are no longer read by the e-ajo flow. Open owner question: OQ-13 (cancellation with unpaid
+  penalties); OQ-11 and OQ-12 are resolved.
 
 ### Status
 

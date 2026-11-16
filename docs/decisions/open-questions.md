@@ -61,14 +61,13 @@ This document records architectural, financial, and policy open questions arisin
 ### OQ-11: Base of an e-ajo `PERCENT_OF_PRINCIPAL` late-penalty cap (P3-05)
 - **Context:** §2.3 reuses the loan cap fields for e-ajo ("the same as for loans"), but an e-ajo participant has no "amount borrowed".
 - **Question:** What is the base of a percentage cap for e-ajo late penalties?
-- **Current implementation (ASSUMPTION A-02, e-ajo variant):** the participant's total scheduled contributions `c × N` (e.g. 10% of ₦120,000 = ₦12,000 per participant per group). Alternatives: the advance `c × (N − s)` (zero for the last slot, so no late penalty at all) or one contribution `c`. The base is passed as `capBase` in `lib/services/eajo.service.ts` → `accrueEAjoPenaltiesForParticipant`, a one-line change. Fixed-amount caps are unaffected.
-- **Action Required:** Owner/accountant confirmation.
+- **Decision (owner, 2026-11-16):** the participant's total scheduled contributions `c × N` (e.g. 10% of ₦120,000 = ₦12,000 per participant per group). Implemented as `capBase` in `lib/services/eajo.service.ts` → `accrueEAjoPenaltiesForParticipant`. Fixed-amount caps are unaffected.
+- **Status:** Resolved.
 
 ### OQ-12: What counts as "settled" for payout eligibility (P3-05)
-- **Context:** §2.8 rule 4 / A-09: a payout is eligible "when the participant's contribution for month s is settled and no earlier contribution is overdue".
-- **Current implementation (conservative):** eligibility starts on the payout month's due date; the month-`s` contribution **and any late penalty assessed on months 1..s** must be fully paid by confirmed money (a receipt still in review does not count). Overdue amounts are not netted from the payout. See `evaluateEAjoPayoutEligibility` in `lib/domain/eajo-payout.ts`.
-- **Question:** Should unpaid late penalties block the payout, or be netted from it (A-09 "is netting overdue amounts from payout preferred to blocking?")?
-- **Action Required:** Owner confirmation during testing.
+- **Context:** §2.8 rule 4 / A-09: a payout is eligible "when the participant's contribution for month s is settled and no earlier contribution is overdue". A-09 lists "is netting overdue amounts from payout preferred to blocking?" as something to observe in testing; no later guide step decides it.
+- **Decision (owner, 2026-11-16: follow the guide; no later step changes it):** only contributions count. From the payout month's due date, the contributions for months 1..s must be paid with confirmed money (a receipt still in review does not count, §1.2). Unpaid late penalties do **not** block the payout and are **not** deducted from it; they stay owed on their periods and are collected first from the member's next payment (penalty-first allocation) or through recovery (P3-06B). See `evaluateEAjoPayoutEligibility` in `lib/domain/eajo-payout.ts`.
+- **Status:** Resolved. Netting stays a candidate for the next iteration if testing shows members prefer it.
 
 ### OQ-13: Cancelling a participant who owes late penalties (P3-05)
 - **Context:** §2.8 rule 7 says a participant cancelled before payout gets their confirmed contributions back in the wallet with no early-slot penalty, but is silent on late penalties already assessed and unpaid.
