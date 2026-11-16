@@ -1,6 +1,6 @@
 import { auth } from '@/auth'
 import { redirect } from 'next/navigation'
-import { getMemberById } from '@/models/members/query'
+import { getSocietySetting } from '@/lib/services/society-settings.service'
 import { getSavingsProductById } from '@/models/savings/query'
 import { NewSavingsClient } from '@/components/savings/NewSavingsClient'
 import { ShieldAlert, AlertCircle } from 'lucide-react'
@@ -8,7 +8,6 @@ import { ShieldAlert, AlertCircle } from 'lucide-react'
 interface PageProps {
   params: Promise<{ users: string }>
   searchParams: Promise<{
-    type?: string
     productId?: string
   }>
 }
@@ -22,9 +21,8 @@ const NewSavingsPlanPage = async ({ params, searchParams }: PageProps) => {
 
   const profileId = (await params).users
   const isSelf = session.user.id === profileId
-  const isAdmin = session.user.role === 'ADMIN' || session.user.role === 'OWNER'
-
-  if (!isSelf && !isAdmin) {
+  // Only the member subscribes for themselves; staff use the admin flow (D-15).
+  if (!isSelf) {
     return (
       <div className='flex flex-col items-center justify-center min-h-[50vh] gap-3'>
         <ShieldAlert className='w-12 h-12 text-error' />
@@ -37,27 +35,6 @@ const NewSavingsPlanPage = async ({ params, searchParams }: PageProps) => {
   }
 
   const query = await searchParams
-  const initialType = query.type || 'FIXED'
-
-  // Fetch member profile details including verified bank accounts
-  const memberResult = await getMemberById(profileId)
-
-  if (!memberResult.success || !memberResult.data) {
-    return (
-      <div className='p-6 text-center text-muted-foreground font-semibold'>
-        Member profile not found.
-      </div>
-    )
-  }
-
-  const member = memberResult.data
-  const bankAccounts = (member.bankAccounts || []).map((acct) => ({
-    id: acct.id,
-    bankName: acct.bankName,
-    accountNumber: acct.accountNumber,
-    accountName: acct.accountName,
-    isPrimary: acct.isPrimary,
-  }))
 
   const productId = query.productId
   if (!productId) {
@@ -89,12 +66,21 @@ const NewSavingsPlanPage = async ({ params, searchParams }: PageProps) => {
     )
   }
 
+  if (!productResult.data.isActive) {
+    return (
+      <div className='p-6 text-center text-muted-foreground font-semibold'>
+        This savings plan is no longer available.
+      </div>
+    )
+  }
+
+  const firstDepositWindowDays = await getSocietySetting('savingsFirstDepositWindowDays')
+
   return (
     <NewSavingsClient
       userId={profileId}
-      bankAccounts={bankAccounts}
-      initialType={initialType}
       product={productResult.data}
+      firstDepositWindowDays={firstDepositWindowDays}
     />
   )
 }

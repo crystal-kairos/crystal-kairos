@@ -34,7 +34,7 @@ const AdminSavingsDetailsPage = async ({ params }: PageProps) => {
 
   return (
     <div className='p-6 w-full'>
-      <AdminSavingsDetailsClient savingsPlan={res.data as any} />
+      <AdminSavingsDetailsClient savingsPlan={res.data} />
     </div>
   )
 }

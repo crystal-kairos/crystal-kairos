@@ -12,7 +12,7 @@ import {
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { StatusPill } from '@/components/ui/StatusPill'
+import { SavingsStatusBadge } from '@/components/savings/SavingsStatusBadge'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   DropdownMenu,
@@ -45,7 +45,7 @@ interface SavingsProduct {
   title: string
   description: string
   rates: string
-  badge: string
+  badge: string | null
   icon: string
   isActive: boolean
   createdAt: Date
@@ -59,7 +59,8 @@ interface UserSavings {
   targetAmount: number | null
   currentBalance: number
   totalDeposited: number
-  accruedInterest: number
+  ratePercentSnapshot: number
+  durationMonths: number
   createdAt: Date
   user: { name: string; email: string; username: string }
 }
@@ -70,7 +71,7 @@ interface AdminSavingsClientProps {
 }
 
 const getIcon = (name: string) => {
-  const IconComponent = (LucideIcons as any)[name]
+  const IconComponent = (LucideIcons as unknown as Record<string, React.ComponentType<{ className?: string }> | undefined>)[name]
   return IconComponent ? (
     <IconComponent className='w-4 h-4' />
   ) : (
@@ -150,7 +151,7 @@ export const AdminSavingsClient = ({
                     <TableHead className='font-semibold'>Member</TableHead>
                     <TableHead className='font-semibold'>Type</TableHead>
                     <TableHead className='font-semibold'>Balance</TableHead>
-                    <TableHead className='font-semibold'>Interest</TableHead>
+                    <TableHead className='font-semibold'>Rate / term</TableHead>
                     <TableHead className='font-semibold'>Status</TableHead>
                     <TableHead className='font-semibold text-right'>
                       Actions
@@ -192,10 +193,10 @@ export const AdminSavingsClient = ({
                           {formatCurrency(savings.currentBalance)}
                         </TableCell>
                         <TableCell className='font-mono text-success-green'>
-                          +{formatCurrency(savings.accruedInterest)}
+                          {savings.ratePercentSnapshot}% / {savings.durationMonths} mo
                         </TableCell>
                         <TableCell>
-                          <StatusPill status={savings.status} />
+                          <SavingsStatusBadge kind='plan' status={savings.status} />
                         </TableCell>
                         <TableCell className='text-right'>
                           <Button

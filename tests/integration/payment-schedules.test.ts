@@ -3,7 +3,6 @@ import { Prisma } from '@/generated/prisma/client'
 import {
   PaymentPeriodStatus,
   SavingsFrequency,
-  SavingsMaturity,
   SavingsType,
   UserRole,
 } from '@/generated/prisma/enums'
@@ -183,12 +182,10 @@ describe('Payment Schedules & Period Persistence Integration (PR P2-03, ยง2.6, ย
         userId: member.id,
         savingsType: SavingsType.REGULAR,
         frequency: SavingsFrequency.MONTHLY,
-        maturity: SavingsMaturity.THREE_MONTHS,
-        interestRate: new Prisma.Decimal('2.2500'),
+        durationMonths: 3,
+        ratePercentSnapshot: new Prisma.Decimal('2.2500'),
+        rateVersionSnapshot: 1,
         targetAmount: new Prisma.Decimal('20000.00'),
-        bankName: 'GTB',
-        accountNumber: '0123456789',
-        accountName: 'Check Member',
       },
     })
 
@@ -310,12 +307,10 @@ describe('Payment Schedules & Period Persistence Integration (PR P2-03, ยง2.6, ย
         userId: member.id,
         savingsType: SavingsType.REGULAR,
         frequency: SavingsFrequency.MONTHLY,
-        maturity: SavingsMaturity.THREE_MONTHS,
+        durationMonths: 3,
         targetAmount: new Prisma.Decimal('25000.00'),
-        interestRate: new Prisma.Decimal('2.2500'),
-        bankName: 'Access Bank',
-        accountNumber: '1122334455',
-        accountName: 'Savings Member',
+        ratePercentSnapshot: new Prisma.Decimal('2.2500'),
+        rateVersionSnapshot: 1,
       },
     })
 
@@ -324,7 +319,7 @@ describe('Payment Schedules & Period Persistence Integration (PR P2-03, ยง2.6, ย
         savingsId: monthlySav.id,
         savingsType: monthlySav.savingsType,
         frequency: monthlySav.frequency,
-        maturity: monthlySav.maturity,
+        durationMonths: monthlySav.durationMonths,
         targetAmount: monthlySav.targetAmount!,
         firstDepositValueDate: '2027-01-15',
       })
@@ -340,12 +335,10 @@ describe('Payment Schedules & Period Persistence Integration (PR P2-03, ยง2.6, ย
         userId: member.id,
         savingsType: SavingsType.REGULAR,
         frequency: SavingsFrequency.WEEKLY,
-        maturity: SavingsMaturity.ONE_MONTH,
+        durationMonths: 1,
         targetAmount: new Prisma.Decimal('5000.00'),
-        interestRate: new Prisma.Decimal('0.7500'),
-        bankName: 'Access Bank',
-        accountNumber: '1122334455',
-        accountName: 'Savings Member',
+        ratePercentSnapshot: new Prisma.Decimal('0.7500'),
+        rateVersionSnapshot: 1,
       },
     })
 
@@ -354,7 +347,7 @@ describe('Payment Schedules & Period Persistence Integration (PR P2-03, ยง2.6, ย
         savingsId: weeklySav.id,
         savingsType: weeklySav.savingsType,
         frequency: weeklySav.frequency,
-        maturity: weeklySav.maturity,
+        durationMonths: weeklySav.durationMonths,
         targetAmount: weeklySav.targetAmount!,
         firstDepositValueDate: '2027-02-01',
       })
@@ -368,18 +361,16 @@ describe('Payment Schedules & Period Persistence Integration (PR P2-03, ยง2.6, ย
       '2027-02-22',
     ])
 
-    // 3. FIXED upfront savings: exactly 1 period
+    // 3. FIXED upfront savings: no schedule
     const fixedSav = await prisma.savings.create({
       data: {
         userId: member.id,
         savingsType: SavingsType.FIXED,
         frequency: SavingsFrequency.ONCE,
-        maturity: SavingsMaturity.SIX_MONTHS,
+        durationMonths: 6,
         targetAmount: new Prisma.Decimal('500000.00'),
-        interestRate: new Prisma.Decimal('12.0000'),
-        bankName: 'Access Bank',
-        accountNumber: '1122334455',
-        accountName: 'Savings Member',
+        ratePercentSnapshot: new Prisma.Decimal('12.0000'),
+        rateVersionSnapshot: 1,
       },
     })
 
@@ -388,14 +379,13 @@ describe('Payment Schedules & Period Persistence Integration (PR P2-03, ยง2.6, ย
         savingsId: fixedSav.id,
         savingsType: fixedSav.savingsType,
         frequency: fixedSav.frequency,
-        maturity: fixedSav.maturity,
+        durationMonths: fixedSav.durationMonths,
         targetAmount: fixedSav.targetAmount!,
         firstDepositValueDate: '2027-01-10',
       })
     })
-    expect(fixedPeriods).toHaveLength(1)
-    expect(formatDateOnly(fixedPeriods[0].dueDate)).toBe('2027-01-10')
-    expect(fixedPeriods[0].amountDue.toFixed(2)).toBe('500000.00')
+    // P3-03: fixed and staggered plans have no periods; principal is tracked by lots.
+    expect(fixedPeriods).toHaveLength(0)
   })
 
   it('persists E-Ajo contribution periods and enforces period uniqueness', async () => {

@@ -17,9 +17,6 @@ import { requestNextOfKinChangeAction } from '@/models/members/profile-change-ac
 import { createSavingsPlanAction } from '@/models/savings/actions'
 import {
   Relationship,
-  SavingsFrequency,
-  SavingsMaturity,
-  SavingsType,
   UserRole,
 } from '@/generated/prisma/enums'
 import { prisma } from '@/lib/prisma'
@@ -38,6 +35,12 @@ const mockSessionState = vi.hoisted(() => ({
 
 vi.mock('@/auth', () => ({
   auth: vi.fn(async () => mockSessionState.session),
+}))
+
+// The P3-01 eligibility gate is covered elsewhere; here we only need the action to reach the DB.
+vi.mock('@/lib/services/profile.service', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/services/profile.service')>()),
+  assertProductEligibility: vi.fn(async () => undefined),
 }))
 
 const PNG_HEADER = Buffer.from([
@@ -146,16 +149,12 @@ describe('Error Normalisation, Validation & Receipt Upload Limit (PR P1-06)', ()
     )
     rawPrismaError.name = 'PrismaClientKnownRequestError'
 
-    vi.spyOn(prisma.savings, 'create').mockRejectedValue(rawPrismaError)
+    vi.spyOn(prisma, '$transaction').mockRejectedValue(rawPrismaError)
 
     const dbRes = await createSavingsPlanAction('member-1', {
-      savingsType: SavingsType.FIXED,
+      productId: '11111111-1111-4111-8111-111111111111',
+      durationMonths: 6,
       targetAmount: 50000,
-      frequency: SavingsFrequency.ONCE,
-      maturity: SavingsMaturity.SIX_MONTHS,
-      bankName: 'Test Bank',
-      accountNumber: '0123456789',
-      accountName: 'Member One',
     })
 
     expect(dbRes.success).toBe(false)

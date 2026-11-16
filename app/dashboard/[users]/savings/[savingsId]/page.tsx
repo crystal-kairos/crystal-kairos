@@ -45,8 +45,15 @@ const SavingsDetailsPage = async ({ params }: PageProps) => {
   }
 
   const plan = res.data
+  if (plan.userId !== profileId) {
+    return (
+      <div className="p-6 text-center text-muted-foreground font-semibold">
+        Savings plan not found.
+      </div>
+    )
+  }
 
-  return <SavingsDetailsClient userId={profileId} savingsPlan={plan as any} />
+  return <SavingsDetailsClient userId={profileId} savingsPlan={plan} canAct={isSelf} />
 }
 
 export default SavingsDetailsPage

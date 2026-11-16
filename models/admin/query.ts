@@ -634,6 +634,11 @@ export const getAllSavingsProducts = async () => {
         createdByUser: {
           select: { name: true, email: true },
         },
+        termRates: {
+          where: { isActive: true },
+          orderBy: { durationMonths: 'asc' },
+          select: { durationMonths: true, ratePercent: true, version: true },
+        },
       },
     })
     return { success: true, data: products }
@@ -656,6 +661,7 @@ export const getAllUserSavings = async () => {
       AdminPermission.SAVINGS_READ,
       AdminPermission.SAVINGS_MANAGE,
       AdminPermission.SAVINGS_PAYMENTS_REVIEW,
+      AdminPermission.SAVINGS_PAYOUTS_MANAGE,
     ])
     const savings = await prisma.savings.findMany({
       orderBy: { createdAt: 'desc' },
@@ -669,13 +675,11 @@ export const getAllUserSavings = async () => {
     const serialized = savings.map((s) => ({
       ...s,
       targetAmount: s.targetAmount ? Number(s.targetAmount) : null,
-      interestRate: Number(s.interestRate),
+      ratePercentSnapshot: Number(s.ratePercentSnapshot),
       currentBalance: Number(s.currentBalance),
-      accruedInterest: Number(s.accruedInterest),
       totalDeposited: Number(s.totalDeposited),
-      expectedMaturityAmount: s.expectedMaturityAmount
-        ? Number(s.expectedMaturityAmount)
-        : null,
+      withdrawalPrincipal: s.withdrawalPrincipal ? Number(s.withdrawalPrincipal) : null,
+      withdrawalInterest: s.withdrawalInterest ? Number(s.withdrawalInterest) : null,
     }))
 
     return { success: true, data: serialized }

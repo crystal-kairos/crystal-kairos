@@ -6,8 +6,6 @@ import {
   Gender,
   MembershipStatus,
   SavingsFrequency,
-  SavingsMaturity,
-  SavingsType,
   UserRole,
 } from '@/generated/prisma/enums'
 
@@ -190,13 +188,10 @@ describe('Registration Simplification & Profile-Completion Gates (PR P3-01)', ()
     }
 
     const savingsResult = await createSavingsPlanAction(user1Id, {
-      savingsType: SavingsType.REGULAR,
+      productId: '11111111-1111-4111-8111-111111111111',
+      durationMonths: 3,
       targetAmount: 100000,
       frequency: SavingsFrequency.MONTHLY,
-      maturity: SavingsMaturity.THREE_MONTHS,
-      bankName: 'Access Bank',
-      accountNumber: '0123456789',
-      accountName: 'P301 Test Member',
     })
 
     expect(savingsResult.success).toBe(false)

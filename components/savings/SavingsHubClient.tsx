@@ -14,21 +14,21 @@ import * as LucideIcons from 'lucide-react'
 import Link from 'next/link'
 import { Card } from '../ui/card'
 import { Button } from '../ui/button'
-import { StatusPill } from '../ui/StatusPill'
+import { SavingsStatusBadge } from './SavingsStatusBadge'
 
 interface SavingsPlan {
   id: string
+  title: string
+  badge: string | null
   savingsType: string
   targetAmount: number | null
   frequency: string
-  maturity: string
-  interestRate: number
+  durationMonths: number
+  ratePercentSnapshot: number
   currentBalance: number
-  totalDeposited: number
-  accruedInterest: number
   status: string
-  startDate: any
-  maturityDate: any
+  startDate: string | null
+  maturityDate: string | null
 }
 
 interface SavingsProduct {
@@ -37,8 +37,9 @@ interface SavingsProduct {
   title: string
   description: string
   rates: string
-  badge: string
+  badge: string | null
   icon: string
+  termRates: { durationMonths: number; ratePercent: number }[]
 }
 
 interface SavingsHubClientProps {
@@ -48,7 +49,7 @@ interface SavingsHubClientProps {
 }
 
 const getIcon = (name: string) => {
-  const IconComponent = (LucideIcons as any)[name]
+  const IconComponent = (LucideIcons as unknown as Record<string, React.ComponentType<{ className?: string }> | undefined>)[name]
   return IconComponent ? (
     <IconComponent className='w-5 h-5' />
   ) : (
@@ -73,10 +74,7 @@ export const SavingsHubClient = ({
     (sum, p) => sum + p.currentBalance,
     0,
   )
-  const totalAccrued = savingsPlans.reduce(
-    (sum, p) => sum + p.accruedInterest,
-    0,
-  )
+  const awaitingFirstDeposit = savingsPlans.filter((p) => p.status === 'PENDING').length
 
   return (
     <div className='flex flex-col gap-6 w-full max-w-5xl mx-auto py-6'>
@@ -124,13 +122,13 @@ export const SavingsHubClient = ({
 
         <Card className='border-0 bg-surface-container rounded-md shadow-none p-6 min-h-30 flex flex-col justify-between'>
           <span className='text-[10px] text-muted-foreground uppercase tracking-wider font-semibold'>
-            Total Accrued Interest
+            Awaiting First Deposit
           </span>
-          <span className='text-3xl font-extrabold text-success-green font-mono mt-2'>
-            {formatCurrency(totalAccrued)}
+          <span className='text-3xl font-extrabold text-primary font-mono mt-2'>
+            {awaitingFirstDeposit}
           </span>
           <span className='text-[10px] text-muted-foreground mt-2'>
-            Earned and pending payout at maturity
+            A plan starts on the value date of its first confirmed deposit
           </span>
         </Card>
 
@@ -169,14 +167,14 @@ export const SavingsHubClient = ({
                   <div className='flex justify-between items-start mb-3'>
                     <div>
                       <h4 className='font-bold text-primary text-sm flex items-center gap-1.5'>
-                        <span>{plan.savingsType} Savings Plan</span>
+                        <span>{plan.title}</span>
                         <ChevronRight className='w-4 h-4 text-muted-foreground group-hover:text-primary group-hover:translate-x-0.5 transition-all' />
                       </h4>
                       <p className='text-[10px] text-muted-foreground mt-0.5'>
                         ID: #{plan.id.substring(0, 8).toUpperCase()}
                       </p>
                     </div>
-                    <StatusPill status={plan.status} />
+                    <SavingsStatusBadge kind='plan' status={plan.status} />
                   </div>
 
                   <div className='grid grid-cols-3 gap-2 py-2 border-y border-outline-variant/20 mb-3 text-xs'>
@@ -190,25 +188,26 @@ export const SavingsHubClient = ({
                     </div>
                     <div>
                       <span className='text-[9px] text-muted-foreground uppercase tracking-wider block'>
-                        Interest
+                        Rate (full term)
                       </span>
                       <span className='font-bold text-success-green font-mono'>
-                        {plan.interestRate}%
+                        {plan.ratePercentSnapshot}%
                       </span>
                     </div>
                     <div>
                       <span className='text-[9px] text-muted-foreground uppercase tracking-wider block'>
                         Term
                       </span>
-                      <span className='font-bold text-primary capitalize'>
-                        {plan.maturity.replace('_', ' ').toLowerCase()}
+                      <span className='font-bold text-primary'>
+                        {plan.durationMonths} month{plan.durationMonths === 1 ? '' : 's'}
                       </span>
                     </div>
                   </div>
 
                   <div className='flex justify-between items-center text-[10px] text-muted-foreground'>
-                    <span>
-                      Deposited: {formatCurrency(plan.totalDeposited)}
+                    <span className='capitalize'>
+                      {plan.savingsType.toLowerCase()}
+                      {plan.savingsType === 'REGULAR' ? ` · ${plan.frequency.toLowerCase()}` : ''}
                     </span>
                     {plan.maturityDate && (
                       <span className='flex items-center gap-1'>
@@ -241,10 +240,10 @@ export const SavingsHubClient = ({
               No savings packages are currently available. Check back later.
             </div>
           ) : (
-            availableProducts.map((p, index) => {
+            availableProducts.map((p) => {
               return (
                 <Card
-                  key={index}
+                  key={p.id}
                   className='bg-surface-container-lowest rounded-md shadow-none flex flex-col justify-between p-6 border border-outline-variant/15 hover:shadow-md transition-all duration-300'
                 >
                   <div className='flex flex-col gap-2'>
@@ -252,9 +251,11 @@ export const SavingsHubClient = ({
                       <div className='w-9 h-9 rounded-sm bg-primary/10 text-primary flex items-center justify-center'>
                         {getIcon(p.icon)}
                       </div>
-                      <span className='px-2.5 py-0.5 rounded-full bg-light-blue text-primary text-[9px] font-bold uppercase tracking-wider border border-primary/10'>
-                        {p.badge}
-                      </span>
+                      {p.badge ? (
+                        <span className='px-2.5 py-0.5 rounded-full bg-light-blue text-primary text-[9px] font-bold uppercase tracking-wider border border-primary/10'>
+                          {p.badge}
+                        </span>
+                      ) : null}
                     </div>
                     <h4 className='font-bold text-primary text-base leading-snug mt-2'>
                       {p.title}
@@ -276,18 +277,16 @@ export const SavingsHubClient = ({
                         <span className='text-muted-foreground'>
                           Term Options:
                         </span>
-                        <span className='font-semibold text-primary'>
-                          1, 3, 6, 12 Months
+                        <span className='font-semibold text-primary text-right'>
+                          {p.termRates.length > 0
+                            ? p.termRates.map((t) => t.durationMonths).join(', ') + ' months'
+                            : 'None available'}
                         </span>
                       </div>
-                      <div className='flex justify-between'>
-                        <span className='text-muted-foreground'>
-                          Loan multiplier:
-                        </span>
-                        <span className='font-bold text-primary font-mono'>
-                          2x saved amount
-                        </span>
-                      </div>
+                      <p className='text-[10px] text-muted-foreground leading-normal'>
+                        Rates are simple interest for the whole term. Your rate is fixed when you
+                        subscribe.
+                      </p>
                     </div>
                   </div>
 

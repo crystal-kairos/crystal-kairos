@@ -2,346 +2,228 @@
 
 import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
-import { Card } from '@/components/ui/card'
-import { Button } from '@/components/ui/button'
-import { Textarea } from '@/components/ui/textarea'
-import { Label } from '@/components/ui/label'
-import { StatusPill } from '@/components/ui/StatusPill'
-import { ArrowLeft, CheckCircle, XCircle, Clock, Search, Target, PiggyBank, History, Loader2, Calendar } from 'lucide-react'
-import Link from 'next/link'
+import { ExternalLink, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Textarea } from '@/components/ui/textarea'
+import { ReceiptDropzone } from '@/components/ui/ReceiptDropzone'
+import { SavingsDetailsClient } from '@/components/savings/SavingsDetailsClient'
+import { SavingsStatusBadge } from '@/components/savings/SavingsStatusBadge'
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table'
-import { format } from 'date-fns'
-import { reviewSavingsTransactionAction } from '@/models/admin/savingsActions'
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-  DialogFooter,
-} from '@/components/ui/dialog'
+  approveSavingsWithdrawalAction,
+  confirmSavingsSubmissionAction,
+  confirmSavingsWithdrawalPayoutAction,
+  rejectSavingsSubmissionAction,
+  rejectSavingsWithdrawalAction,
+} from '@/models/admin/savingsActions'
+import { uploadReceiptAction } from '@/models/eajo/actions'
+import type { SavingsPlanDetails } from '@/models/savings/query'
 
-interface Transaction {
-  id: string
-  amount: number
-  type: string
-  status: string
-  receiptUrl: string | null
-  createdAt: string
-  referenceNumber: string | null
-  rejectionReason: string | null
-}
+const naira = (v: number) =>
+  new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN', maximumFractionDigits: 2 }).format(v)
 
-interface User {
-  name: string
-  email: string
-  username: string
-}
+type Submission = SavingsPlanDetails['submissions'][number]
 
-interface SavingsPlan {
-  id: string
-  savingsType: string
-  status: string
-  targetAmount: number | null
-  currentBalance: number
-  totalDeposited: number
-  accruedInterest: number
-  frequency: string
-  maturityDate: string | null
-  createdAt: string
-  transactions: Transaction[]
-  user: User
-}
-
-export const AdminSavingsDetailsClient = ({ savingsPlan }: { savingsPlan: SavingsPlan }) => {
-  const router = useRouter()
-  const [isPending, startTransition] = useTransition()
-  const [lightboxOpen, setLightboxOpen] = useState(false)
-  const [selectedReceiptUrl, setSelectedReceiptUrl] = useState<string | null>(null)
-  
-  const [reviewModalOpen, setReviewModalOpen] = useState(false)
-  const [reviewAction, setReviewAction] = useState<{ id: string, status: 'CONFIRMED' | 'REJECTED' } | null>(null)
-  const [rejectionReason, setRejectionReason] = useState('')
-
-  const formatCurrency = (val: number) => {
-    return new Intl.NumberFormat('en-NG', {
-      style: 'currency',
-      currency: 'NGN',
-      minimumFractionDigits: 0,
-    }).format(val)
-  }
-
-  const handleReviewTransaction = (transactionId: string, status: 'CONFIRMED' | 'REJECTED') => {
-    setReviewAction({ id: transactionId, status })
-    setRejectionReason('')
-    setReviewModalOpen(true)
-  }
-
-  const confirmReviewTransaction = () => {
-    if (!reviewAction) return
-    if (reviewAction.status === 'REJECTED' && !rejectionReason.trim()) {
-      toast.error('Rejection reason is required.')
-      return
-    }
-
-    startTransition(async () => {
-      const res = await reviewSavingsTransactionAction(reviewAction.id, reviewAction.status, undefined, rejectionReason.trim() || undefined)
-      if (res.error) {
-        toast.error(res.error)
-      } else {
-        toast.success(`Transaction ${reviewAction.status === 'CONFIRMED' ? 'Approved' : 'Rejected'} successfully`)
-        setReviewModalOpen(false)
-        router.refresh()
-      }
-    })
-  }
-
+/**
+ * Staff view of a savings plan: the member's read-only view plus receipt review
+ * (value date drives start/maturity/lateness) and the withdrawal payout steps.
+ */
+export const AdminSavingsDetailsClient = ({ savingsPlan: plan }: { savingsPlan: SavingsPlanDetails }) => {
+  const inReview = plan.submissions.filter((s) => s.status === 'SUBMITTED')
   return (
-    <div className='flex flex-col gap-6 w-full max-w-5xl mx-auto'>
-      <div className='flex items-center gap-1.5 text-muted-foreground hover:text-primary cursor-pointer transition-colors w-fit text-sm font-semibold'>
-        <ArrowLeft className='w-4 h-4' />
-        <Link href='/admin/savings'>Back to Savings Management</Link>
-      </div>
-
-      <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-        <div>
-          <h2 className='text-2xl font-bold font-heading text-primary leading-tight'>
-            Savings Account Details
-          </h2>
-          <p className='text-muted-foreground text-sm mt-1'>
-            {savingsPlan.user.name} ({savingsPlan.user.email})
-          </p>
-        </div>
-        <StatusPill status={savingsPlan.status} />
-      </header>
-
-      {/* Overview Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <Card className="p-4 border border-outline-variant/30 shadow-none flex flex-col gap-2 rounded-xl">
-          <div className="flex items-center gap-2 text-muted-foreground">
-            <Target className="w-4 h-4" />
-            <span className="text-xs font-semibold uppercase tracking-wider">Commitment</span>
-          </div>
-          <p className="text-xl font-bold text-primary">
-            {savingsPlan.targetAmount ? formatCurrency(savingsPlan.targetAmount) : 'Flexible'}
-          </p>
-          <p className="text-xs text-muted-foreground">Amount to save</p>
-        </Card>
-
-        <Card className="p-4 border border-outline-variant/30 shadow-none flex flex-col gap-2 rounded-xl">
-          <div className="flex items-center gap-2 text-muted-foreground">
-            <History className="w-4 h-4" />
-            <span className="text-xs font-semibold uppercase tracking-wider">Interval</span>
-          </div>
-          <p className="text-xl font-bold text-primary">
-            {savingsPlan.frequency || 'N/A'}
-          </p>
-          <p className="text-xs text-muted-foreground">Savings frequency</p>
-        </Card>
-
-        <Card className="p-4 border border-outline-variant/30 shadow-none flex flex-col gap-2 rounded-xl">
-          <div className="flex items-center gap-2 text-muted-foreground">
-            <Calendar className="w-4 h-4" />
-            <span className="text-xs font-semibold uppercase tracking-wider">Maturity Date</span>
-          </div>
-          <p className="text-xl font-bold text-primary">
-            {savingsPlan.maturityDate ? format(new Date(savingsPlan.maturityDate), 'MMM d, yyyy') : 'N/A'}
-          </p>
-          <p className="text-xs text-muted-foreground">Expected maturity</p>
-        </Card>
-
-        <Card className="p-4 border border-outline-variant/30 shadow-none flex flex-col gap-2 rounded-xl">
-          <div className="flex items-center gap-2 text-muted-foreground">
-            <PiggyBank className="w-4 h-4" />
-            <span className="text-xs font-semibold uppercase tracking-wider">Current Balance</span>
-          </div>
-          <p className="text-xl font-bold text-primary">
-            {formatCurrency(savingsPlan.currentBalance)}
-          </p>
-          <p className="text-xs text-success-green font-medium">
-            +{formatCurrency(savingsPlan.accruedInterest)} Interest
-          </p>
-        </Card>
-      </div>
-
-      {/* Transactions Table */}
-      <Card className="border border-outline-variant/30 shadow-none rounded-xl mt-4">
-        <div className="p-5 border-b border-outline-variant/30 flex justify-between items-center bg-surface-container/30">
-          <h3 className="font-bold text-primary flex items-center gap-2">
-            <History className="w-4 h-4" /> Transactions History
-          </h3>
-          {isPending && <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />}
-        </div>
-        <div className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Date</TableHead>
-                <TableHead>Type</TableHead>
-                <TableHead>Amount</TableHead>
-                <TableHead>Receipt</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {savingsPlan.transactions.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
-                    No transactions found for this savings plan.
-                  </TableCell>
-                </TableRow>
-              ) : (
-                savingsPlan.transactions.map((tx) => (
-                  <TableRow key={tx.id}>
-                    <TableCell className="font-medium">
-                      {format(new Date(tx.createdAt), 'MMM d, yyyy h:mm a')}
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex flex-col gap-1">
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider w-fit ${
-                          tx.type === 'DEPOSIT' ? 'bg-success-green/10 text-success-green' : 'bg-error/10 text-error'
-                        }`}>
-                          {tx.type}
-                        </span>
-                        {tx.status === 'REJECTED' && tx.rejectionReason && (
-                          <span className="text-[10px] text-error italic mt-1 max-w-xs break-words">
-                            Reason: {tx.rejectionReason}
-                          </span>
-                        )}
-                      </div>
-                    </TableCell>
-                    <TableCell className="font-mono font-semibold">
-                      {formatCurrency(tx.amount)}
-                    </TableCell>
-                    <TableCell>
-                      {tx.receiptUrl ? (
-                        <Button 
-                          variant="outline" 
-                          size="sm" 
-                          className="h-7 text-xs"
-                          onClick={() => {
-                            setSelectedReceiptUrl(tx.receiptUrl)
-                            setLightboxOpen(true)
-                          }}
-                        >
-                          View Receipt
-                        </Button>
-                      ) : (
-                        <span className="text-muted-foreground text-xs">No receipt</span>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      <StatusPill status={tx.status} />
-                    </TableCell>
-                    <TableCell className="text-right space-x-2">
-                      {tx.status === 'PENDING' && (
-                        <>
-                          <Button 
-                            variant="default" 
-                            size="sm" 
-                            className="bg-success-green hover:bg-success-green/90 h-8 px-2"
-                            onClick={() => handleReviewTransaction(tx.id, 'CONFIRMED')}
-                            disabled={isPending}
-                          >
-                            <CheckCircle className="w-3.5 h-3.5 mr-1" /> Approve
-                          </Button>
-                          <Button 
-                            variant="destructive" 
-                            size="sm" 
-                            className="h-8 px-2"
-                            onClick={() => handleReviewTransaction(tx.id, 'REJECTED')}
-                            disabled={isPending}
-                          >
-                            <XCircle className="w-3.5 h-3.5 mr-1" /> Reject
-                          </Button>
-                        </>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
-        </div>
-      </Card>
-
-      {/* Lightbox for Receipt */}
-      {lightboxOpen && selectedReceiptUrl && (
-        <div 
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
-          onClick={() => setLightboxOpen(false)}
-        >
-          <div className="relative max-w-4xl max-h-[90vh] w-full flex items-center justify-center">
-            <button 
-              className="absolute top-4 right-4 bg-white/20 hover:bg-white/40 p-2 rounded-full backdrop-blur transition-colors"
-              onClick={(e) => {
-                e.stopPropagation()
-                setLightboxOpen(false)
-              }}
-            >
-              <XCircle className="w-6 h-6 text-white" />
-            </button>
-            <img 
-              src={selectedReceiptUrl} 
-              alt="Transaction Receipt" 
-              className="max-w-full max-h-[90vh] object-contain rounded-lg shadow-2xl border border-white/10"
-              onClick={(e) => e.stopPropagation()}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* Confirmation Dialog */}
-      <Dialog open={reviewModalOpen} onOpenChange={setReviewModalOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Confirm Action</DialogTitle>
-            <DialogDescription>
-              Are you sure you want to {reviewAction?.status === 'CONFIRMED' ? 'approve' : 'reject'} this transaction?
-              {reviewAction?.status === 'CONFIRMED' && ' This will update the member\'s savings balance.'}
-            </DialogDescription>
-          </DialogHeader>
-
-          {reviewAction?.status === 'REJECTED' && (
-            <div className="flex flex-col gap-2 mt-2">
-              <Label htmlFor="rejectionReason" className="text-xs font-semibold text-primary">
-                Rejection Reason <span className="text-error">*</span>
-              </Label>
-              <Textarea 
-                id="rejectionReason"
-                placeholder="Briefly explain why this deposit is being rejected..."
-                value={rejectionReason}
-                onChange={(e) => setRejectionReason(e.target.value)}
-                className="resize-none"
-                rows={3}
-              />
-            </div>
+    <div className='flex flex-col gap-6'>
+      <div className='max-w-5xl mx-auto w-full flex flex-col gap-4'>
+        <p className='text-sm text-muted-foreground'>
+          Member: <span className='font-semibold text-primary'>{plan.memberName}</span>
+        </p>
+        <section className='flex flex-col gap-3'>
+          <h3 className='font-bold text-sm text-primary uppercase tracking-wide'>Receipts awaiting review</h3>
+          {inReview.length === 0 ? (
+            <p className='text-xs text-muted-foreground border border-dashed border-outline-variant/30 rounded-md p-4 text-center'>
+              Nothing to review.
+            </p>
+          ) : (
+            inReview.map((s) => <ReviewCard key={s.id} submission={s} plan={plan} />)
           )}
-
-          <DialogFooter className="mt-4">
-            <Button variant="outline" onClick={() => setReviewModalOpen(false)} disabled={isPending}>
-              Cancel
-            </Button>
-            <Button 
-              variant={reviewAction?.status === 'CONFIRMED' ? 'default' : 'destructive'} 
-              onClick={confirmReviewTransaction}
-              disabled={isPending}
-            >
-              {isPending && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-              {reviewAction?.status === 'CONFIRMED' ? 'Yes, Approve' : 'Yes, Reject'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        </section>
+        {plan.withdrawal && plan.status === 'WITHDRAWAL_PENDING' ? <WithdrawalPanel plan={plan} /> : null}
+      </div>
+      <SavingsDetailsClient
+        userId={plan.userId}
+        savingsPlan={plan}
+        canAct={false}
+        backHref='/admin/savings'
+        backLabel='Back to Savings Management'
+      />
     </div>
   )
 }
+
+function ReviewCard({ submission: s, plan }: { submission: Submission; plan: SavingsPlanDetails }) {
+  const router = useRouter()
+  const [isPending, startTransition] = useTransition()
+  const [amount, setAmount] = useState(String(s.claimedAmount))
+  const [valueDate, setValueDate] = useState(s.paidOn)
+  const [reason, setReason] = useState('')
+  const [rejectReason, setRejectReason] = useState('')
+  const dateChanged = valueDate !== s.paidOn
+
+  const confirm = () =>
+    startTransition(async () => {
+      const res = await confirmSavingsSubmissionAction({
+        submissionId: s.id,
+        confirmedAmount: amount,
+        valueDate,
+        valueDateChangeReason: dateChanged ? reason : undefined,
+      })
+      if (res.success) {
+        toast.success('Receipt confirmed')
+        router.refresh()
+      } else toast.error(res.error ?? 'Could not confirm')
+    })
+
+  const reject = () =>
+    startTransition(async () => {
+      const res = await rejectSavingsSubmissionAction(s.id, rejectReason)
+      if (res.success) {
+        toast.success('Receipt rejected')
+        router.refresh()
+      } else toast.error(res.error ?? 'Could not reject')
+    })
+
+  const periodNumbers = plan.periods.filter((p) => s.periodIds.includes(p.id)).map((p) => p.periodNumber)
+
+  return (
+    <div className='bg-surface-container rounded-md p-4 flex flex-col gap-3 text-sm'>
+      <div className='flex flex-wrap items-center justify-between gap-2'>
+        <span>
+          <strong>{s.submissionNumber}</strong> · claims {naira(s.claimedAmount)} paid on {s.paidOn}
+          {s.bankReference ? ` · ref ${s.bankReference}` : ''}
+          {periodNumbers.length ? ` · periods ${periodNumbers.join(', ')}` : ''}
+          {s.purpose === 'SAVINGS_FIRST_DEPOSIT' ? ' · first deposit (sets the start date)' : ''}
+        </span>
+        {s.receiptFileId ? (
+          <a href={`/api/files/${s.receiptFileId}`} target='_blank' rel='noreferrer' className='text-xs underline flex items-center gap-1'>
+            View receipt <ExternalLink className='w-3 h-3' />
+          </a>
+        ) : null}
+      </div>
+      <div className='grid grid-cols-1 sm:grid-cols-2 gap-3'>
+        <div className='flex flex-col gap-1'>
+          <Label htmlFor={`amt-${s.id}`} className='text-xs'>Amount received (₦)</Label>
+          <Input id={`amt-${s.id}`} value={amount} onChange={(e) => setAmount(e.target.value)} inputMode='decimal' />
+        </div>
+        <div className='flex flex-col gap-1'>
+          <Label htmlFor={`vd-${s.id}`} className='text-xs'>Value date (money reached our account)</Label>
+          <Input id={`vd-${s.id}`} type='date' value={valueDate} max={plan.today} onChange={(e) => setValueDate(e.target.value)} />
+        </div>
+      </div>
+      {dateChanged ? (
+        <div className='flex flex-col gap-1'>
+          <Label htmlFor={`vr-${s.id}`} className='text-xs'>Reason for changing the value date</Label>
+          <Input id={`vr-${s.id}`} value={reason} onChange={(e) => setReason(e.target.value)} />
+        </div>
+      ) : null}
+      <div className='flex flex-col sm:flex-row gap-2 sm:items-end'>
+        <Button onClick={confirm} disabled={isPending || (dateChanged && reason.trim().length < 3)} className='h-9'>
+          {isPending ? <Loader2 className='w-4 h-4 animate-spin' /> : null} Confirm
+        </Button>
+        <div className='flex-1 flex flex-col gap-1'>
+          <Label htmlFor={`rr-${s.id}`} className='text-xs'>Rejection reason</Label>
+          <Textarea id={`rr-${s.id}`} rows={1} value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} />
+        </div>
+        <Button variant='outline' onClick={reject} disabled={isPending || rejectReason.trim().length < 3} className='h-9'>
+          Reject
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+function WithdrawalPanel({ plan }: { plan: SavingsPlanDetails }) {
+  const router = useRouter()
+  const w = plan.withdrawal!
+  const [isPending, startTransition] = useTransition()
+  const [valueDate, setValueDate] = useState(plan.today)
+  const [bankReference, setBankReference] = useState('')
+  const [file, setFile] = useState<File | null>(null)
+  const [rejectReason, setRejectReason] = useState('')
+
+  const run = (fn: () => Promise<{ success: boolean; error?: string }>, ok: string) =>
+    startTransition(async () => {
+      const res = await fn()
+      if (res.success) {
+        toast.success(ok)
+        router.refresh()
+      } else toast.error(res.error ?? 'Action failed')
+    })
+
+  const pay = () =>
+    run(async () => {
+      if (!file) return { success: false, error: 'Upload the transfer evidence.' }
+      const fd = new FormData()
+      fd.append('file', file)
+      const up = await uploadReceiptAction(fd)
+      if (!up.success || !up.url) return { success: false, error: up.error ?? 'Upload failed' }
+      return confirmSavingsWithdrawalPayoutAction({ savingsId: plan.id, valueDate, bankReference, evidenceUrl: up.url })
+    }, 'Payout confirmed')
+
+  return (
+    <section className='bg-surface-container rounded-md p-4 flex flex-col gap-3 text-sm'>
+      <div className='flex flex-wrap items-center justify-between gap-2'>
+        <h3 className='font-bold text-primary'>
+          {w.kind === 'EARLY' ? 'Early' : 'Maturity'} withdrawal {w.disbursementNumber} · {naira(w.amount)}
+        </h3>
+        <SavingsStatusBadge kind='payout' status={w.status} />
+      </div>
+      <p className='text-xs text-muted-foreground'>
+        Pay to {w.bankName} {w.accountNumberMasked} (the member&apos;s current primary account is used at payout).
+        {w.kind === 'EARLY' ? ' Accrued interest is reversed when the payout is confirmed.' : ''}
+      </p>
+      {w.status === 'REQUESTED' ? (
+        <Button className='w-fit h-9' disabled={isPending} onClick={() => run(() => approveSavingsWithdrawalAction(plan.id), 'Withdrawal approved')}>
+          Approve withdrawal
+        </Button>
+      ) : null}
+      {w.status === 'APPROVED' ? (
+        <div className='flex flex-col gap-3'>
+          <p className='text-xs text-muted-foreground'>
+            A different staff member from the approver confirms the payment when two eligible staff exist.
+          </p>
+          <div className='grid grid-cols-1 sm:grid-cols-2 gap-3'>
+            <div className='flex flex-col gap-1'>
+              <Label htmlFor='po-date' className='text-xs'>Payment date</Label>
+              <Input id='po-date' type='date' max={plan.today} value={valueDate} onChange={(e) => setValueDate(e.target.value)} />
+            </div>
+            <div className='flex flex-col gap-1'>
+              <Label htmlFor='po-ref' className='text-xs'>Bank transfer reference</Label>
+              <Input id='po-ref' value={bankReference} onChange={(e) => setBankReference(e.target.value)} />
+            </div>
+          </div>
+          <ReceiptDropzone onFileSelected={setFile} value={file} maxSizeMb={5} />
+          <Button className='w-fit h-9' disabled={isPending || !file || bankReference.trim().length < 3} onClick={pay}>
+            {isPending ? <Loader2 className='w-4 h-4 animate-spin' /> : null} Confirm payout
+          </Button>
+        </div>
+      ) : null}
+      <div className='flex flex-col sm:flex-row gap-2 sm:items-end'>
+        <div className='flex-1 flex flex-col gap-1'>
+          <Label htmlFor='wr-reason' className='text-xs'>Reason to reject or cancel</Label>
+          <Input id='wr-reason' value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} />
+        </div>
+        <Button
+          variant='outline'
+          className='h-9'
+          disabled={isPending || rejectReason.trim().length < 3}
+          onClick={() => run(() => rejectSavingsWithdrawalAction(plan.id, rejectReason), 'Withdrawal rejected')}
+        >
+          Reject withdrawal
+        </Button>
+      </div>
+    </section>
+  )
+}
+
+export default AdminSavingsDetailsClient

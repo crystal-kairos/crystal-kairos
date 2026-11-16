@@ -1,105 +1,104 @@
 'use server'
 
-import { prisma } from '@/lib/prisma'
+import { z } from 'zod'
 import { revalidatePath } from 'next/cache'
 import {
   AdminPermission,
-  SavingsStatus,
-  TransactionCategory,
-  TransactionStatus,
-  TransactionType,
-  SavingsType,
+  AllocationTargetType,
   SavingsFrequency,
-  SavingsMaturity,
+  SavingsType,
+  UserRole,
 } from '@/generated/prisma/enums'
-import { Prisma } from '@/generated/prisma/client'
-import {
-  assertTargetUserIsMember,
-  requirePermission,
-} from '@/lib/authz/guards'
+import { prisma } from '@/lib/prisma'
+import { assertTargetUserIsMember, requirePermission } from '@/lib/authz/guards'
 import { toActionErrorResult } from '@/lib/errors/to-action-result'
+import { AppError } from '@/lib/errors/app-error'
 import { validateAmount } from '@/lib/validation/money'
+import { extractStoredFileIdFromUrl } from '@/lib/storage/cloudinary'
 import { setSavingsProductTermRates } from '@/lib/services/rate-policy.service'
-import { formatSavingsProductRatesDisplay } from '@/lib/domain/rate-policy'
+import { recordAuditEvent, AuditAction, AuditOutcome } from '@/lib/services/audit.service'
+import { confirmPaymentSubmission, rejectPaymentSubmission } from '@/lib/services/payments.service'
+import { assertProductEligibility } from '@/lib/services/profile.service'
+import {
+  approveSavingsWithdrawal,
+  cancelSavingsWithdrawal,
+  confirmSavingsWithdrawalPayout,
+  subscribeToSavingsPlan,
+} from '@/lib/services/savings.service'
 
-export interface SavingsTermRateInput {
-  durationMonths: number
-  ratePercent: number
-  isActive?: boolean
+function revalidateAdminSavings(savingsId?: string, memberId?: string) {
+  try {
+    revalidatePath('/admin/savings')
+    if (savingsId) revalidatePath(`/admin/savings/accounts/${savingsId}`)
+    if (memberId) revalidatePath(`/dashboard/${memberId}/savings`)
+    if (memberId && savingsId) revalidatePath(`/dashboard/${memberId}/savings/${savingsId}`)
+  } catch {
+    // Ignored outside a Next.js request
+  }
 }
 
-export interface CreateSavingsProductPayload {
-  type: 'FIXED' | 'REGULAR' | 'STAGGERED'
-  title: string
-  description: string
-  rates?: string
-  badge: string
-  icon: string
-  interestRate1Month?: number
-  interestRate3Months?: number
-  interestRate6Months?: number
-  interestRate12Months?: number
-  termRates?: SavingsTermRateInput[]
-}
+// ============================================================================
+// Plan (product) management — P2-05 term rates, P3-03 admin plan management
+// ============================================================================
 
-export const createSavingsProductAction = async (
-  data: CreateSavingsProductPayload,
-) => {
+const termRateSchema = z.object({
+  durationMonths: z.coerce.number().int().min(1).max(12),
+  ratePercent: z.coerce.number().min(0, 'Rates cannot be negative.').max(100, 'Rates cannot exceed 100%.'),
+  isActive: z.boolean().optional(),
+})
+
+const productSchema = z.object({
+  type: z.nativeEnum(SavingsType),
+  title: z.string().trim().min(2, 'Enter a title.').max(80),
+  description: z.string().trim().min(2, 'Enter a description.').max(500),
+  badge: z.string().trim().max(30).optional().nullable(),
+  icon: z.string().trim().min(1).max(40),
+  termRates: z
+    .array(termRateSchema)
+    .min(1, 'Offer at least one term.')
+    .refine((rates) => new Set(rates.map((r) => r.durationMonths)).size === rates.length, {
+      message: 'Each term can appear only once.',
+    }),
+})
+
+export type SavingsTermRateInput = z.input<typeof termRateSchema>
+export type CreateSavingsProductPayload = z.input<typeof productSchema>
+
+/** Creates a plan and its per-term rates (1–12 months). Rates create a policy-update draft. */
+export const createSavingsProductAction = async (data: CreateSavingsProductPayload) => {
   try {
     const actor = await requirePermission(AdminPermission.SAVINGS_MANAGE)
+    const parsed = productSchema.parse(data)
+    if (!parsed.termRates.some((r) => r.isActive !== false)) {
+      throw new AppError('VALIDATION_ERROR', 'Enable at least one term.', {
+        statusCode: 400,
+        fieldErrors: { termRates: ['Enable at least one term.'] },
+      })
+    }
 
-    const ratesParts: string[] = []
-    if (data.interestRate1Month)
-      ratesParts.push(`${data.interestRate1Month}% (1M)`)
-    if (data.interestRate3Months)
-      ratesParts.push(`${data.interestRate3Months}% (3M)`)
-    if (data.interestRate6Months)
-      ratesParts.push(`${data.interestRate6Months}% (6M)`)
-    if (data.interestRate12Months)
-      ratesParts.push(`${data.interestRate12Months}% (12M)`)
-    const constructedRates =
-      ratesParts.length > 0 ? ratesParts.join(' / ') : 'Flexible Rates'
-
-    const newProduct = await prisma.savingsProduct.create({
+    const product = await prisma.savingsProduct.create({
       data: {
-        type: data.type,
-        title: data.title,
-        description: data.description,
-        rates: constructedRates,
-        badge: data.badge,
-        icon: data.icon,
-        interestRate1Month: data.interestRate1Month ?? null,
-        interestRate3Months: data.interestRate3Months ?? null,
-        interestRate6Months: data.interestRate6Months ?? null,
-        interestRate12Months: data.interestRate12Months ?? null,
+        type: parsed.type,
+        title: parsed.title,
+        description: parsed.description,
+        badge: parsed.badge || null,
+        icon: parsed.icon,
         createdBy: actor.id,
       },
     })
+    await setSavingsProductTermRates(actor.id, product.id, parsed.termRates)
+    await recordAuditEvent({
+      actorId: actor.id,
+      actorRole: actor.role,
+      action: AuditAction.SAVINGS_PLAN_CREATED,
+      entityType: 'SavingsProduct',
+      entityId: product.id,
+      outcome: AuditOutcome.SUCCESS,
+      metadata: { title: product.title, type: product.type, terms: parsed.termRates.length },
+    })
 
-    const derivedRates: SavingsTermRateInput[] = data.termRates ? [...data.termRates] : []
-    if (derivedRates.length === 0) {
-      if (data.interestRate1Month !== undefined && data.interestRate1Month > 0) {
-        derivedRates.push({ durationMonths: 1, ratePercent: data.interestRate1Month })
-      }
-      if (data.interestRate3Months !== undefined && data.interestRate3Months > 0) {
-        derivedRates.push({ durationMonths: 3, ratePercent: data.interestRate3Months })
-      }
-      if (data.interestRate6Months !== undefined && data.interestRate6Months > 0) {
-        derivedRates.push({ durationMonths: 6, ratePercent: data.interestRate6Months })
-      }
-      if (data.interestRate12Months !== undefined && data.interestRate12Months > 0) {
-        derivedRates.push({ durationMonths: 12, ratePercent: data.interestRate12Months })
-      }
-    }
-
-    if (derivedRates.length > 0) {
-      await setSavingsProductTermRates(actor.id, newProduct.id, derivedRates)
-    }
-
-    try {
-      revalidatePath('/admin/savings')
-    } catch {}
-    return { success: true, data: newProduct }
+    revalidateAdminSavings()
+    return { success: true, data: { id: product.id } }
   } catch (error: unknown) {
     const err = toActionErrorResult(error, {
       actionName: 'createSavingsProductAction',
@@ -115,21 +114,25 @@ export const createSavingsProductAction = async (
   }
 }
 
-export const toggleSavingsProductStatusAction = async (
-  id: string,
-  isActive: boolean,
-) => {
+export const toggleSavingsProductStatusAction = async (id: string, isActive: boolean) => {
   try {
-    await requirePermission(AdminPermission.SAVINGS_MANAGE)
-
+    const actor = await requirePermission(AdminPermission.SAVINGS_MANAGE)
+    const productId = z.string().uuid().parse(id)
     const updated = await prisma.savingsProduct.update({
-      where: { id },
-      data: { isActive },
+      where: { id: productId },
+      data: { isActive: Boolean(isActive) },
+      select: { id: true, isActive: true },
     })
-
-    try {
-      revalidatePath('/admin/savings')
-    } catch {}
+    await recordAuditEvent({
+      actorId: actor.id,
+      actorRole: actor.role,
+      action: AuditAction.SETTING_CHANGED,
+      entityType: 'SavingsProduct',
+      entityId: productId,
+      outcome: AuditOutcome.SUCCESS,
+      afterState: { isActive: updated.isActive },
+    })
+    revalidateAdminSavings()
     return { success: true, data: updated }
   } catch (error: unknown) {
     const err = toActionErrorResult(error, {
@@ -147,64 +150,37 @@ export const toggleSavingsProductStatusAction = async (
   }
 }
 
+const updateProductSchema = productSchema.omit({ type: true }).partial()
+
+/**
+ * Edits a plan's text, badge, icon and term rates. A rate change creates a new rate version
+ * used only by new subscriptions (D-09) and appends to the policy-update draft (P4-07).
+ * The plan type cannot change once created.
+ */
 export const updateSavingsProductAction = async (
   id: string,
-  data: Partial<CreateSavingsProductPayload>,
+  data: z.input<typeof updateProductSchema>,
 ) => {
   try {
     const actor = await requirePermission(AdminPermission.SAVINGS_MANAGE)
-
-    const ratesParts: string[] = []
-    if (data.interestRate1Month)
-      ratesParts.push(`${data.interestRate1Month}% (1M)`)
-    if (data.interestRate3Months)
-      ratesParts.push(`${data.interestRate3Months}% (3M)`)
-    if (data.interestRate6Months)
-      ratesParts.push(`${data.interestRate6Months}% (6M)`)
-    if (data.interestRate12Months)
-      ratesParts.push(`${data.interestRate12Months}% (12M)`)
-
-    if (ratesParts.length > 0) {
-      data.rates = ratesParts.join(' / ')
-    } else if (
-      data.interestRate1Month === 0 &&
-      data.interestRate3Months === 0 &&
-      data.interestRate6Months === 0 &&
-      data.interestRate12Months === 0
-    ) {
-      data.rates = 'Flexible Rates'
-    }
-
-    const { termRates, ...updateFields } = data
+    const productId = z.string().uuid().parse(id)
+    const parsed = updateProductSchema.parse(data)
+    const { termRates, ...fields } = parsed
 
     const updated = await prisma.savingsProduct.update({
-      where: { id },
-      data: updateFields,
+      where: { id: productId },
+      data: {
+        ...(fields.title !== undefined ? { title: fields.title } : {}),
+        ...(fields.description !== undefined ? { description: fields.description } : {}),
+        ...(fields.icon !== undefined ? { icon: fields.icon } : {}),
+        ...(fields.badge !== undefined ? { badge: fields.badge || null } : {}),
+      },
+      select: { id: true },
     })
-
-    const derivedRates: SavingsTermRateInput[] = termRates ? [...termRates] : []
-    if (derivedRates.length === 0) {
-      if (data.interestRate1Month !== undefined) {
-        derivedRates.push({ durationMonths: 1, ratePercent: data.interestRate1Month, isActive: data.interestRate1Month > 0 })
-      }
-      if (data.interestRate3Months !== undefined) {
-        derivedRates.push({ durationMonths: 3, ratePercent: data.interestRate3Months, isActive: data.interestRate3Months > 0 })
-      }
-      if (data.interestRate6Months !== undefined) {
-        derivedRates.push({ durationMonths: 6, ratePercent: data.interestRate6Months, isActive: data.interestRate6Months > 0 })
-      }
-      if (data.interestRate12Months !== undefined) {
-        derivedRates.push({ durationMonths: 12, ratePercent: data.interestRate12Months, isActive: data.interestRate12Months > 0 })
-      }
+    if (termRates && termRates.length > 0) {
+      await setSavingsProductTermRates(actor.id, productId, termRates)
     }
-
-    if (derivedRates.length > 0) {
-      await setSavingsProductTermRates(actor.id, id, derivedRates)
-    }
-
-    try {
-      revalidatePath('/admin/savings')
-    } catch {}
+    revalidateAdminSavings()
     return { success: true, data: updated }
   } catch (error: unknown) {
     const err = toActionErrorResult(error, {
@@ -222,87 +198,59 @@ export const updateSavingsProductAction = async (
   }
 }
 
-export const reviewSavingsTransactionAction = async (
-  transactionId: string,
-  status: 'CONFIRMED' | 'REJECTED',
-  notes?: string,
-  rejectionReason?: string,
-) => {
+/**
+ * Staff subscribes a member to a plan (same rules as the member flow: PENDING, no schedule,
+ * snapshot rate). Staff cannot record deposits here; the member uploads the receipt (P3-07).
+ */
+export const createSavingsForMemberAction = async (data: {
+  userId: string
+  productId: string
+  durationMonths: number
+  targetAmount?: number | string | null
+  frequency?: SavingsFrequency | null
+}) => {
   try {
-    const actor = await requirePermission(
-      AdminPermission.SAVINGS_PAYMENTS_REVIEW,
-    )
-
-    const transaction = await prisma.transaction.findUnique({
-      where: { id: transactionId },
-      include: { savings: true },
-    })
-
-    if (!transaction)
-      return { success: false, error: 'Transaction not found' }
-    if (transaction.status !== 'PENDING') {
-      return {
-        success: false,
-        error: 'Only pending transactions can be reviewed',
-      }
-    }
-    if (!transaction.savings) {
-      return {
-        success: false,
-        error: 'Transaction is not linked to a savings plan',
-      }
-    }
-
-    // Start a Prisma transaction to update both the transaction and the savings balance atomically
-    await prisma.$transaction(async (tx) => {
-      // 1. Update Transaction status
-      await tx.transaction.update({
-        where: { id: transactionId },
-        data: {
-          status,
-          notes: notes || transaction.notes,
-          rejectionReason: status === 'REJECTED' ? rejectionReason : undefined,
-          processedBy: actor.id,
-          processedAt: new Date(),
-        },
+    const actor = await requirePermission(AdminPermission.SAVINGS_MANAGE)
+    // D-15 first: staff can never hold savings, whatever else is wrong with the request.
+    await assertTargetUserIsMember(z.string().min(1).parse(data?.userId))
+    const parsed = z
+      .object({
+        userId: z.string().min(1),
+        productId: z.string().uuid(),
+        durationMonths: z.coerce.number().int().min(1).max(12),
+        targetAmount: z.union([z.number(), z.string()]).optional().nullable(),
+        frequency: z.nativeEnum(SavingsFrequency).optional().nullable(),
       })
+      .parse(data)
+    await assertProductEligibility(parsed.userId, 'SAVINGS')
 
-      // 2. If approved and it's a deposit, increment the balance
-      if (status === 'CONFIRMED' && transaction.type === 'DEPOSIT') {
-        const amount = transaction.amount.toNumber()
-        const newTotalDeposited =
-          transaction.savings!.totalDeposited.toNumber() + amount
-        const newCurrentBalance =
-          transaction.savings!.currentBalance.toNumber() + amount
-
-        await tx.savings.update({
-          where: { id: transaction.savingsId! },
-          data: {
-            totalDeposited: newTotalDeposited,
-            currentBalance: newCurrentBalance,
-            status:
-              transaction.savings!.status === 'PENDING' ? 'ACTIVE' : undefined,
-          },
-        })
-      }
+    const savings = await subscribeToSavingsPlan({
+      memberId: parsed.userId,
+      productId: parsed.productId,
+      durationMonths: parsed.durationMonths,
+      targetAmount:
+        parsed.targetAmount === undefined || parsed.targetAmount === null || parsed.targetAmount === ''
+          ? null
+          : validateAmount(parsed.targetAmount, 'targetAmount'),
+      frequency: parsed.frequency ?? null,
     })
-
-    try {
-      revalidatePath('/admin/savings')
-      if (transaction.savingsId) {
-        revalidatePath(`/admin/savings/accounts/${transaction.savingsId}`)
-        revalidatePath(
-          `/dashboard/${transaction.userId}/savings/${transaction.savingsId}`,
-        )
-      }
-    } catch {}
-
-    return { success: true }
+    await recordAuditEvent({
+      actorId: actor.id,
+      actorRole: actor.role,
+      affectedUserId: parsed.userId,
+      action: AuditAction.SAVINGS_PLAN_CREATED,
+      entityType: 'Savings',
+      entityId: savings.id,
+      outcome: AuditOutcome.SUCCESS,
+      metadata: { onBehalfOfMember: true },
+    })
+    revalidateAdminSavings(savings.id, parsed.userId)
+    return { success: true, data: { id: savings.id } }
   } catch (error: unknown) {
     const err = toActionErrorResult(error, {
-      actionName: 'reviewSavingsTransactionAction',
-      fallbackMessage: 'Failed to review transaction',
-      context: { transactionId, status },
+      actionName: 'createSavingsForMemberAction',
+      fallbackMessage: 'Failed to create savings plan.',
+      context: { userId: data?.userId, productId: data?.productId },
     })
     return {
       success: false,
@@ -314,178 +262,193 @@ export const reviewSavingsTransactionAction = async (
   }
 }
 
-export const createSavingsForMemberAction = async (data: {
-  userId: string
-  productId: string
-  targetAmount: number
-  frequency: SavingsFrequency
-  maturity: SavingsMaturity
-  receiptUrl?: string
-}) => {
+// ============================================================================
+// Savings receipt review (until the unified queue of P3-07)
+// ============================================================================
+
+async function loadSavingsSubmission(submissionId: string) {
+  const submission = await prisma.paymentSubmission.findUnique({
+    where: { id: submissionId },
+    include: { targets: true },
+  })
+  if (!submission) throw new AppError('NOT_FOUND', 'Receipt not found.', { statusCode: 404 })
+  const isSavingsOnly =
+    submission.targets.length > 0 &&
+    submission.targets.every((t) => t.targetType === AllocationTargetType.SAVINGS)
+  if (!isSavingsOnly) {
+    throw new AppError('FORBIDDEN', 'This receipt is not a savings deposit.', { statusCode: 403 })
+  }
+  return submission
+}
+
+const confirmSchema = z.object({
+  submissionId: z.string().uuid(),
+  confirmedAmount: z.union([z.number(), z.string()]).optional(),
+  valueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  valueDateChangeReason: z.string().trim().max(300).optional(),
+})
+
+/**
+ * Confirms a savings receipt. The value date (when the money reached the cooperative,
+ * default = the member's paid-on date) — not today — sets the start, maturity and lateness.
+ */
+export const confirmSavingsSubmissionAction = async (input: z.input<typeof confirmSchema>) => {
   try {
-    const actor = await requirePermission(AdminPermission.SAVINGS_MANAGE)
-
-    const { userId, productId, targetAmount, frequency, maturity, receiptUrl } =
-      data
-
-    const validatedTargetAmount = validateAmount(targetAmount, 'targetAmount')
-    const targetAmountNum = validatedTargetAmount.toNumber()
-
-    await assertTargetUserIsMember(userId)
-
-    // Verify member exists and has bank accounts
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      include: { bankAccounts: true },
+    const staff = await requirePermission(AdminPermission.SAVINGS_PAYMENTS_REVIEW)
+    const parsed = confirmSchema.parse(input)
+    const submission = await loadSavingsSubmission(parsed.submissionId)
+    const result = await confirmPaymentSubmission({
+      submissionId: submission.id,
+      confirmedById: staff.id,
+      confirmedAmount:
+        parsed.confirmedAmount !== undefined && parsed.confirmedAmount !== ''
+          ? validateAmount(parsed.confirmedAmount, 'confirmedAmount')
+          : undefined,
+      valueDate: parsed.valueDate,
+      valueDateChangeReason: parsed.valueDateChangeReason || undefined,
+      isOwner: staff.role === UserRole.OWNER,
     })
-
-    if (!user) return { success: false, error: 'Member not found.' }
-    if (!user.bankAccounts || user.bankAccounts.length === 0) {
-      return {
-        success: false,
-        error: 'Member must have a bank account set up first.',
-      }
-    }
-    const defaultBank = user.bankAccounts[0]
-
-    // Verify product
-    const product = await prisma.savingsProduct.findUnique({
-      where: { id: productId },
+    const savingsId = submission.targets[0]?.targetId
+    revalidateAdminSavings(savingsId, submission.memberId)
+    return { success: true, data: { paymentId: result.payment.id } }
+  } catch (error: unknown) {
+    const err = toActionErrorResult(error, {
+      actionName: 'confirmSavingsSubmissionAction',
+      fallbackMessage: 'Failed to confirm the receipt.',
+      context: { submissionId: input?.submissionId },
     })
-    if (!product) {
-      return { success: false, error: 'Savings product not found.' }
+    return {
+      success: false,
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
     }
+  }
+}
 
-    let interestRate = 0
-    const maturityMonthsMap: Record<SavingsMaturity, number> = {
-      [SavingsMaturity.ONE_MONTH]: 1,
-      [SavingsMaturity.THREE_MONTHS]: 3,
-      [SavingsMaturity.SIX_MONTHS]: 6,
-      [SavingsMaturity.TWELVE_MONTHS]: 12,
-    }
-    const durationMonths = maturityMonthsMap[maturity] ?? 6
-
-    const termRate = await prisma.savingsProductTermRate.findFirst({
-      where: { productId, durationMonths, isActive: true },
-      orderBy: { version: 'desc' },
+/** Rejects a savings receipt with a reason; the member can re-upload (a new submission). */
+export const rejectSavingsSubmissionAction = async (submissionId: string, rejectionReason: string) => {
+  try {
+    const staff = await requirePermission(AdminPermission.SAVINGS_PAYMENTS_REVIEW)
+    const parsed = z
+      .object({ submissionId: z.string().uuid(), rejectionReason: z.string().trim().min(3, 'Give a reason.').max(300) })
+      .parse({ submissionId, rejectionReason })
+    const submission = await loadSavingsSubmission(parsed.submissionId)
+    await rejectPaymentSubmission({
+      submissionId: submission.id,
+      reviewerId: staff.id,
+      rejectionReason: parsed.rejectionReason,
     })
-
-    if (termRate) {
-      interestRate = Number(termRate.ratePercent)
-    } else {
-      switch (maturity) {
-        case SavingsMaturity.ONE_MONTH:
-          interestRate = Number(product.interestRate1Month || 0)
-          break
-        case SavingsMaturity.THREE_MONTHS:
-          interestRate = Number(product.interestRate3Months || 0)
-          break
-        case SavingsMaturity.SIX_MONTHS:
-          interestRate = Number(product.interestRate6Months || 0)
-          break
-        case SavingsMaturity.TWELVE_MONTHS:
-          interestRate = Number(product.interestRate12Months || 0)
-          break
-      }
-    }
-
-    const savingsType = SavingsType.REGULAR
-
-    let periods = 1
-    if (frequency === SavingsFrequency.DAILY) {
-      periods =
-        maturity === 'ONE_MONTH'
-          ? 30
-          : maturity === 'THREE_MONTHS'
-            ? 90
-            : maturity === 'SIX_MONTHS'
-              ? 180
-              : 365
-    } else if (frequency === SavingsFrequency.WEEKLY) {
-      periods =
-        maturity === 'ONE_MONTH'
-          ? 4
-          : maturity === 'THREE_MONTHS'
-            ? 12
-            : maturity === 'SIX_MONTHS'
-              ? 26
-              : 52
-    } else if (frequency === SavingsFrequency.MONTHLY) {
-      periods =
-        maturity === 'ONE_MONTH'
-          ? 1
-          : maturity === 'THREE_MONTHS'
-            ? 3
-            : maturity === 'SIX_MONTHS'
-              ? 6
-              : 12
-    }
-
-    const totalContribution = targetAmountNum * periods
-    const interestAmount = (totalContribution * interestRate) / 100
-    const expectedMaturityAmount = totalContribution + interestAmount
-
-    const result = await prisma.$transaction(async (tx) => {
-      const savings = await tx.savings.create({
-        data: {
-          userId,
-          savingsType,
-          targetAmount: validatedTargetAmount,
-          frequency,
-          maturity,
-          durationMonths,
-          ratePercent: new Prisma.Decimal(interestRate),
-          interestCalculationMethod: 'SIMPLE_INTEREST_HELD_FRACTION',
-          savingsProductTermRateVersion: termRate ? termRate.version : 1,
-          interestRate: new Prisma.Decimal(interestRate),
-          bankName: defaultBank.bankName,
-          accountNumber: defaultBank.accountNumber,
-          accountName: defaultBank.accountName,
-          expectedMaturityAmount: new Prisma.Decimal(expectedMaturityAmount),
-          isAnonymousRequest: false,
-          status: receiptUrl ? SavingsStatus.ACTIVE : SavingsStatus.PENDING,
-          productId,
-        },
-      })
-
-      if (receiptUrl) {
-        await tx.transaction.create({
-          data: {
-            userId,
-            amount: new Prisma.Decimal(targetAmount),
-            type: TransactionType.DEPOSIT,
-            category: TransactionCategory.SAVINGS_DEPOSIT,
-            status: TransactionStatus.CONFIRMED,
-            savingsId: savings.id,
-            receiptUrl,
-            notes: 'Initial deposit by Admin',
-            recordedBy: actor.id,
-            processedBy: actor.id,
-            processedAt: new Date(),
-          },
-        })
-
-        await tx.savings.update({
-          where: { id: savings.id },
-          data: {
-            currentBalance: new Prisma.Decimal(targetAmount),
-          },
-        })
-      }
-
-      return savings
+    revalidateAdminSavings(submission.targets[0]?.targetId, submission.memberId)
+    return { success: true }
+  } catch (error: unknown) {
+    const err = toActionErrorResult(error, {
+      actionName: 'rejectSavingsSubmissionAction',
+      fallbackMessage: 'Failed to reject the receipt.',
+      context: { submissionId },
     })
+    return {
+      success: false,
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
+    }
+  }
+}
 
-    try {
-      revalidatePath('/admin/savings')
-      revalidatePath(`/dashboard/${userId}/savings`)
-    } catch {}
+// ============================================================================
+// Withdrawal payouts
+// ============================================================================
+
+export const approveSavingsWithdrawalAction = async (savingsId: string) => {
+  try {
+    const staff = await requirePermission(AdminPermission.SAVINGS_PAYOUTS_MANAGE)
+    const id = z.string().uuid().parse(savingsId)
+    const result = await approveSavingsWithdrawal({ savingsId: id, staff })
+    revalidateAdminSavings(id)
     return { success: true, data: result }
   } catch (error: unknown) {
     const err = toActionErrorResult(error, {
-      actionName: 'createSavingsForMemberAction',
-      fallbackMessage: 'Failed to create savings plan.',
-      context: { userId: data.userId, productId: data.productId },
+      actionName: 'approveSavingsWithdrawalAction',
+      fallbackMessage: 'Failed to approve the withdrawal.',
+      context: { savingsId },
+    })
+    return {
+      success: false,
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
+    }
+  }
+}
+
+const payoutSchema = z.object({
+  savingsId: z.string().uuid(),
+  valueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Enter the payout date.'),
+  bankReference: z.string().trim().min(3, 'Enter the bank transfer reference.').max(100),
+  evidenceUrl: z.string().min(1, 'Upload the payout evidence.'),
+})
+
+/** Confirms the payout (evidence, value date, bank reference). Dual control vs the approver (A-19). Permission: SAVINGS_PAYOUTS_MANAGE (OQ-11). */
+export const confirmSavingsWithdrawalPayoutAction = async (input: z.input<typeof payoutSchema>) => {
+  try {
+    const staff = await requirePermission(AdminPermission.SAVINGS_PAYOUTS_MANAGE)
+    const parsed = payoutSchema.parse(input)
+    const evidenceFileId = extractStoredFileIdFromUrl(parsed.evidenceUrl)
+    if (!evidenceFileId) {
+      throw new AppError('EVIDENCE_REQUIRED', 'Upload the payout evidence.', {
+        statusCode: 400,
+        fieldErrors: { evidenceUrl: ['Upload the payout evidence.'] },
+      })
+    }
+    const result = await confirmSavingsWithdrawalPayout({
+      savingsId: parsed.savingsId,
+      staff,
+      valueDate: parsed.valueDate,
+      bankReference: parsed.bankReference,
+      evidenceFileId,
+    })
+    revalidateAdminSavings(parsed.savingsId)
+    return { success: true, data: result }
+  } catch (error: unknown) {
+    const err = toActionErrorResult(error, {
+      actionName: 'confirmSavingsWithdrawalPayoutAction',
+      fallbackMessage: 'Failed to confirm the payout.',
+      context: { savingsId: input?.savingsId },
+    })
+    return {
+      success: false,
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
+    }
+  }
+}
+
+/** Rejects/cancels a pending withdrawal; the plan returns to ACTIVE or MATURED. */
+export const rejectSavingsWithdrawalAction = async (savingsId: string, reason: string) => {
+  try {
+    const staff = await requirePermission(AdminPermission.SAVINGS_PAYOUTS_MANAGE)
+    const parsed = z
+      .object({ savingsId: z.string().uuid(), reason: z.string().trim().min(3, 'Give a reason.').max(300) })
+      .parse({ savingsId, reason })
+    const result = await cancelSavingsWithdrawal({
+      savingsId: parsed.savingsId,
+      actorId: staff.id,
+      actorRole: staff.role,
+      reason: parsed.reason,
+    })
+    revalidateAdminSavings(parsed.savingsId)
+    return { success: true, data: result }
+  } catch (error: unknown) {
+    const err = toActionErrorResult(error, {
+      actionName: 'rejectSavingsWithdrawalAction',
+      fallbackMessage: 'Failed to reject the withdrawal.',
+      context: { savingsId },
     })
     return {
       success: false,

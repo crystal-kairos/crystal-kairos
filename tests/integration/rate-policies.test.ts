@@ -8,7 +8,6 @@ import {
   LoanStatus,
   PenaltyCapType,
   PolicyUpdateStatus,
-  SavingsMaturity,
   SavingsStatus,
   SavingsType,
   UserRole,
@@ -31,6 +30,7 @@ vi.mock('@/auth', () => ({
 }))
 
 import { prisma } from '@/lib/prisma'
+import { subscribeToSavingsPlan } from '@/lib/services/savings.service'
 import { Prisma } from '@/generated/prisma/client'
 import {
   setLoanTermRate,
@@ -46,13 +46,16 @@ describe('PR P2-05 Integration Tests: Rates, Penalties, Savings Plan Terms & E-A
 
   const cleanUpTestData = async () => {
     await prisma.policyUpdateDraft.deleteMany()
-    await prisma.eAjoPayout.deleteMany()
-    await prisma.eAjoContributionPeriod.deleteMany()
-    await prisma.eAjoSlotPolicy.deleteMany()
-    await prisma.eAjoMember.deleteMany()
+    // Scoped to this suite's groups so parallel suites keep their e-ajo data.
+    const ratesGroup = { group: { createdByUser: { email: { contains: '-rates-' } } } }
+    await prisma.eAjoPayout.deleteMany({ where: { eajoMember: ratesGroup } })
+    await prisma.eAjoContributionPeriod.deleteMany({ where: { eajoMember: ratesGroup } })
+    await prisma.eAjoSlotPolicy.deleteMany({ where: ratesGroup })
+    await prisma.eAjoMember.deleteMany({ where: ratesGroup })
     await prisma.eAjoGroup.deleteMany({ where: { createdByUser: { email: { contains: '-rates-' } } } })
-    await prisma.savingsProductTermRate.deleteMany()
-    await prisma.savingsPeriod.deleteMany()
+    // Scoped to this suite's rows so parallel suites keep their data.
+    await prisma.savingsProductTermRate.deleteMany({ where: { product: { createdByUser: { email: { contains: '-rates-' } } } } })
+    await prisma.savingsPeriod.deleteMany({ where: { savings: { user: { email: { contains: '-rates-' } } } } })
     await prisma.savings.deleteMany({ where: { user: { email: { contains: '-rates-' } } } })
     await prisma.savingsProduct.deleteMany({ where: { createdByUser: { email: { contains: '-rates-' } } } })
     await prisma.loanInstalment.deleteMany({ where: { loan: { user: { email: { contains: '-rates-' } } } } })
@@ -262,28 +265,19 @@ describe('PR P2-05 Integration Tests: Rates, Penalties, Savings Plan Terms & E-A
 
     // 3. Member subscribes to 6-month term
     const termRate6 = refreshedProduct.termRates.find((r) => r.durationMonths === 6)!
-    const savings = await prisma.savings.create({
-      data: {
-        userId: memberUser.id,
-        productId: product.id,
-        savingsType: SavingsType.REGULAR,
-        frequency: 'MONTHLY',
-        maturity: SavingsMaturity.SIX_MONTHS,
-        durationMonths: 6,
-        ratePercent: termRate6.ratePercent,
-        interestCalculationMethod: 'SIMPLE_INTEREST_HELD_FRACTION',
-        savingsProductTermRateVersion: termRate6.version,
-        interestRate: termRate6.ratePercent,
-        bankName: 'First Bank',
-        accountNumber: '0123456789',
-        accountName: 'Rates Borrower',
-        status: SavingsStatus.ACTIVE,
-      },
+    expect(termRate6.version).toBe(1)
+    const savings = await subscribeToSavingsPlan({
+      memberId: memberUser.id,
+      productId: product.id,
+      durationMonths: 6,
+      targetAmount: 10000,
+      frequency: 'MONTHLY',
     })
 
     expect(savings.durationMonths).toBe(6)
-    expect(Number(savings.ratePercent)).toBe(12.0)
-    expect(savings.savingsProductTermRateVersion).toBe(1)
+    expect(savings.status).toBe(SavingsStatus.PENDING)
+    expect(Number(savings.ratePercentSnapshot)).toBe(12.0)
+    expect(savings.rateVersionSnapshot).toBe(1)
 
     // 4. Admin updates 6-month rate to 14%
     await setSavingsProductTermRates(adminUser.id, product.id, [
@@ -292,8 +286,19 @@ describe('PR P2-05 Integration Tests: Rates, Penalties, Savings Plan Terms & E-A
 
     // Subscription keeps snapshotted 12%
     const reloadedSavings = await prisma.savings.findUniqueOrThrow({ where: { id: savings.id } })
-    expect(Number(reloadedSavings.ratePercent)).toBe(12.0)
-    expect(reloadedSavings.savingsProductTermRateVersion).toBe(1)
+    expect(Number(reloadedSavings.ratePercentSnapshot)).toBe(12.0)
+    expect(reloadedSavings.rateVersionSnapshot).toBe(1)
+
+    // A new subscription uses the new rate version (D-09)
+    const later = await subscribeToSavingsPlan({
+      memberId: memberUser.id,
+      productId: product.id,
+      durationMonths: 6,
+      targetAmount: 10000,
+      frequency: 'MONTHLY',
+    })
+    expect(Number(later.ratePercentSnapshot)).toBe(14.0)
+    expect(later.rateVersionSnapshot).toBe(2)
   })
 
   it('rejects eAjo group creation without complete slot policies or non-monthly frequency', async () => {

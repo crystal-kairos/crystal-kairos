@@ -1,547 +1,214 @@
 'use client'
 
-import React, { useState, useTransition, useEffect } from 'react'
-import {
-  ArrowLeft,
-  ArrowRight,
-  PiggyBank,
-  ShieldCheck,
-  AlertCircle,
-  LucideType,
-} from 'lucide-react'
+import React, { useMemo, useState, useTransition } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
+import { AlertCircle, ArrowLeft, Info, Loader2, PiggyBank } from 'lucide-react'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
 import { Label } from '../ui/label'
-import {
-  SavingsType,
-  SavingsFrequency,
-  SavingsMaturity,
-} from '@/generated/prisma/enums'
 import { createSavingsPlanAction } from '@/models/savings/actions'
-import { getPeriodsCount } from '@/lib/savings'
-import { useRouter } from 'next/navigation'
-import type { SavingsProduct } from '@/generated/prisma/client'
-
-interface BankAccount {
-  id: string
-  bankName: string
-  accountNumber: string
-  accountName: string
-  isPrimary: boolean
-}
+import type { SavingsProductView } from '@/models/savings/query'
 
 interface NewSavingsClientProps {
   userId: string
-  bankAccounts: BankAccount[]
-  initialType?: string
-  product: SavingsProduct
+  product: SavingsProductView
+  firstDepositWindowDays: number
 }
 
-const getIcon = (name: string) => {
-  const IconComponent = (LucideType as any)[name]
-  return IconComponent ? (
-    <IconComponent className='w-5 h-5' />
-  ) : (
-    <PiggyBank className='w-5 h-5' />
-  )
-}
+const naira = (v: number) =>
+  new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN', maximumFractionDigits: 2 }).format(v)
 
-export const NewSavingsClient = ({
-  userId,
-  bankAccounts,
-  initialType = 'FIXED',
-  product,
-}: NewSavingsClientProps) => {
+const FREQUENCIES = [
+  { value: 'MONTHLY', label: 'Monthly' },
+  { value: 'WEEKLY', label: 'Weekly' },
+  { value: 'DAILY', label: 'Daily' },
+] as const
+
+/**
+ * Subscribe to a plan and term. No approval step: the plan waits for the first deposit, whose
+ * value date becomes the start date (D-08). The rate shown is fixed for this plan (D-09).
+ */
+export const NewSavingsClient = ({ userId, product, firstDepositWindowDays }: NewSavingsClientProps) => {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
-
-  // Form states
-  const [targetAmount, setTargetAmount] = useState<number>(50000)
-  const [frequency, setFrequency] = useState<SavingsFrequency>(
-    initialType === 'REGULAR'
-      ? SavingsFrequency.MONTHLY
-      : SavingsFrequency.ONCE,
-  )
-  const [maturity, setMaturity] = useState<SavingsMaturity>(
-    SavingsMaturity.SIX_MONTHS,
-  )
-
-  // Bank routing
-  const [selectedBankAccountId, setSelectedBankAccountId] = useState(
-    bankAccounts.find((a) => a.isPrimary)?.id || bankAccounts[0]?.id || '',
-  )
-  const [customBankName, setCustomBankName] = useState('')
-  const [customAccountNumber, setCustomAccountNumber] = useState('')
-  const [customAccountName, setCustomAccountName] = useState('')
-  const [useCustomBank, setUseCustomBank] = useState(bankAccounts.length === 0)
-
-  // Errors / Success
+  const terms = product.termRates
+  const [durationMonths, setDurationMonths] = useState<number>(terms[0]?.durationMonths ?? 0)
+  const [amount, setAmount] = useState<string>('')
+  const [frequency, setFrequency] = useState<'MONTHLY' | 'WEEKLY' | 'DAILY'>('MONTHLY')
   const [error, setError] = useState<string | null>(null)
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string[]>>({})
 
-  const savingsType = product.type
+  const rate = terms.find((t) => t.durationMonths === durationMonths)?.ratePercent ?? 0
+  const needsAmount = product.type === 'FIXED' || product.type === 'REGULAR'
+  const amountNum = Number(amount)
 
-  // Sync frequency with savingsType
-  useEffect(() => {
-    if (savingsType === SavingsType.FIXED) {
-      setFrequency(SavingsFrequency.ONCE)
-    } else if (
-      savingsType === SavingsType.REGULAR &&
-      frequency === SavingsFrequency.ONCE
-    ) {
-      setFrequency(SavingsFrequency.MONTHLY)
-    } else if (savingsType === SavingsType.STAGGERED) {
-      setFrequency(SavingsFrequency.ONCE)
+  const example = useMemo(() => {
+    if (!needsAmount || !(amountNum > 0)) return null
+    if (product.type === 'FIXED') return { principal: amountNum, interest: (amountNum * rate) / 100 }
+    if (frequency === 'MONTHLY') {
+      // Period i is held (n − i + 1)/n of the term on average; shown as an estimate only.
+      const n = durationMonths
+      let interest = 0
+      for (let i = 1; i <= n; i++) interest += (amountNum * rate) / 100 * ((n - i + 1) / n)
+      return { principal: amountNum * n, interest }
     }
-  }, [savingsType])
+    return null
+  }, [needsAmount, amountNum, product.type, rate, frequency, durationMonths])
 
-  // Calculation helpers
-  const getProductInterestRate = (maturityLevel: SavingsMaturity) => {
-    if (!product) return 0
-    switch (maturityLevel) {
-      case SavingsMaturity.ONE_MONTH:
-        return Number(product.interestRate1Month || 0)
-      case SavingsMaturity.THREE_MONTHS:
-        return Number(product.interestRate3Months || 0)
-      case SavingsMaturity.SIX_MONTHS:
-        return Number(product.interestRate6Months || 0)
-      case SavingsMaturity.TWELVE_MONTHS:
-        return Number(product.interestRate12Months || 0)
-      default:
-        return 0
-    }
-  }
-
-  const interestRate = getProductInterestRate(maturity)
-
-  let totalContribution = targetAmount
-  let periodsCount = 1
-
-  if (savingsType === SavingsType.REGULAR) {
-    periodsCount = Math.round(getPeriodsCount(frequency, maturity))
-    totalContribution = targetAmount * periodsCount
-  }
-
-  const interestAmount = (totalContribution * interestRate) / 100
-  const expectedMaturityAmount = totalContribution + interestAmount
-
-  const formatCurrency = (val: number) => {
-    return new Intl.NumberFormat('en-NG', {
-      style: 'currency',
-      currency: 'NGN',
-      minimumFractionDigits: 0,
-    }).format(val)
-  }
-
-  const handleBankSelectChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const val = e.target.value
-    if (val === 'custom') {
-      setUseCustomBank(true)
-      setSelectedBankAccountId('')
-    } else {
-      setUseCustomBank(false)
-      setSelectedBankAccountId(val)
-    }
-  }
-
-  const handleCreatePlan = () => {
-    if (targetAmount <= 0) {
-      setError('Please specify a target amount greater than zero.')
-      return
-    }
-
-    let bankName = ''
-    let accountNumber = ''
-    let accountName = ''
-
-    if (useCustomBank) {
-      if (
-        !customBankName.trim() ||
-        !customAccountNumber.trim() ||
-        !customAccountName.trim()
-      ) {
-        setError('Please complete all custom payout bank account fields.')
-        return
-      }
-      bankName = customBankName
-      accountNumber = customAccountNumber
-      accountName = customAccountName
-    } else {
-      const selectedAcct = bankAccounts.find(
-        (a) => a.id === selectedBankAccountId,
-      )
-      if (!selectedAcct) {
-        setError('Selected default bank account not found.')
-        return
-      }
-      bankName = selectedAcct.bankName
-      accountNumber = selectedAcct.accountNumber
-      accountName = selectedAcct.accountName
-    }
-
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault()
     setError(null)
-
+    setFieldErrors({})
     startTransition(async () => {
       const res = await createSavingsPlanAction(userId, {
-        savingsType,
-        targetAmount,
-        frequency,
-        maturity,
-        bankName,
-        accountNumber,
-        accountName,
-        productId: product?.id,
+        productId: product.id,
+        durationMonths,
+        targetAmount: needsAmount ? amount : null,
+        frequency: product.type === 'REGULAR' ? frequency : null,
       })
-
-      if (res.success) {
-        router.push(`/dashboard/${userId}/savings`)
+      if (res.success && res.data) {
+        router.push(`/dashboard/${userId}/savings/${(res.data as { id: string }).id}`)
+        router.refresh()
       } else {
-        setError(
-          res.error || 'Failed to create savings plan. Please try again.',
-        )
+        setError(res.error ?? 'Could not create the plan.')
+        setFieldErrors((res as { fieldErrors?: Record<string, string[]> }).fieldErrors ?? {})
       }
     })
   }
 
-  return (
-    <div className='flex flex-col gap-6 w-full max-w-5xl mx-auto py-6'>
-      {/* Back button */}
-      <div className='flex items-center gap-1.5 text-muted-foreground hover:text-primary cursor-pointer transition-colors w-fit text-xs font-semibold'>
-        <ArrowLeft className='w-4 h-4' />
-        <Link href={`/dashboard/${userId}/savings`}>Back to Savings Hub</Link>
+  if (terms.length === 0) {
+    return (
+      <div className='max-w-xl mx-auto py-10 text-center text-sm text-muted-foreground'>
+        This plan has no terms available right now.
       </div>
+    )
+  }
 
-      <header>
-        <h2 className='text-2xl font-bold font-heading text-primary leading-tight'>
-          Create Savings Plan for{' '}
-          <span className='underline'>{product.title}</span> Product
-        </h2>
-        <p className='text-muted-foreground text-sm mt-1'>
-          Configure interest rates, terms, goals, and nominated payout accounts.
-        </p>
+  return (
+    <div className='flex flex-col gap-6 w-full max-w-2xl mx-auto py-6 px-4 md:px-0'>
+      <Link
+        href={`/dashboard/${userId}/savings`}
+        className='flex items-center gap-1.5 text-muted-foreground hover:text-primary text-xs font-semibold w-fit'
+      >
+        <ArrowLeft className='w-4 h-4' /> Back to Savings Hub
+      </Link>
+
+      <header className='flex items-start gap-3'>
+        <div className='w-10 h-10 rounded-sm bg-primary/10 text-primary flex items-center justify-center shrink-0'>
+          <PiggyBank className='w-5 h-5' />
+        </div>
+        <div>
+          <h2 className='text-xl font-bold text-primary flex items-center gap-2 flex-wrap'>
+            {product.title}
+            {product.badge ? (
+              <span className='px-2 py-0.5 rounded-full bg-light-blue text-primary text-[9px] font-bold uppercase tracking-wider'>
+                {product.badge}
+              </span>
+            ) : null}
+          </h2>
+          <p className='text-sm text-muted-foreground mt-1'>{product.description}</p>
+        </div>
       </header>
 
-      <div className='flex flex-col lg:flex-row gap-6 items-start'>
-        {/* Left Column: Form config */}
-        <div className='flex-1 w-full flex flex-col gap-6'>
-          {/* Step 1: Choose Savings Type */}
-          <div className='bg-surface-container-lowest rounded-xl p-6 border border-outline-variant/10 flex flex-col gap-4'>
-            <h3 className='text-sm font-bold text-primary'>
-              Chosen Savings Type:
-            </h3>
-            <div className='border rounded-lg p-4 flex items-center gap-2 relative border-primary/50 bg-surface-container-low'>
-              {getIcon(product.icon)}
-              <h4 className='font-bold text-primary'>{product.type}</h4>
-            </div>
-          </div>
-
-          {/* Step 2: Configure parameters */}
-          <div className='bg-surface-container-lowest rounded-xl p-6 border border-outline-variant/10 flex flex-col gap-4'>
-            <h3 className='text-sm font-bold text-primary'>
-              Configure Plan Term Parameters
-            </h3>
-
-            <div className='grid grid-cols-1 sm:grid-cols-2 gap-4'>
-              <div className='flex flex-col gap-1.5'>
-                <Label
-                  htmlFor='amount'
-                  className='text-xs font-semibold text-muted-foreground'
-                >
-                  {savingsType === SavingsType.REGULAR
-                    ? 'Recurring Contribution Amount'
-                    : 'Initial Bulk Deposit Amount'}
-                </Label>
-                <div className='relative'>
-                  <span className='absolute left-3 top-2.5 text-muted-foreground font-mono text-sm'>
-                    ₦
-                  </span>
-                  <Input
-                    id='amount'
-                    type='number'
-                    value={targetAmount}
-                    onChange={(e) => setTargetAmount(Number(e.target.value))}
-                    className='pl-7 rounded-sm h-10 border-outline-variant/35 font-mono text-sm'
-                  />
-                </div>
-              </div>
-
-              <div className='flex flex-col gap-1.5'>
-                <Label
-                  htmlFor='maturity'
-                  className='text-xs font-semibold text-muted-foreground'
-                >
-                  Term Maturity Lock Duration
-                </Label>
-                <select
-                  id='maturity'
-                  value={maturity}
-                  onChange={(e) =>
-                    setMaturity(e.target.value as SavingsMaturity)
-                  }
-                  className='w-full bg-surface border border-outline-variant/35 rounded-sm p-2 text-sm h-10 focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary'
-                >
-                  {product && Number(product.interestRate1Month) > 0 && (
-                    <option value={SavingsMaturity.ONE_MONTH}>
-                      1 Month Term
-                    </option>
-                  )}
-                  {product && Number(product.interestRate3Months) > 0 && (
-                    <option value={SavingsMaturity.THREE_MONTHS}>
-                      3 Months Term
-                    </option>
-                  )}
-                  {(!product || Number(product.interestRate6Months) > 0) && (
-                    <option value={SavingsMaturity.SIX_MONTHS}>
-                      6 Months Term
-                    </option>
-                  )}
-                  {(!product || Number(product.interestRate12Months) > 0) && (
-                    <option value={SavingsMaturity.TWELVE_MONTHS}>
-                      12 Months (1 Year) Term
-                    </option>
-                  )}
-                </select>
-              </div>
-
-              {savingsType === SavingsType.REGULAR && (
-                <div className='flex flex-col gap-1.5 sm:col-span-2'>
-                  <Label
-                    htmlFor='frequency'
-                    className='text-xs font-semibold text-muted-foreground'
-                  >
-                    Recurring Frequency Cadence
-                  </Label>
-                  <select
-                    id='frequency'
-                    value={frequency}
-                    onChange={(e) =>
-                      setFrequency(e.target.value as SavingsFrequency)
-                    }
-                    className='w-full bg-surface border border-outline-variant/35 rounded-sm p-2 text-sm h-10 focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary'
-                  >
-                    <option value={SavingsFrequency.DAILY}>
-                      Daily Contributions
-                    </option>
-                    <option value={SavingsFrequency.WEEKLY}>
-                      Weekly Contributions
-                    </option>
-                    <option value={SavingsFrequency.MONTHLY}>
-                      Monthly Contributions
-                    </option>
-                  </select>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Step 3: Payout bank details */}
-          <div className='bg-surface-container-lowest rounded-xl p-6 border border-outline-variant/10 flex flex-col gap-4'>
-            <h3 className='text-sm font-bold text-primary'>
-              {' '}
-              payout Bank Account routing
-            </h3>
-            <p className='text-[11px] text-muted-foreground -mt-2 leading-relaxed'>
-              Nominate where the principal plus accrued interest will be
-              disbursed at maturity.
-            </p>
-
-            <div className='flex flex-col gap-1.5'>
-              <Label
-                htmlFor='bankSelect'
-                className='text-xs font-semibold text-muted-foreground'
+      <form onSubmit={submit} className='flex flex-col gap-5 bg-surface-container rounded-md p-5'>
+        <fieldset className='flex flex-col gap-2'>
+          <legend className='text-xs font-semibold text-muted-foreground mb-2'>Term</legend>
+          <div className='grid grid-cols-2 sm:grid-cols-4 gap-2'>
+            {terms.map((t) => (
+              <button
+                type='button'
+                key={t.durationMonths}
+                onClick={() => setDurationMonths(t.durationMonths)}
+                aria-pressed={durationMonths === t.durationMonths}
+                className={`rounded-sm border p-3 text-left transition-colors ${
+                  durationMonths === t.durationMonths
+                    ? 'border-primary bg-primary/10'
+                    : 'border-outline-variant/30 hover:border-primary/50'
+                }`}
               >
-                Select Saved Bank Account
-              </Label>
-              <select
-                id='bankSelect'
-                value={useCustomBank ? 'custom' : selectedBankAccountId}
-                onChange={handleBankSelectChange}
-                className='w-full bg-surface border border-outline-variant/35 rounded-sm p-2 text-sm h-10 focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary'
-              >
-                {bankAccounts.map((acct) => (
-                  <option key={acct.id} value={acct.id}>
-                    {acct.bankName} - {acct.accountNumber} ({acct.accountName}){' '}
-                    {acct.isPrimary ? '[Primary]' : ''}
-                  </option>
-                ))}
-                <option value='custom'>
-                  -- Use Custom Bank Routing Account --
+                <span className='block text-sm font-bold text-primary'>
+                  {t.durationMonths} month{t.durationMonths === 1 ? '' : 's'}
+                </span>
+                <span className='block text-xs text-success-green font-semibold'>{t.ratePercent}% for the term</span>
+              </button>
+            ))}
+          </div>
+          {fieldErrors.durationMonths?.[0] ? (
+            <p className='text-xs text-error'>{fieldErrors.durationMonths[0]}</p>
+          ) : null}
+        </fieldset>
+
+        {product.type === 'REGULAR' ? (
+          <div className='flex flex-col gap-1.5'>
+            <Label htmlFor='frequency' className='text-xs font-semibold text-muted-foreground'>
+              How often will you save?
+            </Label>
+            <select
+              id='frequency'
+              value={frequency}
+              onChange={(e) => setFrequency(e.target.value as typeof frequency)}
+              className='h-10 rounded-sm border border-outline-variant/30 bg-background px-3 text-sm'
+            >
+              {FREQUENCIES.map((f) => (
+                <option key={f.value} value={f.value}>
+                  {f.label}
                 </option>
-              </select>
-            </div>
-
-            {useCustomBank && (
-              <div className='grid grid-cols-1 sm:grid-cols-3 gap-4 border-t border-outline-variant/20 pt-4 animate-in fade-in duration-250'>
-                <div className='flex flex-col gap-1.5'>
-                  <Label
-                    htmlFor='customBank'
-                    className='text-xs font-semibold text-muted-foreground'
-                  >
-                    Bank Name
-                  </Label>
-                  <Input
-                    id='customBank'
-                    placeholder='Access Bank, GTBank'
-                    value={customBankName}
-                    onChange={(e) => setCustomBankName(e.target.value)}
-                    className='rounded-sm h-10 border-outline-variant/30 text-xs'
-                  />
-                </div>
-                <div className='flex flex-col gap-1.5'>
-                  <Label
-                    htmlFor='customAcctNo'
-                    className='text-xs font-semibold text-muted-foreground'
-                  >
-                    Account Number
-                  </Label>
-                  <Input
-                    id='customAcctNo'
-                    placeholder='10 Digits'
-                    value={customAccountNumber}
-                    onChange={(e) => setCustomAccountNumber(e.target.value)}
-                    className='rounded-sm h-10 border-outline-variant/30 text-xs'
-                  />
-                </div>
-                <div className='flex flex-col gap-1.5'>
-                  <Label
-                    htmlFor='customAcctName'
-                    className='text-xs font-semibold text-muted-foreground'
-                  >
-                    Account Name
-                  </Label>
-                  <Input
-                    id='customAcctName'
-                    placeholder='Receiving Name'
-                    value={customAccountName}
-                    onChange={(e) => setCustomAccountName(e.target.value)}
-                    className='rounded-sm h-10 border-outline-variant/30 text-xs'
-                  />
-                </div>
-              </div>
-            )}
+              ))}
+            </select>
           </div>
+        ) : null}
 
-          {error && (
-            <div className='bg-error-container/10 border border-error-container/30 text-error p-4 rounded-lg flex items-start gap-2 text-xs'>
-              <AlertCircle className='w-4 h-4 shrink-0 mt-0.5' />
-              <span>{error}</span>
-            </div>
-          )}
+        {needsAmount ? (
+          <div className='flex flex-col gap-1.5'>
+            <Label htmlFor='amount' className='text-xs font-semibold text-muted-foreground'>
+              {product.type === 'FIXED' ? 'Target amount (₦)' : `Amount per ${frequency === 'MONTHLY' ? 'month' : frequency === 'WEEKLY' ? 'week' : 'day'} (₦)`}
+            </Label>
+            <Input
+              id='amount'
+              inputMode='decimal'
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              placeholder='e.g. 20000'
+              aria-invalid={Boolean(fieldErrors.targetAmount)}
+            />
+            {fieldErrors.targetAmount?.[0] ? (
+              <p className='text-xs text-error'>{fieldErrors.targetAmount[0]}</p>
+            ) : null}
+          </div>
+        ) : null}
 
-          {/* Action button */}
-          <Button
-            onClick={handleCreatePlan}
-            disabled={isPending || targetAmount <= 0}
-            className='cursor-pointer rounded-sm bg-primary text-on-primary hover:bg-primary/95 flex items-center justify-center gap-1.5 w-full h-11 text-sm font-semibold mt-2 shadow-sm'
-          >
-            {isPending ? 'Creating Plan...' : 'Create Savings Plan'}
-            <ArrowRight className='w-4 h-4' />
-          </Button>
+        {example ? (
+          <div className='text-xs text-muted-foreground bg-background rounded-sm p-3'>
+            Estimate if every deposit is on time: principal {naira(example.principal)}, interest about{' '}
+            <span className='font-semibold text-success-green'>{naira(example.interest)}</span>. Interest is
+            simple, earned per deposit from the day the money reaches us, and paid when you withdraw at maturity.
+          </div>
+        ) : null}
+
+        <div className='flex items-start gap-2 text-xs text-muted-foreground'>
+          <Info className='w-4 h-4 shrink-0 mt-0.5' />
+          <p>
+            Your plan starts on the date your first deposit reaches the cooperative&apos;s account. If no
+            first deposit receipt is uploaded within {firstDepositWindowDays} days, the plan is cancelled automatically.
+            Withdrawing before maturity returns your principal without interest.
+          </p>
         </div>
 
-        {/* Right Column: Live Calculator summary */}
-        <div className='w-full lg:w-[320px] shrink-0 flex flex-col gap-4'>
-          <div className='bg-surface-container-lowest border border-outline-variant/10 rounded-xl p-5 shadow-sm'>
-            <div className='flex items-center gap-2 mb-3 pb-2 border-b border-outline-variant/20'>
-              <PiggyBank className='w-4 h-4 text-primary' />
-              <h3 className='font-bold text-sm text-primary uppercase tracking-wide'>
-                Live Yield Calculator
-              </h3>
-            </div>
-
-            <div className='flex flex-col gap-3 text-xs'>
-              <div className='flex justify-between border-b border-outline-variant/10 pb-2'>
-                <span className='text-muted-foreground'>Savings Product:</span>
-                <span className='font-semibold text-primary capitalize'>
-                  {savingsType.toLowerCase()} savings
-                </span>
-              </div>
-
-              {savingsType === SavingsType.REGULAR && (
-                <>
-                  <div className='flex justify-between border-b border-outline-variant/10 pb-2'>
-                    <span className='text-muted-foreground'>
-                      Contribution frequency:
-                    </span>
-                    <span className='font-semibold text-primary capitalize'>
-                      {frequency.toLowerCase()}
-                    </span>
-                  </div>
-                  <div className='flex justify-between border-b border-outline-variant/10 pb-2'>
-                    <span className='text-muted-foreground'>
-                      Number of periods:
-                    </span>
-                    <span className='font-semibold text-primary font-mono'>
-                      {periodsCount} payments
-                    </span>
-                  </div>
-                </>
-              )}
-
-              <div className='flex justify-between border-b border-outline-variant/10 pb-2'>
-                <span className='text-muted-foreground'>
-                  Maturity lock term:
-                </span>
-                <span className='font-semibold text-primary'>
-                  {maturity === SavingsMaturity.SIX_MONTHS
-                    ? '6 Months'
-                    : '12 Months (1 Year)'}
-                </span>
-              </div>
-
-              <div className='flex justify-between border-b border-outline-variant/10 pb-2'>
-                <span className='text-muted-foreground'>
-                  Annualized interest yield:
-                </span>
-                <span className='font-bold text-success-green font-mono'>
-                  {interestRate}%
-                </span>
-              </div>
-
-              <div className='flex justify-between border-b border-outline-variant/10 pb-2'>
-                <span className='text-muted-foreground'>
-                  Total principal saved:
-                </span>
-                <span className='font-semibold text-primary font-mono'>
-                  {formatCurrency(totalContribution)}
-                </span>
-              </div>
-
-              <div className='flex justify-between border-b border-outline-variant/10 pb-2'>
-                <span className='text-muted-foreground'>
-                  Accrued interest value:
-                </span>
-                <span className='font-bold text-success-green font-mono'>
-                  +{formatCurrency(interestAmount)}
-                </span>
-              </div>
-
-              <div className='bg-surface-container rounded-lg p-3 border border-outline-variant/15 mt-2'>
-                <span className='text-[10px] text-muted-foreground uppercase tracking-wider block font-semibold'>
-                  Total expected return
-                </span>
-                <span className='text-lg font-mono font-extrabold text-success-green block mt-1'>
-                  {formatCurrency(expectedMaturityAmount)}
-                </span>
-              </div>
-            </div>
+        {error ? (
+          <div role='alert' className='flex items-start gap-2 text-xs text-error'>
+            <AlertCircle className='w-4 h-4 shrink-0 mt-0.5' />
+            <span>{error}</span>
           </div>
+        ) : null}
 
-          <div className='bg-success-green/10 border border-success-green/20 rounded-xl p-4 flex items-start gap-2.5'>
-            <ShieldCheck className='w-5 h-5 text-success-green shrink-0 mt-0.5' />
-            <div>
-              <h4 className='text-xs font-bold text-primary'>
-                Interest Forfeiture Warning
-              </h4>
-              <p className='text-[10px] text-muted-foreground leading-normal mt-0.5'>
-                Note that early withdrawals made before the maturity date will
-                trigger a 100% forfeiture of all accrued interest.
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
+        <Button type='submit' disabled={isPending || !durationMonths} className='h-10'>
+          {isPending ? <Loader2 className='w-4 h-4 animate-spin' /> : null}
+          Subscribe at {rate}% for {durationMonths} month{durationMonths === 1 ? '' : 's'}
+        </Button>
+      </form>
     </div>
   )
 }
+
 export default NewSavingsClient

@@ -20,6 +20,13 @@ const EditSavingsProductPage = async ({
 
   const product = await prisma.savingsProduct.findUnique({
     where: { id },
+    include: {
+      termRates: {
+        where: { isActive: true },
+        orderBy: { durationMonths: 'asc' },
+        select: { durationMonths: true, ratePercent: true },
+      },
+    },
   })
 
   if (!product) {
@@ -28,7 +35,20 @@ const EditSavingsProductPage = async ({
 
   return (
     <div className='p-6 w-full'>
-      <EditSavingsProductClient product={product} />
+      <EditSavingsProductClient
+        product={{
+          id: product.id,
+          type: product.type,
+          title: product.title,
+          description: product.description,
+          badge: product.badge,
+          icon: product.icon,
+          termRates: product.termRates.map((t) => ({
+            durationMonths: t.durationMonths,
+            ratePercent: Number(t.ratePercent),
+          })),
+        }}
+      />
     </div>
   )
 }

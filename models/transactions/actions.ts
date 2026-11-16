@@ -6,7 +6,6 @@ import {
   TransactionStatus,
   TransactionCategory,
   TransactionType,
-  SavingsStatus,
   LoanStatus,
   UserRole,
 } from '@/generated/prisma/enums'
@@ -19,16 +18,13 @@ import {
 } from '@/lib/authz/guards'
 import { AppError } from '@/lib/errors/app-error'
 import { toActionErrorResult } from '@/lib/errors/to-action-result'
-import { calculateMaturityDate } from '@/lib/savings'
 import { validateAmount } from '@/lib/validation/money'
 import { lockMembers } from '@/lib/db/concurrency'
 import {
   generateAndPersistLoanSchedule,
-  generateAndPersistSavingsSchedule,
   generateAndPersistEAjoSchedule,
 } from '@/lib/services/schedules.service'
 import {
-  postSavingsDeposit,
   postWalletCredit,
   postLoanDisbursement,
   postLoanRepayment,
@@ -100,6 +96,13 @@ function permissionsForTransactionTransition(
   }
 }
 
+function isLegacySavingsCategory(category: TransactionCategory | null | undefined): boolean {
+  return (
+    category === TransactionCategory.SAVINGS_DEPOSIT ||
+    category === TransactionCategory.SAVINGS_WITHDRAWAL
+  )
+}
+
 /**
  * Creates a pending transaction in the database.
  * Enforces member session ownership or staff permission, and derives actor identity from the live session.
@@ -131,6 +134,15 @@ export const createTransaction = async (input: CreateTransactionInput) => {
           error: 'Savings plan not found for this member.',
         }
       }
+    }
+
+    // P3-03: savings deposits and withdrawals go through PaymentSubmission/lots only.
+    if (isLegacySavingsCategory(input.category)) {
+      throw new AppError(
+        'LEGACY_SAVINGS_FLOW_DISABLED',
+        'Savings deposits are uploaded from the savings plan page, and withdrawals are requested there.',
+        { statusCode: 409 },
+      )
     }
 
     if (input.loanId) {
@@ -319,6 +331,17 @@ export const transitionTransaction = async (
         )
       }
 
+      if (
+        isLegacySavingsCategory(existingTx?.category) &&
+        newStatus !== TransactionStatus.REJECTED
+      ) {
+        throw new AppError(
+          'LEGACY_SAVINGS_FLOW_DISABLED',
+          'Legacy savings transactions can only be rejected. Savings receipts are reviewed on the savings plan page.',
+          { statusCode: 409 },
+        )
+      }
+
       // 2. Fetch current transaction details with relations
       const transaction = await tx.transaction.findUnique({
         where: { id: transactionId },
@@ -356,57 +379,6 @@ export const transitionTransaction = async (
             memberId: transaction.userId,
             eAjoMemberId: transaction.eAjoMemberId,
             isPostPayout: false,
-            effectiveDate: new Date(),
-            idempotencyKey: `tx-${transaction.id}-confirm`,
-            postedById: actor.id,
-          })
-        }
-
-        // B. Savings deposits
-        if (
-          transaction.category === TransactionCategory.SAVINGS_DEPOSIT &&
-          transaction.savingsId
-        ) {
-          // If the savings was pending, activate it on first deposit
-          const updateData: Prisma.SavingsUpdateInput = {
-            currentBalance: { increment: transaction.amount },
-            totalDeposited: { increment: transaction.amount },
-          }
-          if (transaction.savings?.status === SavingsStatus.PENDING) {
-            updateData.status = SavingsStatus.ACTIVE
-            const startDate = new Date()
-            updateData.startDate = startDate
-
-            // Calculate maturity date from startDate for FIXED or REGULAR savings
-            if (
-              transaction.savings.savingsType === 'FIXED' ||
-              transaction.savings.savingsType === 'REGULAR'
-            ) {
-              updateData.maturityDate = calculateMaturityDate(
-                startDate,
-                transaction.savings.maturity,
-              )
-            }
-
-            await generateAndPersistSavingsSchedule(tx, {
-              savingsId: transaction.savingsId,
-              savingsType: transaction.savings.savingsType,
-              frequency: transaction.savings.frequency,
-              maturity: transaction.savings.maturity,
-              targetAmount:
-                transaction.savings.targetAmount || transaction.amount,
-              firstDepositValueDate: startDate,
-            })
-          }
-          await tx.savings.update({
-            where: { id: transaction.savingsId },
-            data: updateData,
-          })
-
-          await postSavingsDeposit(tx, {
-            amount: transaction.amount,
-            memberId: transaction.userId,
-            savingsId: transaction.savingsId,
             effectiveDate: new Date(),
             idempotencyKey: `tx-${transaction.id}-confirm`,
             postedById: actor.id,
@@ -471,20 +443,6 @@ export const transitionTransaction = async (
             data: {
               currentBalance: { decrement: transaction.amount },
               hasReceivedPayout: true,
-            },
-          })
-        }
-
-        // B. Savings Withdrawals (Money paid back to saver)
-        if (
-          transaction.category === TransactionCategory.SAVINGS_WITHDRAWAL &&
-          transaction.savingsId
-        ) {
-          await tx.savings.update({
-            where: { id: transaction.savingsId },
-            data: {
-              currentBalance: 0,
-              status: SavingsStatus.WITHDRAWN,
             },
           })
         }

@@ -1,7 +1,9 @@
-import { SavingsType, SavingsFrequency, SavingsMaturity } from '@/generated/prisma/enums'
-import { addMonthsClamped } from '@/lib/domain/dates'
+/**
+ * Savings display helpers. Financial rules live in lib/domain/savings-interest.ts and
+ * lib/services/savings.service.ts (P3-03).
+ */
 
-// Helper to serialize Decimal fields to numbers to prevent RSC boundary serialization errors
+// Serialises Decimal fields to numbers so plans can cross the RSC boundary.
 export const serializeSavings = <T extends Record<string, unknown>>(
   savings: T | null | undefined,
 ) => {
@@ -9,102 +11,25 @@ export const serializeSavings = <T extends Record<string, unknown>>(
   const s = savings as Record<string, unknown>
   return {
     ...savings,
-    targetAmount: s.targetAmount ? Number(s.targetAmount) : null,
-    interestRate: Number(s.interestRate),
-    currentBalance: Number(s.currentBalance),
-    accruedInterest: Number(s.accruedInterest),
-    totalDeposited: Number(s.totalDeposited),
-    expectedMaturityAmount: s.expectedMaturityAmount
-      ? Number(s.expectedMaturityAmount)
-      : null,
+    targetAmount: s.targetAmount !== null && s.targetAmount !== undefined ? Number(s.targetAmount) : null,
+    ratePercentSnapshot: Number(s.ratePercentSnapshot ?? 0),
+    currentBalance: Number(s.currentBalance ?? 0),
+    totalDeposited: Number(s.totalDeposited ?? 0),
+    withdrawalPrincipal:
+      s.withdrawalPrincipal !== null && s.withdrawalPrincipal !== undefined ? Number(s.withdrawalPrincipal) : null,
+    withdrawalInterest:
+      s.withdrawalInterest !== null && s.withdrawalInterest !== undefined ? Number(s.withdrawalInterest) : null,
   }
 }
 
-export const serializeTransaction = <T extends Record<string, unknown>>(
-  tx: T | null | undefined,
-) => {
-  if (!tx) return null
-  const t = tx as Record<string, unknown>
-  return {
-    ...tx,
-    amount: Number(t.amount),
-  }
+export const SAVINGS_STATUS_LABELS: Record<string, string> = {
+  PENDING: 'Awaiting first deposit',
+  ACTIVE: 'Active',
+  MATURED: 'Matured',
+  WITHDRAWAL_PENDING: 'Withdrawal in progress',
+  WITHDRAWN: 'Withdrawn',
+  CANCELLED: 'Cancelled',
 }
 
-/**
- * Maps all four SavingsMaturity enum values explicitly to their duration in months.
- */
-export const maturityToMonths = (maturity: SavingsMaturity): number => {
-  switch (maturity) {
-    case SavingsMaturity.ONE_MONTH:
-      return 1
-    case SavingsMaturity.THREE_MONTHS:
-      return 3
-    case SavingsMaturity.SIX_MONTHS:
-      return 6
-    case SavingsMaturity.TWELVE_MONTHS:
-      return 12
-    default:
-      return 12
-  }
-}
-
-/**
- * Calculates the exact maturity date given a starting date and maturity term.
- */
-export const calculateMaturityDate = (
-  startDate: Date,
-  maturity: SavingsMaturity,
-): Date => {
-  const months = maturityToMonths(maturity)
-  return addMonthsClamped(startDate, months)
-}
-
-// Calculate interest rate based on plan type and term
-export const getInterestRate = (type: SavingsType, maturity: SavingsMaturity): number => {
-  if (type === 'FIXED') {
-    switch (maturity) {
-      case SavingsMaturity.ONE_MONTH:
-        return 2
-      case SavingsMaturity.THREE_MONTHS:
-        return 6
-      case SavingsMaturity.SIX_MONTHS:
-        return 12
-      case SavingsMaturity.TWELVE_MONTHS:
-        return 36
-      default:
-        return 12
-    }
-  }
-  if (type === 'REGULAR') {
-    switch (maturity) {
-      case SavingsMaturity.ONE_MONTH:
-        return 0.75
-      case SavingsMaturity.THREE_MONTHS:
-        return 2.25
-      case SavingsMaturity.SIX_MONTHS:
-        return 4.5
-      case SavingsMaturity.TWELVE_MONTHS:
-        return 10.5
-      default:
-        return 4.5
-    }
-  }
-  return 0 // STAGGERED
-}
-
-// Calculate total periods for regular savings
-export const getPeriodsCount = (frequency: SavingsFrequency, maturity: SavingsMaturity): number => {
-  const months = maturityToMonths(maturity)
-
-  if (frequency === 'DAILY') {
-    return months * 30
-  }
-  if (frequency === 'WEEKLY') {
-    return months * 4.33
-  }
-  if (frequency === 'MONTHLY') {
-    return months
-  }
-  return 1 // ONCE / FIXED
-}
+export const termLabel = (months: number): string =>
+  months === 12 ? '12 months (1 year)' : `${months} month${months === 1 ? '' : 's'}`

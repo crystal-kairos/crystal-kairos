@@ -78,3 +78,16 @@ This document records architectural, financial, and policy open questions arisin
 - **Question:** For a user who has MFA enabled, should a password alone ever satisfy step-up?
 - **Current implementation (conservative):** A user with MFA enabled steps up with an MFA code (TOTP or backup code) only; a user without MFA steps up with their password. Step-up lasts 10 minutes on the session where it was given and never counts as passing the MFA login challenge (`UserSession.stepUpAt` is separate from `mfaVerifiedAt`). Five failed challenge/step-up attempts revoke the session.
 - **Action Required:** Owner confirmation; changing it is a one-line rule in `lib/authz/step-up.ts` (`confirmStepUp`).
+
+---
+
+## 5. Savings workflows (P3-03)
+
+### OQ-11: Savings payout permission and value-date corrections
+- **Context:** P3-03 first used the general `SAVINGS_MANAGE` permission to approve and pay savings withdrawals.
+- **Resolved (owner):** a separate permission. `SAVINGS_PAYOUTS_MANAGE` now guards approving, paying and rejecting savings withdrawals, and dual control (A-19) counts staff holding it. `SAVINGS_MANAGE` keeps plan management; `SAVINGS_PAYMENTS_REVIEW` keeps receipt review.
+- **Still open (scheduled):** a screen to correct a payment's value date after confirmation is built in P3-07; reversing a plan's first deposit (§2.10 step 4) in P3-09. Both are in the CLAUDE.md hand-over notes. `recalculateSavingsPeriodForfeiture` already restores interest when a corrected value date falls inside the grace window.
+
+### OQ-12: Re-posting accruals after a cleared forfeiture
+- **Context:** When a period's forfeiture is cleared (value-date correction), its lots' reversed accruals must be posted again.
+- **Resolved (owner):** back-dated. The reversed dates are re-posted immediately, each with its original accrual date as the journal effective date, using the next `SavingsInterestAccrual.postingSeq` (unique `(lotId, accrualDate, postingSeq)`). The reversed rows and journal reversals stay as history.

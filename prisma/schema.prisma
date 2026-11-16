@@ -143,21 +143,21 @@ enum SavingsFrequency {
   ONCE // For FIXED savings
 }
 
-enum SavingsMaturity {
-  ONE_MONTH
-  THREE_MONTHS
-  SIX_MONTHS
-  TWELVE_MONTHS
-}
-
+// P3-03: plan lifecycle (§4.1). No admin approval of ordinary plan creation (D-08).
 enum SavingsStatus {
-  PENDING
-  APPROVED
-  REJECTED
+  PENDING // awaiting the first confirmed deposit: no schedule, start or maturity date
   ACTIVE
   MATURED
+  WITHDRAWAL_PENDING // principal frozen until the payout is confirmed
   WITHDRAWN
-  EARLY_WITHDRAWAL // Withdrawn before maturity (no interest)
+  CANCELLED
+}
+
+enum SavingsWithdrawalKind {
+  MATURITY
+  EARLY
+  RECOVERY
+  SETTLEMENT
 }
 
 // LOAN ENUMS
@@ -270,6 +270,7 @@ enum AdminPermission {
   SAVINGS_READ
   SAVINGS_MANAGE
   SAVINGS_PAYMENTS_REVIEW
+  SAVINGS_PAYOUTS_MANAGE
   LOANS_READ
   LOANS_REVIEW
   LOANS_DISBURSE
@@ -939,21 +940,17 @@ model Transaction {
 // ============================================
 
 model SavingsProduct {
-  id                   String      @id @default(uuid())
-  type                 SavingsType // (FIXED, REGULAR, STAGGERED)
-  title                String
-  description          String
-  rates                String      @default("Flexible Rates") // Generated e.g. "12% (6 Months) / 36% (1 Year)"
-  badge                String // e.g. "High Yield"
-  icon                 String // Name of the lucide icon, e.g. "Lock", "PiggyBank"
-  interestRate1Month   Decimal?    @db.Decimal(7, 4)
-  interestRate3Months  Decimal?    @db.Decimal(7, 4)
-  interestRate6Months  Decimal?    @db.Decimal(7, 4)
-  interestRate12Months Decimal?    @db.Decimal(7, 4)
-  isActive             Boolean     @default(true)
-  createdBy            String // Admin userId
-  createdAt            DateTime    @default(now())
-  updatedAt            DateTime    @updatedAt
+  id          String      @id @default(uuid())
+  type        SavingsType // (FIXED, REGULAR, STAGGERED)
+  title       String
+  description String
+  rates       String      @default("Flexible Rates") // Generated from the active term rates, never typed
+  badge       String? // Optional; hidden when blank
+  icon        String // Name of the lucide icon, e.g. "Lock", "PiggyBank"
+  isActive    Boolean     @default(true)
+  createdBy   String // Admin userId
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
 
   createdByUser User                     @relation("SavingsProductCreator", fields: [createdBy], references: [id])
   savings       Savings[]
@@ -983,44 +980,45 @@ model SavingsProductTermRate {
 }
 
 model Savings {
-  id                            String           @id @default(uuid())
-  userId                        String
-  productId                     String?
-  savingsType                   SavingsType
-  targetAmount                  Decimal?         @db.Decimal(15, 2) // For FIXED, the bulk amount; For REGULAR, amount per period
-  frequency                     SavingsFrequency
-  maturity                      SavingsMaturity
-  interestRate                  Decimal          @db.Decimal(7, 4) // Snapshotted simple interest rate
-  durationMonths                Int?
-  ratePercent                   Decimal?         @db.Decimal(7, 4)
-  interestCalculationMethod     String           @default("SIMPLE_INTEREST_HELD_FRACTION")
-  savingsProductTermRateVersion Int?
-  bankName                      String
-  accountNumber                 String
-  accountName                   String
-  currentBalance                Decimal          @default(0) @db.Decimal(15, 2)
-  accruedInterest               Decimal          @default(0) @db.Decimal(15, 2)
-  totalDeposited                Decimal          @default(0) @db.Decimal(15, 2)
-  expectedMaturityAmount        Decimal?         @db.Decimal(15, 2)
-  isAnonymousRequest            Boolean          @default(false) // True if submitted via public form with membership ID
-  status                        SavingsStatus    @default(PENDING)
-  approvedAt                    DateTime?
-  approvedBy                    String?
-  rejectionReason               String?
-  startDate                     DateTime?        @db.Date
-  maturityDate                  DateTime?        @db.Date
-  earlyWithdrawal               Boolean          @default(false) // If true, no interest
-  createdAt                     DateTime         @default(now())
-  updatedAt                     DateTime         @updatedAt
+  id                       String                 @id @default(uuid())
+  userId                   String
+  productId                String?
+  savingsType              SavingsType
+  targetAmount             Decimal?               @db.Decimal(15, 2) // FIXED: the target; REGULAR: amount per period
+  frequency                SavingsFrequency
+  durationMonths           Int // 1..12 (CHECK)
+  // Snapshotted at subscription (D-09); later rate changes never affect this plan.
+  ratePercentSnapshot      Decimal                @db.Decimal(7, 4) // simple interest % for the full term (§2.5)
+  rateVersionSnapshot      Int
+  interestMethod           String                 @default("SIMPLE_HELD_TERM_FRACTION")
+  currentBalance           Decimal                @default(0) @db.Decimal(15, 2) // confirmed principal of active (non-voided) lots
+  totalDeposited           Decimal                @default(0) @db.Decimal(15, 2)
+  status                   SavingsStatus          @default(PENDING)
+  startDate                DateTime?              @db.Date // value date of the first confirmed deposit
+  maturityDate             DateTime?              @db.Date // addMonthsClamped(startDate, durationMonths)
+  maturedAt                DateTime?
+  cancelledAt              DateTime?
+  cancellationReason       String?
+  withdrawalKind           SavingsWithdrawalKind?
+  withdrawalRequestedAt    DateTime?
+  withdrawalPrincipal      Decimal?               @db.Decimal(15, 2)
+  withdrawalInterest       Decimal?               @db.Decimal(15, 2)
+  withdrawalDisbursementId String?                @unique
+  withdrawnAt              DateTime?
+  createdAt                DateTime               @default(now())
+  updatedAt                DateTime               @updatedAt
 
-  user         User            @relation(fields: [userId], references: [id], onDelete: Restrict)
-  product      SavingsProduct? @relation(fields: [productId], references: [id], onDelete: Restrict)
-  transactions Transaction[]
-  periods      SavingsPeriod[]
+  user                   User            @relation(fields: [userId], references: [id], onDelete: Restrict)
+  product                SavingsProduct? @relation(fields: [productId], references: [id], onDelete: Restrict)
+  withdrawalDisbursement Disbursement?   @relation("SavingsWithdrawalDisbursement", fields: [withdrawalDisbursementId], references: [id], onDelete: Restrict)
+  transactions           Transaction[]
+  periods                SavingsPeriod[]
+  lots                   SavingsLot[]
 
   @@index([userId])
   @@index([status])
   @@index([productId])
+  @@index([status, maturityDate])
   @@map("savings")
 }
 
@@ -1036,11 +1034,55 @@ model SavingsPeriod {
   createdAt         DateTime            @default(now())
   updatedAt         DateTime            @updatedAt
 
-  savings Savings @relation(fields: [savingsId], references: [id], onDelete: Restrict)
+  savings Savings      @relation(fields: [savingsId], references: [id], onDelete: Restrict)
+  lots    SavingsLot[]
 
   @@unique([savingsId, periodNumber])
   @@index([status, dueDate])
   @@map("savings_periods")
+}
+
+// P3-03: one immutable principal lot per confirmed savings allocation (§2.5).
+model SavingsLot {
+  id              String    @id @default(uuid())
+  savingsId       String
+  allocationId    String    @unique // the PaymentAllocation that created it
+  principal       Decimal   @db.Decimal(15, 2) // CHECK > 0
+  valueDate       DateTime  @db.Date
+  savingsPeriodId String? // regular plans: the period it pays
+  interestBearing Boolean   @default(true)
+  forfeitedAt     DateTime?
+  forfeitReason   String? // PERIOD_LATE | EARLY_WITHDRAWAL | VOIDED
+  voidedAt        DateTime? // payment reversal (P3-09)
+  createdAt       DateTime  @default(now())
+
+  savings       Savings                  @relation(fields: [savingsId], references: [id], onDelete: Restrict)
+  allocation    PaymentAllocation        @relation(fields: [allocationId], references: [id], onDelete: Restrict)
+  savingsPeriod SavingsPeriod?           @relation(fields: [savingsPeriodId], references: [id], onDelete: Restrict)
+  accruals      SavingsInterestAccrual[]
+
+  @@index([savingsId])
+  @@index([savingsPeriodId])
+  @@map("savings_lots")
+}
+
+// P3-03: monthly linear interest accrual per lot (§2.5, D-17, A-07).
+model SavingsInterestAccrual {
+  id             String    @id @default(uuid())
+  lotId          String
+  accrualDate    DateTime  @db.Date
+  postingSeq     Int       @default(0) // 0 = first posting; n = re-posting after a cleared forfeiture (OQ-12)
+  amount         Decimal   @db.Decimal(15, 2) // CHECK > 0
+  journalEntryId String?
+  reversedAt     DateTime?
+  reversalReason String?
+  createdAt      DateTime  @default(now())
+
+  lot          SavingsLot    @relation(fields: [lotId], references: [id], onDelete: Restrict)
+  journalEntry JournalEntry? @relation("SavingsAccrualJournal", fields: [journalEntryId], references: [id], onDelete: Restrict)
+
+  @@unique([lotId, accrualDate, postingSeq])
+  @@map("savings_interest_accruals")
 }
 
 // Deprecated savings transactions removed
@@ -1250,19 +1292,19 @@ model LoanSettings {
 }
 
 model UserSession {
-  id             String    @id @default(uuid())
-  userId         String
-  createdAt      DateTime  @default(now())
-  lastSeenAt     DateTime  @default(now())
-  expiresAt      DateTime
-  idleExpiresAt  DateTime
-  userAgentLabel String?
-  ipHash         String?
-  mfaVerifiedAt  DateTime? // set only when this session passed the MFA login challenge (or enrolled MFA)
-  stepUpAt       DateTime? // last step-up re-authentication on this session (password or MFA code)
-  challengeFailures Int     @default(0) // failed MFA challenge / step-up attempts; session is revoked at the limit
-  revokedAt      DateTime?
-  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                String    @id @default(uuid())
+  userId            String
+  createdAt         DateTime  @default(now())
+  lastSeenAt        DateTime  @default(now())
+  expiresAt         DateTime
+  idleExpiresAt     DateTime
+  userAgentLabel    String?
+  ipHash            String?
+  mfaVerifiedAt     DateTime? // set only when this session passed the MFA login challenge (or enrolled MFA)
+  stepUpAt          DateTime? // last step-up re-authentication on this session (password or MFA code)
+  challengeFailures Int       @default(0) // failed MFA challenge / step-up attempts; session is revoked at the limit
+  revokedAt         DateTime?
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, revokedAt, expiresAt])
   @@map("user_sessions")
@@ -1342,12 +1384,13 @@ model JournalEntry {
   reason         String?
   createdAt      DateTime @default(now())
 
-  postedBy           User?               @relation("JournalEntryPoster", fields: [postedById], references: [id], onDelete: Restrict)
-  reversalOf         JournalEntry?       @relation("JournalReversal", fields: [reversalOfId], references: [id], onDelete: Restrict)
-  reversedBy         JournalEntry?       @relation("JournalReversal")
+  postedBy           User?                    @relation("JournalEntryPoster", fields: [postedById], references: [id], onDelete: Restrict)
+  reversalOf         JournalEntry?            @relation("JournalReversal", fields: [reversalOfId], references: [id], onDelete: Restrict)
+  reversedBy         JournalEntry?            @relation("JournalReversal")
   lines              JournalLine[]
   paymentAllocations PaymentAllocation[]
   disbursements      Disbursement[]
+  savingsAccruals    SavingsInterestAccrual[] @relation("SavingsAccrualJournal")
 
   @@index([sourceType, sourceId])
   @@index([effectiveDate])
@@ -1607,6 +1650,7 @@ model PaymentAllocation {
   payment        Payment         @relation(fields: [paymentId], references: [id], onDelete: Restrict)
   journalEntry   JournalEntry?   @relation(fields: [journalEntryId], references: [id], onDelete: Restrict)
   feeAssessments FeeAssessment[]
+  savingsLot     SavingsLot?
 
   @@index([paymentId])
   @@index([targetType, targetId, periodId])
@@ -1633,12 +1677,13 @@ model Disbursement {
   idempotencyKey     String              @unique
   createdAt          DateTime            @default(now())
 
-  recipient    User          @relation("DisbursementRecipient", fields: [recipientUserId], references: [id], onDelete: Restrict)
-  bankAccount  BankAccount   @relation(fields: [bankAccountId], references: [id], onDelete: Restrict)
-  requestedBy  User          @relation("DisbursementRequester", fields: [requestedById], references: [id], onDelete: Restrict)
-  approvedBy   User?         @relation("DisbursementApprover", fields: [approvedById], references: [id], onDelete: Restrict)
-  disbursedBy  User?         @relation("DisbursementDisburser", fields: [disbursedById], references: [id], onDelete: Restrict)
-  journalEntry JournalEntry? @relation(fields: [journalEntryId], references: [id], onDelete: Restrict)
+  recipient         User          @relation("DisbursementRecipient", fields: [recipientUserId], references: [id], onDelete: Restrict)
+  bankAccount       BankAccount   @relation(fields: [bankAccountId], references: [id], onDelete: Restrict)
+  requestedBy       User          @relation("DisbursementRequester", fields: [requestedById], references: [id], onDelete: Restrict)
+  approvedBy        User?         @relation("DisbursementApprover", fields: [approvedById], references: [id], onDelete: Restrict)
+  disbursedBy       User?         @relation("DisbursementDisburser", fields: [disbursedById], references: [id], onDelete: Restrict)
+  journalEntry      JournalEntry? @relation(fields: [journalEntryId], references: [id], onDelete: Restrict)
+  savingsWithdrawal Savings?      @relation("SavingsWithdrawalDisbursement")
 
   @@index([recipientUserId, status])
   @@index([valueDate])
