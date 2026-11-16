@@ -91,7 +91,7 @@ export const AdminEAjoGroupDetailClient = ({ data }: { data: Dashboard }) => {
   const [reference, setReference] = useState('')
   const [evidence, setEvidence] = useState<File | null>(null)
   const [cashBalance, setCashBalance] = useState('')
-  // Late fees block cancellation; the popup offers to deduct them from the contributions (OQ-13)
+  // Late fees block cancellation; the popup offers to deduct them from the contributions (OQ-18)
   const [feesBlock, setFeesBlock] = useState<{ participant: Participant; reason: string; message: string } | null>(null)
 
   const { group, participants, funding, pendingContributions, slots } = data

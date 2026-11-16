@@ -259,7 +259,7 @@ stateDiagram-v2
 
 - **Guards & locking:** every roster change takes the group advisory lock (`eajo-group:{id}`) then the member locks (`lockMembers`), and uses `transition()` (conditional `updateMany`). `maxMembersPerSlot` counts PENDING, APPROVED, ACTIVE and COMPLETED participants, so concurrent joins cannot overfill a slot.
 - **Rules:**
-  - Cancellation is refused once the payout is APPROVED or PAID. While late fees are unpaid it is refused unless the admin chooses to deduct them from the contributions held; the remainder is refunded to the wallet (OQ-13).
+  - Cancellation is refused once the payout is APPROVED or PAID. While late fees are unpaid it is refused unless the admin chooses to deduct them from the contributions held; the remainder is refunded to the wallet (OQ-18).
   - The early-slot penalty, late-penalty % and cap are snapshotted on the participant at activation.
   - Guarantee reservation: `c × (N − s)` until the payout is PAID, then `min(advance, unpaid contributions)`; RELEASED on rejection, cancellation or completion.
 

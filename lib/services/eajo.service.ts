@@ -21,7 +21,8 @@ import { AppError } from '@/lib/errors/app-error'
 import { lockMembers, transition } from '@/lib/db/concurrency'
 import { addDays, addMonthsClamped, lagosToday, parseDateOnly, toLagosDateString } from '@/lib/domain/dates'
 import { roundMoney } from '@/lib/domain/money'
-import { formatSequentialNumber } from '@/lib/domain/payment-reference'
+import { formatSequentialNumber, nextSequenceAfter } from '@/lib/domain/payment-reference'
+import { lockSequence } from '@/lib/db/sequence'
 import { calculateEAjoAdvanceExposure } from '@/lib/domain/capacity'
 import {
   calculateEAjoPayout,
@@ -784,7 +785,7 @@ export async function afterEAjoAllocationsChanged(
  * (no early-slot penalty), the payout is cancelled and the reservation released.
  * Refused after the payout has been approved or paid (A-09). Unpaid late fees block it
  * (`PENALTIES_OUTSTANDING`) unless the admin passes `deductPenalties`: the fees are then paid out of
- * the contributions held and only the remainder is refunded (owner decision OQ-13).
+ * the contributions held and only the remainder is refunded (owner decision OQ-18).
  */
 export async function cancelEAjoParticipant(
   tx: Tx,
@@ -834,7 +835,7 @@ export async function cancelEAjoParticipant(
       await getEAjoParticipantLedgerBalance(tx, state.id, LedgerAccountType.EAJO_CONTRIBUTION_LIABILITY),
     )
 
-    // OQ-13 (owner decision): unpaid late fees block cancellation unless the admin chooses to deduct
+    // OQ-18 (owner decision): unpaid late fees block cancellation unless the admin chooses to deduct
     // them from the contributions held; the remainder is refunded to the wallet.
     if (penaltyOutstanding.gt(0)) {
       if (!params.deductPenalties) {
@@ -1064,10 +1065,14 @@ export async function approveEAjoPayout(
     )
   }
 
-  const count = await tx.disbursement.count()
+  await lockSequence(tx, 'DSB') // shared with loan and savings disbursements (P3-03/P3-04)
+  const lastDisbursement = await tx.disbursement.findFirst({
+    orderBy: { disbursementNumber: 'desc' },
+    select: { disbursementNumber: true },
+  })
   const disbursement = await tx.disbursement.create({
     data: {
-      disbursementNumber: formatSequentialNumber('DSB', count + 1),
+      disbursementNumber: formatSequentialNumber('DSB', nextSequenceAfter(lastDisbursement?.disbursementNumber)),
       recipientUserId: payout.eajoMember.userId,
       purpose: DisbursementPurpose.EAJO_PAYOUT,
       amount: payout.netPayout,
@@ -1331,7 +1336,7 @@ export async function accrueEAjoPenaltiesForParticipant(
       latePenaltyDailyPercent: participant.latePenaltyDailyPercent,
       penaltyCapType: participant.penaltyCapType,
       penaltyCapValue: participant.penaltyCapValue,
-      // Owner decision OQ-11: PERCENT_OF_PRINCIPAL cap base = c × N
+      // Owner decision OQ-16: PERCENT_OF_PRINCIPAL cap base = c × N
       capBase: participant.group.contributionAmount.mul(participant.group.totalSlots),
     },
     penaltiesAssessedNet: assessedNet,

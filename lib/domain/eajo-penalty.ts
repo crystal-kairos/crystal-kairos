@@ -21,7 +21,7 @@ import { roundMoney } from '@/lib/domain/money'
  * - Only the late contribution is charged; penalties are never compounded. The early-slot penalty
  *   (§2.8) is a different charge and is never computed here.
  *
- * Owner decision (OQ-11, resolved 2026-11-16): for `PERCENT_OF_PRINCIPAL` caps the base is the
+ * Owner decision (OQ-16, resolved 2026-11-16): for `PERCENT_OF_PRINCIPAL` caps the base is the
  * participant's total scheduled contributions `c × N` (the e-ajo equivalent of "the amount
  * borrowed"). The caller passes it as `capBase`, so changing the base is a one-line change.
  */
@@ -30,7 +30,7 @@ export interface EAjoPenaltyTerms {
   latePenaltyDailyPercent: Prisma.Decimal | number | string
   penaltyCapType: PenaltyCapType
   penaltyCapValue: Prisma.Decimal | number | string
-  /** Base for PERCENT_OF_PRINCIPAL caps (owner decision OQ-11: c × N). */
+  /** Base for PERCENT_OF_PRINCIPAL caps (owner decision OQ-16: c × N). */
   capBase: Prisma.Decimal | number | string
 }
 

@@ -12,7 +12,6 @@ import {
   LedgerAccountType,
   PenaltyCapType,
   SavingsFrequency,
-  SavingsMaturity,
   SavingsStatus,
   SavingsType,
   UserRole,
@@ -74,16 +73,13 @@ describe('E-ajo slots, payouts, cancellation and penalties (PR P3-05, §2.8, §2
           userId: u.id,
           savingsType: SavingsType.REGULAR,
           frequency: SavingsFrequency.MONTHLY,
-          maturity: SavingsMaturity.TWELVE_MONTHS,
+          durationMonths: 12,
           targetAmount: savings,
           currentBalance: savings,
           totalDeposited: savings,
           status: SavingsStatus.ACTIVE,
-          interestRate: 5,
-          expectedMaturityAmount: savings,
-          bankName: 'Test Bank',
-          accountNumber: '0123456789',
-          accountName: key,
+          ratePercentSnapshot: 5,
+          rateVersionSnapshot: 1,
         },
       })
     }
@@ -499,7 +495,7 @@ describe('E-ajo slots, payouts, cancellation and penalties (PR P3-05, §2.8, §2
     const job = await runEAjoPenaltyJob({ groupId, throughDate: day(addDays(p3.dueDate, 20)), today: through })
     expect(job.accruals).toBe(0)
 
-    // Unpaid late fees block cancellation (OQ-13)…
+    // Unpaid late fees block cancellation (OQ-18)…
     await expect(
       prisma.$transaction((tx) => cancelEAjoParticipant(tx, { eajoMemberId: participant.c, actor: ownerActor, reason: 'x' })),
     ).rejects.toMatchObject({ code: 'PENALTIES_OUTSTANDING' })

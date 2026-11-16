@@ -61,7 +61,7 @@ describe('P3-05 e-ajo domain rules', () => {
         }).code,
       ).toBe('EARLIER_CONTRIBUTION_OVERDUE')
     })
-    it('does not block on unpaid late penalties once the contributions are paid (OQ-12)', () => {
+    it('does not block on unpaid late penalties once the contributions are paid (OQ-17)', () => {
       expect(
         evaluateEAjoPayoutEligibility({
           slotNumber: 2,

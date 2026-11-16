@@ -145,7 +145,7 @@ export interface EAjoPeriodState {
   contributionPaid: Prisma.Decimal | number | string
   /**
    * assessed − paid − waived late penalty on this period. Informational only: late penalties do
-   * NOT block the payout (OQ-12, resolved) — they stay owed and are collected first from the
+   * NOT block the payout (OQ-17, resolved) — they stay owed and are collected first from the
    * member's next payment, or through recovery.
    */
   penaltyOutstanding?: Prisma.Decimal | number | string
@@ -177,7 +177,7 @@ function toDateKey(d: Date | string): string {
  *  2. the contribution for month `s` is settled; and
  *  3. no earlier contribution is overdue.
  *
- * As the guide words it (OQ-12, resolved): only *contributions* count. Unpaid late penalties do
+ * As the guide words it (OQ-17, resolved): only *contributions* count. Unpaid late penalties do
  * not block the payout and are not deducted from it; they remain owed on their periods. Only
  * confirmed money settles a contribution (§1.2): a receipt still in review does not.
  * Because every earlier period is due at least a month before period `s`, condition 3 means the
