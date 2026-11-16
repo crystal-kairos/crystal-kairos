@@ -186,3 +186,81 @@ export const getLoanPlanById = async (loanId: string) => {
     return { success: false, error: 'Failed to fetch loan plan.' }
   }
 }
+
+/**
+ * Loan guarantee requests addressed to this member as guarantor (§2.7, P3-04).
+ * Each row carries the exact terms the guarantor is asked to consent to (amount, term,
+ * rate, instalment, total repayable, penalty terms and cap) and how much of the
+ * guarantor's savings would be reserved. Members read their own; staff need
+ * LOANS_READ or GUARANTEES_REVIEW.
+ */
+export const getMyLoanGuaranteeRequests = async (userId: string) => {
+  try {
+    const actor = await requireMemberOrStaffWithPermission(userId, [
+      AdminPermission.LOANS_READ,
+      AdminPermission.GUARANTEES_REVIEW,
+    ])
+
+    const rows = await prisma.guaranteeReservation.findMany({
+      where: { guarantorId: userId, guaranteeType: GuaranteeType.LOAN },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        applicant: { select: { name: true } },
+        loan: {
+          select: {
+            id: true,
+            status: true,
+            purpose: true,
+            requestedAmount: true,
+            approvedAmount: true,
+            duration: true,
+            interestRate: true,
+            monthlyInterestRatePercent: true,
+            latePenaltyDailyPercent: true,
+            penaltyCapType: true,
+            penaltyCapValue: true,
+            applicationFee: true,
+          },
+        },
+      },
+    })
+
+    return {
+      success: true,
+      viewerIsGuarantor: actor.id === userId,
+      data: rows.map((r) => {
+        let quote: ReturnType<typeof serializeLoanQuote> | null = null
+        if (r.loan) {
+          try {
+            quote = serializeLoanQuote(quoteFromLoan(r.loan))
+          } catch {
+            quote = null // legacy loans without snapshotted penalty terms
+          }
+        }
+        const reserved = r.state === 'CONSENTED' ? r.reservedAmount : r.requestedAmount
+        return {
+          id: r.id,
+          state: r.state,
+          applicantName: r.applicant.name,
+          loanId: r.loanId,
+          loanStatus: r.loan?.status ?? null,
+          purpose: r.loan?.purpose ?? '',
+          isRevisedTerms: r.state === 'AWAITING_RECONSENT',
+          guaranteeAmount: Number(reserved),
+          quote,
+          decisionReason: r.decisionReason,
+          hasEvidence: Boolean(r.evidenceDocumentId),
+          createdAt: r.createdAt.toISOString(),
+          consentedAt: r.consentedAt ? r.consentedAt.toISOString() : null,
+        }
+      }),
+    }
+  } catch (error) {
+    return {
+      success: false,
+      viewerIsGuarantor: false,
+      data: [],
+      error: error instanceof AuthzError ? error.message : 'Unable to load guarantee requests.',
+    }
+  }
+}

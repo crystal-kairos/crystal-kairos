@@ -2,6 +2,7 @@ import { auth } from '@/auth'
 import { redirect } from 'next/navigation'
 import { getLoanRecords, getSavingsRecords } from '@/models/members/query'
 import { LoansHubClient } from '@/components/loans/LoansHubClient'
+import { GuaranteeRequestsNotice } from '@/components/members/GuaranteeRequestsNotice'
 import { ShieldAlert } from 'lucide-react'
 
 interface PageProps {
@@ -57,11 +58,18 @@ const LoansHubPage = async ({ params }: PageProps) => {
   }))
 
   return (
-    <LoansHubClient
-      userId={profileId}
-      loans={mappedLoans}
-      totalSavings={totalSavings}
-    />
+    <>
+      {isSelf && (
+        <div className="w-[90%] mx-auto max-w-6xl pt-6">
+          <GuaranteeRequestsNotice userId={profileId} />
+        </div>
+      )}
+      <LoansHubClient
+        userId={profileId}
+        loans={mappedLoans}
+        totalSavings={totalSavings}
+      />
+    </>
   )
 }
 

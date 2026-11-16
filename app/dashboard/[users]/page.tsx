@@ -4,6 +4,7 @@ import { getMemberById, getEarningRecords } from '@/models/members/query'
 import { getUserLedgerBalances, getUserTransactions } from '@/models/transactions/actions'
 import { MemberDashboardBento } from '@/components/members/MemberDashboardBento'
 import { ProfileCompletionCard } from '@/components/members/ProfileCompletionCard'
+import { GuaranteeRequestsNotice } from '@/components/members/GuaranteeRequestsNotice'
 import { SocietyAccountBanner } from '@/components/payments/SocietyAccountBanner'
 import { getProfileCompletion } from '@/lib/services/profile.service'
 import { getActiveSocietyBankAccountAction } from '@/models/members/actions'
@@ -95,6 +96,7 @@ const UserPage = async ({ params }: PageProps) => {
         societyAccount={societyAccountResult.success && societyAccountResult.data ? societyAccountResult.data : null}
         membershipNumber={member.membership?.membershipNumber}
       />
+      {isSelf && <GuaranteeRequestsNotice userId={profileId} />}
       <ProfileCompletionCard report={profileCompletionReport} userId={profileId} />
       <MemberDashboardBento
         userId={profileId}
