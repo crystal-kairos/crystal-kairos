@@ -320,6 +320,8 @@ export async function generateAndPersistEAjoSchedule(
 // PENALTY ACCRUAL ATOMIC OPERATIONS
 // ============================================
 
+import { reverseJournalEntry } from '@/lib/services/ledger.service'
+
 export interface RecordLoanPenaltyAccrualParams {
   loanInstalmentId: string
   penaltyDate: Date | string
@@ -337,15 +339,34 @@ export async function recordLoanPenaltyAccrual(
   const penaltyAmount = roundMoney(params.amount)
   const penaltyDate = parseDateOnly(params.penaltyDate)
 
-  // 1. Create accrual record (fails on unique constraint if already assessed for this date)
-  const accrual = await tx.loanPenaltyAccrual.create({
-    data: {
-      loanInstalmentId: params.loanInstalmentId,
-      penaltyDate,
-      amount: penaltyAmount,
-      journalEntryId: params.journalEntryId || null,
+  const existing = await tx.loanPenaltyAccrual.findUnique({
+    where: {
+      loanInstalmentId_penaltyDate: {
+        loanInstalmentId: params.loanInstalmentId,
+        penaltyDate,
+      },
     },
   })
+
+  const accrual =
+    existing && existing.reversedAt !== null
+      ? await tx.loanPenaltyAccrual.update({
+          where: { id: existing.id },
+          data: {
+            amount: penaltyAmount,
+            reversedAt: null,
+            reversalReason: null,
+            journalEntryId: params.journalEntryId ?? existing.journalEntryId,
+          },
+        })
+      : await tx.loanPenaltyAccrual.create({
+          data: {
+            loanInstalmentId: params.loanInstalmentId,
+            penaltyDate,
+            amount: penaltyAmount,
+            journalEntryId: params.journalEntryId || null,
+          },
+        })
 
   // 2. Increment instalment penaltyAssessed
   const instalment = await tx.loanInstalment.update({
@@ -362,6 +383,7 @@ export interface ReverseLoanPenaltyAccrualParams {
   loanInstalmentId: string
   penaltyDate: Date | string
   reason: string
+  actorId?: string | null
 }
 
 /**
@@ -384,6 +406,22 @@ export async function reverseLoanPenaltyAccrual(
 
   if (!existing || existing.reversedAt) {
     return null
+  }
+
+  if (existing.journalEntryId) {
+    const je = await tx.journalEntry.findUnique({
+      where: { id: existing.journalEntryId },
+      include: { reversedBy: true },
+    })
+    if (je && !je.reversedBy) {
+      await reverseJournalEntry(tx, {
+        originalJournalEntryId: existing.journalEntryId,
+        idempotencyKey: `loan-penalty-rev:${existing.id}:${Date.now()}`,
+        reason: params.reason,
+        postedById: params.actorId ?? null,
+        effectiveDate: penaltyDate,
+      })
+    }
   }
 
   // Mark reversed
@@ -423,14 +461,34 @@ export async function recordEAjoPenaltyAccrual(
   const penaltyAmount = roundMoney(params.amount)
   const penaltyDate = parseDateOnly(params.penaltyDate)
 
-  const accrual = await tx.eAjoPenaltyAccrual.create({
-    data: {
-      eajoContributionPeriodId: params.eajoContributionPeriodId,
-      penaltyDate,
-      amount: penaltyAmount,
-      journalEntryId: params.journalEntryId || null,
+  const existing = await tx.eAjoPenaltyAccrual.findUnique({
+    where: {
+      eajoContributionPeriodId_penaltyDate: {
+        eajoContributionPeriodId: params.eajoContributionPeriodId,
+        penaltyDate,
+      },
     },
   })
+
+  const accrual =
+    existing && existing.reversedAt !== null
+      ? await tx.eAjoPenaltyAccrual.update({
+          where: { id: existing.id },
+          data: {
+            amount: penaltyAmount,
+            reversedAt: null,
+            reversalReason: null,
+            journalEntryId: params.journalEntryId ?? existing.journalEntryId,
+          },
+        })
+      : await tx.eAjoPenaltyAccrual.create({
+          data: {
+            eajoContributionPeriodId: params.eajoContributionPeriodId,
+            penaltyDate,
+            amount: penaltyAmount,
+            journalEntryId: params.journalEntryId || null,
+          },
+        })
 
   const period = await tx.eAjoContributionPeriod.update({
     where: { id: params.eajoContributionPeriodId },
@@ -446,6 +504,7 @@ export interface ReverseEAjoPenaltyAccrualParams {
   eajoContributionPeriodId: string
   penaltyDate: Date | string
   reason: string
+  actorId?: string | null
 }
 
 /**
@@ -468,6 +527,22 @@ export async function reverseEAjoPenaltyAccrual(
 
   if (!existing || existing.reversedAt) {
     return null
+  }
+
+  if (existing.journalEntryId) {
+    const je = await tx.journalEntry.findUnique({
+      where: { id: existing.journalEntryId },
+      include: { reversedBy: true },
+    })
+    if (je && !je.reversedBy) {
+      await reverseJournalEntry(tx, {
+        originalJournalEntryId: existing.journalEntryId,
+        idempotencyKey: `eajo-penalty-rev:${existing.id}:${Date.now()}`,
+        reason: params.reason,
+        postedById: params.actorId ?? null,
+        effectiveDate: penaltyDate,
+      })
+    }
   }
 
   const accrual = await tx.eAjoPenaltyAccrual.update({

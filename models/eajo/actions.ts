@@ -17,6 +17,7 @@ import { validateAmount } from '@/lib/validation/money'
 import { toActionErrorResult } from '@/lib/errors/to-action-result'
 
 import { applyEAjoContribution, applyToEAjoGroup } from '@/lib/services/eajo.service'
+import { applyWallet } from '@/lib/services/wallet.service'
 
 /**
  * A member applies for a slot in a PENDING group and names a guarantor by email (§2.7, §2.8).
@@ -191,3 +192,73 @@ export const uploadReceiptAction = async (formData: FormData) => {
     }
   }
 }
+
+/**
+ * Member-initiated wallet payment toward one or more E-Ajo contribution periods (§2.11, D-12, P3-06).
+ */
+export const payEAjoFromWalletAction = async (
+  userId: string,
+  eAjoMemberId: string,
+  input: {
+    amount: number | string
+    periodIds?: string[]
+    idempotencyKey?: string
+  },
+) => {
+  try {
+    const actor = await requireMemberOrStaffWithPermission(userId, [
+      AdminPermission.EAJO_MANAGE,
+      AdminPermission.EAJO_PAYMENTS_REVIEW,
+    ])
+    const targetUserId = actor.role === UserRole.USER ? actor.id : userId
+    await assertTargetUserIsMember(targetUserId)
+
+    const amount = validateAmount(input?.amount)
+    const periodIds = input.periodIds?.length ? input.periodIds : [null]
+
+    const result = await applyWallet({
+      memberId: targetUserId,
+      mode: 'MEMBER',
+      requestedAmount: amount,
+      targets: periodIds.map((pid) => ({
+        targetType: 'EAJO' as const,
+        targetId: eAjoMemberId,
+        targetPeriodId: pid,
+        allocatedAmount: amount,
+      })),
+      actorId: actor.id,
+      idempotencyKey:
+        input.idempotencyKey ?? `wallet-eajo:${eAjoMemberId}:${Date.now()}`,
+    })
+
+    try {
+      revalidatePath(`/dashboard/${targetUserId}/eajo`)
+      revalidatePath(`/dashboard/${targetUserId}`)
+    } catch {}
+
+    return {
+      success: true,
+      data: {
+        paymentId: result.payment?.id ?? null,
+        paymentNumber: result.payment?.paymentNumber ?? null,
+        totalSpent: result.payment ? Number(result.payment.totalConfirmedAmount) : 0,
+        breakdown: result.breakdown,
+        availableBalanceAfter: Number(result.walletSummaryAfter.availableBalance),
+      },
+    }
+  } catch (error) {
+    const err = toActionErrorResult(error, {
+      actionName: 'payEAjoFromWalletAction',
+      fallbackMessage: 'Failed to pay E-Ajo contribution from wallet.',
+      context: { userId, eAjoMemberId },
+    })
+    return {
+      success: false,
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
+    }
+  }
+}
+
