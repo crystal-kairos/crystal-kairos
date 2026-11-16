@@ -28,6 +28,7 @@ import {
   cancelLoanApplication,
   getFeeOutstanding,
   getLoanSettlementQuote,
+  loanTransaction,
   payLoanFeeFromWallet,
   payLoanFromWallet,
   quoteNewLoan,
@@ -595,7 +596,7 @@ export const decideGuarantorRequestAction = async (params: {
       throw new AppError('VALIDATION_ERROR', 'Invalid decision.')
     }
 
-    const result = await prisma.$transaction(async (tx) => {
+    const result = await loanTransaction(async (tx) => {
       const res = await decideGuarantorRequest(tx, {
         reservationId: params.reservationId,
         guarantorId: actor.id,
@@ -677,7 +678,7 @@ export const withdrawGuarantorConsentAction = async (params: {
       throw new AppError('FORBIDDEN', 'Staff accounts cannot act as guarantors.', { statusCode: 403 })
     }
 
-    const result = await prisma.$transaction(async (tx) => {
+    const result = await loanTransaction(async (tx) => {
       const res = await withdrawGuarantorConsent(tx, {
         reservationId: params.reservationId,
         guarantorId: actor.id,

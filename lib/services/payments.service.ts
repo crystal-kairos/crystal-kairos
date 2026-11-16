@@ -12,6 +12,7 @@ import {
 } from '@/generated/prisma/client'
 import { AppError } from '@/lib/errors/app-error'
 import { lockMembers } from '@/lib/db/concurrency'
+import { lockSequence } from '@/lib/db/sequence'
 import {
   calculatePaymentAllocation,
   AllocationPeriodItem,
@@ -198,40 +199,49 @@ export async function createPaymentSubmission(
     }
   }
 
-  // Generate sequential submissionNumber (SUB-000001)
-  const last = await db.paymentSubmission.findFirst({
-    orderBy: { submissionNumber: 'desc' },
-    select: { submissionNumber: true },
-  })
-  const submissionNumber = formatSequentialNumber('SUB', nextSequenceAfter(last?.submissionNumber))
+  // Generate sequential submissionNumber (SUB-000001) under the shared sequence lock, so
+  // concurrent submitters cannot pick the same number (runs inside the caller's
+  // transaction when one is passed in).
+  const createWithNumber = async (client: Prisma.TransactionClient) => {
+    await lockSequence(client, 'SUB')
+    const last = await client.paymentSubmission.findFirst({
+      orderBy: { submissionNumber: 'desc' },
+      select: { submissionNumber: true },
+    })
+    const submissionNumber = formatSequentialNumber('SUB', nextSequenceAfter(last?.submissionNumber))
 
-  const submission = await db.paymentSubmission.create({
-    data: {
-      submissionNumber,
-      memberId,
-      purpose: input.purpose,
-      receivingBankAccountId: input.receivingBankAccountId,
-      claimedAmount: numAmount,
-      paidOn: paymentDate,
-      bankReference: input.bankReference,
-      payerAccountName: input.payerAccountName,
-      receiptFileId: input.receiptFileId,
-      fileHash: input.fileHash,
-      narration: input.narration,
-      status: PaymentSubmissionStatus.SUBMITTED,
-      targets: {
-        create: targets.map((t) => ({
-          targetType: t.targetType,
-          targetId: t.targetId,
-          targetPeriodId: t.targetPeriodId,
-          requestedAmount: Number(t.requestedAmount),
-        })),
+    return client.paymentSubmission.create({
+      data: {
+        submissionNumber,
+        memberId,
+        purpose: input.purpose,
+        receivingBankAccountId: input.receivingBankAccountId,
+        claimedAmount: numAmount,
+        paidOn: paymentDate,
+        bankReference: input.bankReference,
+        payerAccountName: input.payerAccountName,
+        receiptFileId: input.receiptFileId,
+        fileHash: input.fileHash,
+        narration: input.narration,
+        status: PaymentSubmissionStatus.SUBMITTED,
+        targets: {
+          create: targets.map((t) => ({
+            targetType: t.targetType,
+            targetId: t.targetId,
+            targetPeriodId: t.targetPeriodId,
+            requestedAmount: Number(t.requestedAmount),
+          })),
+        },
       },
-    },
-    include: {
-      targets: true,
-    },
-  })
+      include: {
+        targets: true,
+      },
+    })
+  }
+  const submission =
+    typeof (db as { $transaction?: unknown }).$transaction === 'function'
+      ? await db.$transaction((tx) => createWithNumber(tx))
+      : await createWithNumber(db as unknown as Prisma.TransactionClient)
 
   await recordAuditEvent({
     actorId: memberId,
@@ -241,7 +251,7 @@ export async function createPaymentSubmission(
     entityId: submission.id,
     outcome: AuditOutcome.SUCCESS,
     metadata: {
-      submissionNumber,
+      submissionNumber: submission.submissionNumber,
       claimedAmount: numAmount,
       paidOn: paymentDate.toISOString(),
       bankReference: input.bankReference,
@@ -445,6 +455,7 @@ export async function confirmPaymentSubmission(
     }
 
     // 4. Create Payment record
+    await lockSequence(tx, 'PAY') // shared with the wallet payment paths
     const lastPayment = await tx.payment.findFirst({
       orderBy: { paymentNumber: 'desc' },
       select: { paymentNumber: true },

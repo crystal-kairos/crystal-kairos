@@ -22,6 +22,7 @@ import {
 } from '@/generated/prisma/enums'
 import { AppError } from '@/lib/errors/app-error'
 import { lockMembers, transition } from '@/lib/db/concurrency'
+import { lockSequence } from '@/lib/db/sequence'
 import { enforceDualControl, type StaffActor } from '@/lib/authz/guards'
 import { roundMoney, type DecimalValue } from '@/lib/domain/money'
 import { lagosToday, parseDateOnly, isBefore, toLagosDateString } from '@/lib/domain/dates'
@@ -82,6 +83,15 @@ const OPEN_GUARANTEE_STATES: GuaranteeState[] = [
   GuaranteeState.CONSENTED,
   GuaranteeState.AWAITING_RECONSENT,
 ]
+
+/**
+ * Loan transactions take several member locks and some generate PDF evidence
+ * (with a storage upload) before committing; Prisma's 5 s default interactive
+ * timeout is too tight for that under load.
+ */
+export function loanTransaction<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
+  return prisma.$transaction(fn, { maxWait: 10_000, timeout: 30_000 })
+}
 
 function err(code: string, message: string, statusCode = 422): AppError {
   return new AppError(code, message, { statusCode })
@@ -316,7 +326,7 @@ export async function applyForLoan(input: ApplyForLoanInput) {
     applicationFee: fee,
   })
 
-  return prisma.$transaction(async (tx) => {
+  return loanTransaction(async (tx) => {
     await lockMembers(tx, [input.memberId, input.guarantorId])
 
     const member = await tx.user.findUnique({
@@ -438,7 +448,7 @@ export async function applyForLoan(input: ApplyForLoanInput) {
 
 /** Member withdraws their own application before an admin decides (PENDING → CANCELLED). */
 export async function cancelLoanApplication(params: { loanId: string; memberId: string; reason?: string }) {
-  return prisma.$transaction(async (tx) => {
+  return loanTransaction(async (tx) => {
     await lockLoanParties(tx, params.loanId)
     const loan = await loadLoanForUpdate(tx, params.loanId)
     if (loan.userId !== params.memberId) throw err('FORBIDDEN', 'Not authorised.', 403)
@@ -489,7 +499,7 @@ export async function approveLoan(input: ApproveLoanInput) {
   const approvedAmount = roundMoney(input.approvedAmount)
   const offerDays = await getSocietySetting('loanOfferValidityDays', 14)
 
-  return prisma.$transaction(async (tx) => {
+  return loanTransaction(async (tx) => {
     await lockLoanParties(tx, input.loanId)
     const loan = await loadLoanForUpdate(tx, input.loanId)
     if (loan.status !== LoanStatus.PENDING) {
@@ -658,7 +668,7 @@ export async function rejectLoan(params: {
 }) {
   const reason = params.reason?.trim()
   if (!reason) throw err('REASON_REQUIRED', 'A rejection reason is required.', 400)
-  return prisma.$transaction(async (tx) => {
+  return loanTransaction(async (tx) => {
     await lockLoanParties(tx, params.loanId)
     const loan = await loadLoanForUpdate(tx, params.loanId)
     if (loan.status !== LoanStatus.PENDING) {
@@ -725,7 +735,7 @@ export async function respondToLoanOffer(params: {
   if (params.decision === 'DECLINE' && !params.reason?.trim()) {
     throw err('REASON_REQUIRED', 'Please give a reason for declining the offer.', 400)
   }
-  return prisma.$transaction(async (tx) => {
+  return loanTransaction(async (tx) => {
     await lockLoanParties(tx, params.loanId)
     const loan = await loadLoanForUpdate(tx, params.loanId)
     if (loan.userId !== params.memberId) throw err('FORBIDDEN', 'Not authorised.', 403)
@@ -926,7 +936,7 @@ export async function disburseLoan(input: DisburseLoanInput) {
   }
   const amount = roundMoney(input.amount)
 
-  return prisma.$transaction(async (tx) => {
+  return loanTransaction(async (tx) => {
     await lockLoanParties(tx, input.loanId)
     const loan = await loadLoanForUpdate(tx, input.loanId)
 
@@ -1280,17 +1290,6 @@ export async function refreshFeeAssessment(tx: Tx, feeAssessmentId: string, acto
 // Paying from the wallet (§2.11, D-11, D-12)
 // ---------------------------------------------------------------------------
 
-/**
- * Sequential reference numbers are count-based (P2-07). Serialise their
- * generation inside the transaction so two concurrent writers cannot pick the
- * same number.
- */
-async function lockSequence(tx: Tx, prefix: string) {
-  if (typeof (tx as { $executeRaw?: unknown }).$executeRaw !== 'function') return
-  const key = `sequence:${prefix}`
-  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))`
-}
-
 async function nextPaymentNumber(tx: Tx) {
   await lockSequence(tx, 'PAY')
   const last = await tx.payment.findFirst({ orderBy: { paymentNumber: 'desc' }, select: { paymentNumber: true } })
@@ -1391,7 +1390,7 @@ export async function payLoanFromWallet(params: {
   if (amount.lte(0)) throw err('VALIDATION_ERROR', 'The amount must be greater than zero.', 400)
   const key = `wallet-loan:${params.loanId}:${params.idempotencyKey}`
 
-  return prisma.$transaction(async (tx) => {
+  return loanTransaction(async (tx) => {
     await lockMembers(tx, [params.memberId])
     const existing = await tx.payment.findUnique({ where: { idempotencyKey: key } })
     if (existing) return { payment: existing, isReplay: true }
@@ -1455,7 +1454,7 @@ export async function payLoanFromWallet(params: {
 
 /** Member pays the loan application fee from their wallet (A-14). */
 export async function payLoanFeeFromWallet(params: { memberId: string; loanId: string }) {
-  return prisma.$transaction(async (tx) => {
+  return loanTransaction(async (tx) => {
     await lockMembers(tx, [params.memberId])
     const fee = await tx.feeAssessment.findFirst({
       where: { feeType: FeeType.LOAN_APPLICATION, targetId: params.loanId, memberId: params.memberId },

@@ -206,6 +206,10 @@ performance work (P5-03) waits for it.
   P3-09: reversing LOAN allocations must call `refreshLoanAfterPayment` and, for a loan that was COMPLETED, reopen
   it and re-reserve its guarantee (not handled yet). P4-04 registers `runLoanOfferExpiryJob`. P4-02: loans send no
   notifications yet (consent request, offer ready, re-consent, expiry, disbursement).
+  Reference numbers: `lockSequence(tx, prefix)` (`lib/db/sequence.ts`) now serialises `PAY-`/`DSB-`/`SUB-`
+  numbering in payment confirmation, submission creation, savings payouts and loan disbursement/wallet payments;
+  every new writer of those numbers must call it inside its transaction. `disbursement.service#requestDisbursement`
+  still numbers outside a transaction (P3-08 should move it into one).
 
 ### Status
 
