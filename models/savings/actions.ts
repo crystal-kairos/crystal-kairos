@@ -16,6 +16,7 @@ import {
   submitSavingsDeposit,
   subscribeToSavingsPlan,
 } from '@/lib/services/savings.service'
+import { applyWallet } from '@/lib/services/wallet.service'
 
 function revalidateSavings(memberId: string, savingsId?: string) {
   try {
@@ -224,3 +225,64 @@ export const cancelSavingsWithdrawalAction = async (userId: string, savingsId: s
     }
   }
 }
+
+/**
+ * Member-initiated wallet payment toward a savings plan or selected savings periods (§2.11, D-12, P3-06).
+ */
+export const paySavingsFromWalletAction = async (
+  userId: string,
+  data: {
+    savingsId: string
+    amount: number | string
+    periodIds?: string[]
+    idempotencyKey?: string
+  },
+) => {
+  try {
+    const actor = await requireMemberSession(userId)
+    const savingsId = z.string().uuid().parse(data.savingsId)
+    const amount = validateAmount(data.amount)
+    const periodIds = data.periodIds?.length ? data.periodIds : [null]
+
+    const result = await applyWallet({
+      memberId: actor.id,
+      mode: 'MEMBER',
+      requestedAmount: amount,
+      targets: periodIds.map((pid) => ({
+        targetType: 'SAVINGS' as const,
+        targetId: savingsId,
+        targetPeriodId: pid,
+        allocatedAmount: amount,
+      })),
+      actorId: actor.id,
+      idempotencyKey:
+        data.idempotencyKey ?? `wallet-savings:${savingsId}:${Date.now()}`,
+    })
+
+    revalidateSavings(actor.id, savingsId)
+    return {
+      success: true,
+      data: {
+        paymentId: result.payment?.id ?? null,
+        paymentNumber: result.payment?.paymentNumber ?? null,
+        totalSpent: result.payment ? Number(result.payment.totalConfirmedAmount) : 0,
+        breakdown: result.breakdown,
+        availableBalanceAfter: Number(result.walletSummaryAfter.availableBalance),
+      },
+    }
+  } catch (error) {
+    const err = toActionErrorResult(error, {
+      actionName: 'paySavingsFromWalletAction',
+      fallbackMessage: 'Failed to pay savings from wallet',
+      context: { userId, savingsId: data?.savingsId },
+    })
+    return {
+      success: false,
+      error: err.error,
+      code: err.code,
+      fieldErrors: err.fieldErrors,
+      correlationId: err.correlationId,
+    }
+  }
+}
+

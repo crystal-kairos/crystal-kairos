@@ -19,6 +19,10 @@ import {
   DisbursePaymentInput,
 } from '@/lib/services/disbursement.service'
 import {
+  applyWallet,
+  WalletTargetInput,
+} from '@/lib/services/wallet.service'
+import {
   requireAuthenticatedSession,
   requireStaffSession,
   requirePermission,
@@ -267,3 +271,55 @@ export async function disbursePaymentAction(input: {
     return { success: false, error: err.error, code: err.code }
   }
 }
+
+/**
+ * Server action to apply available wallet balance to member obligations (§2.11, D-11, D-12, P3-06)
+ */
+export async function applyWalletAction(input: {
+  memberId?: string
+  targets?: WalletTargetInput[]
+  requestedAmount?: number | string
+  idempotencyKey?: string
+}) {
+  try {
+    const actor = await requireAuthenticatedSession()
+    const targetMemberId =
+      actor.role === UserRole.USER ? actor.id : input.memberId || actor.id
+
+    const result = await applyWallet({
+      memberId: targetMemberId,
+      mode: 'MEMBER',
+      targets: input.targets,
+      requestedAmount: input.requestedAmount,
+      actorId: actor.id,
+      idempotencyKey: input.idempotencyKey,
+    })
+
+    try {
+      revalidatePath(`/dashboard/${targetMemberId}`)
+      revalidatePath(`/dashboard/${targetMemberId}/loans`)
+      revalidatePath(`/dashboard/${targetMemberId}/eajo`)
+      revalidatePath(`/dashboard/${targetMemberId}/savings`)
+      revalidatePath(`/dashboard/${targetMemberId}/transactions`)
+    } catch {}
+
+    return {
+      success: true,
+      data: {
+        paymentId: result.payment?.id ?? null,
+        paymentNumber: result.payment?.paymentNumber ?? null,
+        totalSpent: result.payment ? Number(result.payment.totalConfirmedAmount) : 0,
+        breakdown: result.breakdown,
+        availableBalanceAfter: Number(result.walletSummaryAfter.availableBalance),
+        idempotentReplay: result.idempotentReplay,
+      },
+    }
+  } catch (error) {
+    const err = toActionErrorResult(error, {
+      actionName: 'applyWalletAction',
+      fallbackMessage: 'Failed to apply wallet funds.',
+    })
+    return { success: false, error: err.error, code: err.code }
+  }
+}
+

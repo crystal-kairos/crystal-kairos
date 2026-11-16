@@ -3,10 +3,11 @@
 import { useState, useTransition } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { AlertCircle, ArrowRight, Upload } from 'lucide-react'
+import { AlertCircle, ArrowRight, Upload, Wallet } from 'lucide-react'
 import { Button } from '../ui/button'
 import { UploadAjoReceiptDialog } from './UploadAjoReceiptDialog'
 import { decideGuarantorRequestAction } from '@/models/loans/actions'
+import { payEAjoFromWalletAction } from '@/models/eajo/actions'
 import type { getMyEAjoGuaranteeRequests, getOpenEAjoGroups, getUserEAjoMemberships } from '@/models/eajo/query'
 
 type Membership = NonNullable<Awaited<ReturnType<typeof getUserEAjoMemberships>>['data']>[number]
@@ -81,6 +82,22 @@ export const EAjoDashboardClient = ({ userId, today, memberships, openGroups, gu
     })
   }
 
+  const payFromWallet = (m: Membership) => {
+    setError(null)
+    const openPeriods = m.periods.filter((p) => p.totalOutstanding > 0)
+    const nextPeriod = openPeriods[0]
+    if (!nextPeriod) return
+    const amt = Math.min(m.availableWallet, nextPeriod.totalOutstanding)
+    startTransition(async () => {
+      const res = await payEAjoFromWalletAction(userId, m.id, {
+        amount: amt,
+        periodIds: [nextPeriod.id],
+      })
+      if (!res.success) setError(res.error ?? 'Could not apply wallet to E-Ajo contribution.')
+      else router.refresh()
+    })
+  }
+
   return (
     <div className="flex flex-col gap-6 w-full max-w-6xl mx-auto py-6">
       <div>
@@ -125,6 +142,7 @@ export const EAjoDashboardClient = ({ userId, today, memberships, openGroups, gu
         {memberships.length === 0 && <p className="text-xs text-muted-foreground">You have not joined an e-ajo group yet.</p>}
         {memberships.map((m) => {
           const showSchedule = m.periods.length > 0
+          const nextOpenPeriod = m.periods.find((p) => p.totalOutstanding > 0)
           return (
             <div key={m.id} className="bg-surface-container-lowest border border-outline-variant/10 rounded-xl p-5 flex flex-col gap-4">
               <div className="flex flex-col md:flex-row md:items-start justify-between gap-3">
@@ -183,6 +201,10 @@ export const EAjoDashboardClient = ({ userId, today, memberships, openGroups, gu
                   <div className="flex flex-wrap gap-4 text-xs">
                     <span>Confirmed: <strong className="font-mono">{naira(m.totals.confirmed)}</strong></span>
                     <span>Outstanding now: <strong className="font-mono">{naira(m.totals.outstanding)}</strong></span>
+                    <span>
+                      Available wallet: <strong className="font-mono">{naira(m.availableWallet)}</strong>
+                      {m.walletSummary.heldBalance > 0 ? ` (${naira(m.walletSummary.heldBalance)} held)` : ''}
+                    </span>
                     {m.totals.overdueCount > 0 && <span className="text-error">{m.totals.overdueCount} overdue month(s)</span>}
                   </div>
                   <div className="overflow-x-auto">
@@ -208,16 +230,53 @@ export const EAjoDashboardClient = ({ userId, today, memberships, openGroups, gu
                             <td className="py-1.5 pr-3 font-mono">{naira(p.contributionDue)}</td>
                             <td className="py-1.5 pr-3 font-mono">{naira(p.contributionPaid)}</td>
                             <td className="py-1.5 pr-3 font-mono">{p.penaltyOutstanding > 0 ? naira(p.penaltyOutstanding) : '—'}</td>
-                            <td className="py-1.5 pr-3"><Pill status={p.status} /></td>
+                            <td className="py-1.5 pr-3">
+                              <div className="flex flex-col gap-0.5">
+                                <Pill status={p.status} />
+                                {p.inReview && (
+                                  <span className="text-[10px] text-amber-700">Shielded while receipt is under review</span>
+                                )}
+                              </div>
+                            </td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
                   </div>
+                  {m.payments && m.payments.length > 0 && (
+                    <div className="flex flex-col gap-1 text-xs bg-surface-container rounded-lg p-3">
+                      <span className="font-semibold text-primary">Confirmed payment breakdown</span>
+                      {m.payments.map((pay) => (
+                        <div key={pay.id} className="flex flex-wrap justify-between gap-2 text-muted-foreground font-mono">
+                          <span>
+                            {pay.paymentNumber} ({pay.source.toLowerCase()}) · value date {pay.valueDate}
+                          </span>
+                          <span>
+                            Covered: Penalty {naira(pay.breakdown.penalty)} · Contribution {naira(pay.breakdown.contribution)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   {m.status === 'ACTIVE' && (
-                    <Button size="sm" className="w-fit gap-1.5" onClick={() => setUploadFor(m)}>
-                      <Upload className="w-4 h-4" /> Upload contribution receipt
-                    </Button>
+                    <div className="flex flex-wrap gap-2">
+                      <Button size="sm" className="w-fit gap-1.5" onClick={() => setUploadFor(m)}>
+                        <Upload className="w-4 h-4" /> Upload contribution receipt
+                      </Button>
+                      {m.availableWallet > 0 && nextOpenPeriod && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={isPending}
+                          className="w-fit gap-1.5"
+                          onClick={() => payFromWallet(m)}
+                        >
+                          <Wallet className="w-4 h-4" />
+                          Pay Month {nextOpenPeriod.periodNumber} from wallet (
+                          {naira(Math.min(m.availableWallet, nextOpenPeriod.totalOutstanding))})
+                        </Button>
+                      )}
+                    </div>
                   )}
                 </>
               )}

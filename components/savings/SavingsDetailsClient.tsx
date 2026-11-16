@@ -12,6 +12,7 @@ import {
   Landmark,
   Loader2,
   Upload,
+  Wallet,
 } from 'lucide-react'
 import { Card } from '../ui/card'
 import { Button } from '../ui/button'
@@ -22,6 +23,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { SavingsStatusBadge } from './SavingsStatusBadge'
 import {
   cancelSavingsWithdrawalAction,
+  paySavingsFromWalletAction,
   requestSavingsWithdrawalAction,
   submitSavingsDepositAction,
 } from '@/models/savings/actions'
@@ -46,6 +48,8 @@ interface Props {
 export const SavingsDetailsClient = ({ userId, savingsPlan: plan, canAct, backHref, backLabel }: Props) => {
   const router = useRouter()
   const [depositOpen, setDepositOpen] = useState(false)
+  const [walletPayOpen, setWalletPayOpen] = useState(false)
+  const [walletAmount, setWalletAmount] = useState('')
   const [resubmissionOfId, setResubmissionOfId] = useState<string | undefined>()
   const [withdrawOpen, setWithdrawOpen] = useState(false)
   const [isPending, startTransition] = useTransition()
@@ -100,6 +104,29 @@ export const SavingsDetailsClient = ({ userId, savingsPlan: plan, canAct, backHr
     })
   }
 
+  const payFromWallet = () => {
+    setActionError(null)
+    const suggestedAmt =
+      openPeriods[0]?.outstanding ||
+      plan.targetAmount ||
+      plan.availableWallet
+    const amtToUse = walletAmount.trim() ? walletAmount.trim() : String(Math.min(plan.availableWallet, suggestedAmt))
+    startTransition(async () => {
+      const res = await paySavingsFromWalletAction(userId, {
+        savingsId: plan.id,
+        amount: amtToUse,
+        periodIds: openPeriods.map((p) => p.id),
+      })
+      if (res.success) {
+        setWalletPayOpen(false)
+        setWalletAmount('')
+        router.refresh()
+      } else {
+        setActionError(res.error ?? 'Could not pay from wallet.')
+      }
+    })
+  }
+
   return (
     <div className='flex flex-col gap-6 w-full max-w-5xl mx-auto py-6 px-4 md:px-0'>
       <Link
@@ -133,6 +160,12 @@ export const SavingsDetailsClient = ({ userId, savingsPlan: plan, canAct, backHr
             <Button onClick={() => openDeposit()} className='h-9'>
               <Upload className='w-4 h-4' />
               {plan.status === 'PENDING' ? 'Upload first deposit' : 'Upload deposit receipt'}
+            </Button>
+          ) : null}
+          {canDeposit && plan.availableWallet > 0 ? (
+            <Button variant='outline' onClick={() => setWalletPayOpen(true)} className='h-9'>
+              <Wallet className='w-4 h-4' />
+              Pay from wallet ({naira(plan.availableWallet)})
             </Button>
           ) : null}
           {canWithdraw ? (
@@ -174,7 +207,13 @@ export const SavingsDetailsClient = ({ userId, savingsPlan: plan, canAct, backHr
           { label: 'Confirmed principal', value: naira(plan.currentBalance) },
           { label: 'Interest accrued so far', value: naira(plan.accruedInterest) },
           { label: 'Interest at maturity (current deposits)', value: naira(plan.projectedInterest) },
-          { label: 'Start → maturity', value: `${fmtDate(plan.startDate)} → ${fmtDate(plan.maturityDate)}` },
+          {
+            label: 'Available wallet',
+            value:
+              plan.walletSummary.heldBalance > 0
+                ? `${naira(plan.availableWallet)} (${naira(plan.walletSummary.heldBalance)} held)`
+                : naira(plan.availableWallet),
+          },
         ].map((s) => (
           <Card key={s.label} className='border-0 bg-surface-container rounded-md shadow-none p-4'>
             <span className='text-[10px] uppercase tracking-wider text-muted-foreground font-semibold'>{s.label}</span>
@@ -253,6 +292,9 @@ export const SavingsDetailsClient = ({ userId, savingsPlan: plan, canAct, backHr
                     <td className='p-2'>
                       <div className='flex flex-col gap-1 items-start'>
                         <SavingsStatusBadge kind='period' status={p.status} />
+                        {p.status === 'IN_REVIEW' ? (
+                          <span className='text-[10px] text-amber-700'>Payment under review — shielded from late forfeiture</span>
+                        ) : null}
                         {p.interestForfeited ? (
                           <span className='text-[10px] text-error'>Interest forfeited (paid after the 7-day grace)</span>
                         ) : null}
@@ -312,6 +354,27 @@ export const SavingsDetailsClient = ({ userId, savingsPlan: plan, canAct, backHr
         )}
       </section>
 
+      {plan.payments && plan.payments.length > 0 ? (
+        <section className='flex flex-col gap-2'>
+          <h3 className='font-bold text-sm text-primary uppercase tracking-wide'>Confirmed payment breakdown</h3>
+          <ul className='flex flex-col gap-1.5 text-xs'>
+            {plan.payments.map((pay) => (
+              <li key={pay.id} className='bg-surface-container rounded-md p-3 flex flex-wrap items-center justify-between gap-2'>
+                <div>
+                  <span className='font-semibold text-primary font-mono'>{pay.paymentNumber}</span>{' '}
+                  <span className='text-muted-foreground'>({pay.source.toLowerCase()})</span> · value date {fmtDate(pay.valueDate)}
+                </div>
+                <div className='font-mono text-muted-foreground'>
+                  Covered: Principal {naira(pay.breakdown.principal)}
+                  {pay.breakdown.interest > 0 ? ` · Interest ${naira(pay.breakdown.interest)}` : ''}
+                  {pay.breakdown.penalty > 0 ? ` · Penalty ${naira(pay.breakdown.penalty)}` : ''}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
       {plan.lots.length > 0 ? (
         <section className='flex flex-col gap-2'>
           <h3 className='font-bold text-sm text-primary uppercase tracking-wide'>Confirmed deposits</h3>
@@ -345,6 +408,47 @@ export const SavingsDetailsClient = ({ userId, savingsPlan: plan, canAct, backHr
           resubmissionOfId={resubmissionOfId}
         />
       ) : null}
+
+      <Dialog open={walletPayOpen} onOpenChange={setWalletPayOpen}>
+        <DialogContent className='max-w-md bg-surface rounded-md p-6 border-0 shadow-lg'>
+          <DialogHeader>
+            <DialogTitle className='text-primary font-bold text-base flex items-center gap-2'>
+              <Wallet className='w-5 h-5' /> Pay savings from wallet
+            </DialogTitle>
+            <DialogDescription className='text-xs text-muted-foreground'>
+              Available wallet balance: <strong>{naira(plan.availableWallet)}</strong>
+              {plan.walletSummary.heldBalance > 0
+                ? ` (${naira(plan.walletSummary.heldBalance)} held for pending cash-out)`
+                : ''}
+              . Wallet payments apply immediately on today&apos;s value date (oldest open period first).
+            </DialogDescription>
+          </DialogHeader>
+          <div className='flex flex-col gap-3 mt-2'>
+            <div className='flex flex-col gap-1.5'>
+              <Label htmlFor='wallet-sav-amount' className='text-xs font-semibold text-muted-foreground'>
+                Amount to apply from wallet (₦)
+              </Label>
+              <Input
+                id='wallet-sav-amount'
+                inputMode='decimal'
+                value={walletAmount}
+                placeholder={String(Math.min(plan.availableWallet, openPeriods[0]?.outstanding || plan.targetAmount || plan.availableWallet))}
+                onChange={(e) => setWalletAmount(e.target.value)}
+              />
+            </div>
+            {actionError ? <p className='text-xs text-error'>{actionError}</p> : null}
+            <div className='flex justify-end gap-2 mt-2'>
+              <Button variant='outline' onClick={() => setWalletPayOpen(false)} disabled={isPending}>
+                Cancel
+              </Button>
+              <Button onClick={payFromWallet} disabled={isPending}>
+                {isPending ? <Loader2 className='w-4 h-4 animate-spin' /> : null}
+                Apply wallet
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={withdrawOpen} onOpenChange={setWithdrawOpen}>
         <DialogContent className='max-w-md bg-surface rounded-md p-6 border-0 shadow-lg'>

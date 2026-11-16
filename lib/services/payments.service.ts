@@ -42,6 +42,8 @@ import {
   getEAjoContributionCreditAccounts,
 } from '@/lib/services/eajo.service'
 import { EAjoMemberStatus } from '@/generated/prisma/enums'
+import { recalculateLatenessInTx } from '@/lib/services/lateness.service'
+import { addDays, formatDateOnly, lagosToday } from '@/lib/domain/dates'
 
 export interface CreatePaymentSubmissionInput {
   memberId: string
@@ -363,6 +365,36 @@ export async function confirmPaymentSubmission(
       )
     }
 
+    // 2a. Pre-sync lateness on targeted LOAN and EAJO obligations as of (valueDate - 1 day)
+    // so any penalties accrued on >= valueDate are reversed before allocation and any unshielded days < valueDate are accrued.
+    const valueDateStr = formatDateOnly(valueDate)
+    const preSyncAsOf = addDays(valueDateStr, -1)
+    const preSyncedLoanIds = new Set<string>()
+    const preSyncedEAjoIds = new Set<string>()
+    for (const target of submission.targets) {
+      if (target.targetType === AllocationTargetType.LOAN && !preSyncedLoanIds.has(target.targetId)) {
+        preSyncedLoanIds.add(target.targetId)
+        await recalculateLatenessInTx(tx, {
+          obligationType: 'LOAN',
+          obligationId: target.targetId,
+          asOf: preSyncAsOf,
+          actorId: confirmedById,
+          excludeSubmissionIds: [submission.id],
+          reverseAccrualsAfterAsOf: true,
+        })
+      } else if (target.targetType === AllocationTargetType.EAJO && !preSyncedEAjoIds.has(target.targetId)) {
+        preSyncedEAjoIds.add(target.targetId)
+        await recalculateLatenessInTx(tx, {
+          obligationType: 'EAJO',
+          obligationId: target.targetId,
+          asOf: preSyncAsOf,
+          actorId: confirmedById,
+          excludeSubmissionIds: [submission.id],
+          reverseAccrualsAfterAsOf: true,
+        })
+      }
+    }
+
     // 2. Fetch target periods
     const periodItems: AllocationPeriodItem[] = []
 
@@ -423,6 +455,46 @@ export async function confirmPaymentSubmission(
             principalDue,
           })
         }
+      } else if (target.targetType === AllocationTargetType.EAJO && !target.targetPeriodId) {
+        const memberPart = await tx.eAjoMember.findUnique({
+          where: { id: target.targetId },
+          include: {
+            contributionPeriods: {
+              where: { status: { not: PaymentPeriodStatus.COMPLETED } },
+              orderBy: { periodNumber: 'asc' },
+            },
+          },
+        })
+        if (
+          memberPart &&
+          memberPart.userId === submission.memberId &&
+          memberPart.status === EAjoMemberStatus.ACTIVE
+        ) {
+          for (const period of memberPart.contributionPeriods) {
+            const penaltyDue = Math.max(
+              0,
+              Number(period.penaltyAssessed) -
+                Number(period.penaltyPaid) -
+                Number(period.penaltyWaived),
+            )
+            const principalDue = Math.max(
+              0,
+              Number(period.contributionDue) - Number(period.contributionPaid),
+            )
+            if (penaltyDue + principalDue > 0 && !periodItems.some((p) => p.periodId === period.id)) {
+              periodItems.push({
+                periodId: period.id,
+                targetType: 'EAJO',
+                targetId: period.eajoMemberId,
+                periodNumber: period.periodNumber,
+                dueDate: period.dueDate,
+                penaltyDue,
+                interestDue: 0,
+                principalDue,
+              })
+            }
+          }
+        }
       }
     }
 
@@ -448,11 +520,13 @@ export async function confirmPaymentSubmission(
       }
     }
 
-    // 3. Compute allocation waterfall
+    // 3. Compute allocation waterfall (respecting LOAN -> EAJO -> SAVINGS priority when multiple products are targeted)
+    const distinctTargetTypes = new Set(periodItems.map((p) => p.targetType))
     const baseAllocation = calculatePaymentAllocation({
       amount: amountForPeriods,
       memberId: submission.memberId,
       periods: periodItems,
+      preserveCrossProductPriority: distinctTargetTypes.size > 1,
     })
     // Savings (P3-03): fixed/staggered plans take the excess up to their capacity.
     const savingsAdjusted = applySavingsPlanCapacity(
@@ -645,16 +719,63 @@ export async function confirmPaymentSubmission(
     await refreshSavingsSubmissionTargets(tx, submission.id, confirmedById)
 
     // 7b. P3-04 (after the submission left review, so it no longer shields): derive loan/instalment statuses (completion releases guarantees) and fee status
-    const confirmedLoanIds = new Set(
-      allocationResult.allocations
+    const confirmedLoanIds = new Set([
+      ...submission.targets
+        .filter((t) => t.targetType === AllocationTargetType.LOAN)
+        .map((t) => t.targetId),
+      ...allocationResult.allocations
         .filter((a) => a.targetType === AllocationTargetType.LOAN)
         .map((a) => a.targetId),
-    )
+    ])
+    const confirmedEAjoIds = new Set([
+      ...submission.targets
+        .filter((t) => t.targetType === AllocationTargetType.EAJO)
+        .map((t) => t.targetId),
+      ...allocationResult.allocations
+        .filter((a) => a.targetType === AllocationTargetType.EAJO)
+        .map((a) => a.targetId),
+    ])
+    const confirmedSavingsIds = new Set([
+      ...submission.targets
+        .filter((t) => t.targetType === AllocationTargetType.SAVINGS)
+        .map((t) => t.targetId),
+      ...allocationResult.allocations
+        .filter((a) => a.targetType === AllocationTargetType.SAVINGS)
+        .map((a) => a.targetId),
+    ])
+
     for (const loanId of confirmedLoanIds) {
       await refreshLoanAfterPayment(tx, loanId, { actorId: confirmedById, valueDate })
     }
     for (const feeAlloc of feeAllocations) {
       await refreshFeeAssessment(tx, feeAlloc.targetId, confirmedById)
+    }
+
+    // 7c. P3-06: Run recalculateLatenessInTx across all touched obligations as of max(lagosToday, valueDate)
+    const recalcAsOf = valueDateStr > lagosToday() ? valueDateStr : lagosToday()
+    for (const loanId of confirmedLoanIds) {
+      await recalculateLatenessInTx(tx, {
+        obligationType: 'LOAN',
+        obligationId: loanId,
+        asOf: recalcAsOf,
+        actorId: confirmedById,
+      })
+    }
+    for (const eajoId of confirmedEAjoIds) {
+      await recalculateLatenessInTx(tx, {
+        obligationType: 'EAJO',
+        obligationId: eajoId,
+        asOf: recalcAsOf,
+        actorId: confirmedById,
+      })
+    }
+    for (const savingsId of confirmedSavingsIds) {
+      await recalculateLatenessInTx(tx, {
+        obligationType: 'SAVINGS',
+        obligationId: savingsId,
+        asOf: recalcAsOf,
+        actorId: confirmedById,
+      })
     }
 
     await recordAuditEvent(
@@ -749,13 +870,40 @@ export async function rejectPaymentSubmission(params: {
     },
   })
 
-  // P3-04: the review shield ends; re-derive the loan's instalment statuses
+  // P3-04 & P3-06: the review shield ends; back-fill any missed penalties/forfeitures and re-derive statuses
   const loanIds = new Set(
     submission.targets.filter((t) => t.targetType === AllocationTargetType.LOAN).map((t) => t.targetId),
   )
-  for (const loanId of loanIds) {
-    await prisma.$transaction((tx) => refreshLoanAfterPayment(tx, loanId, { actorId: reviewerId }))
-  }
+  const eajoIds = new Set(
+    submission.targets.filter((t) => t.targetType === AllocationTargetType.EAJO).map((t) => t.targetId),
+  )
+  const savingsIds = new Set(
+    submission.targets.filter((t) => t.targetType === AllocationTargetType.SAVINGS).map((t) => t.targetId),
+  )
+
+  await prisma.$transaction(async (tx) => {
+    for (const loanId of loanIds) {
+      await recalculateLatenessInTx(tx, {
+        obligationType: 'LOAN',
+        obligationId: loanId,
+        actorId: reviewerId,
+      })
+    }
+    for (const eajoId of eajoIds) {
+      await recalculateLatenessInTx(tx, {
+        obligationType: 'EAJO',
+        obligationId: eajoId,
+        actorId: reviewerId,
+      })
+    }
+    for (const savingsId of savingsIds) {
+      await recalculateLatenessInTx(tx, {
+        obligationType: 'SAVINGS',
+        obligationId: savingsId,
+        actorId: reviewerId,
+      })
+    }
+  })
 
   return updated
 }
@@ -931,7 +1079,7 @@ export async function reversePayment(
     // 3. Reverse Journal Entry
     const origJournal = await tx.journalEntry.findFirst({
       where: {
-        sourceType: 'PAYMENT',
+        sourceType: { in: ['PAYMENT', 'WALLET_APPLICATION'] },
         sourceId: payment.id,
       },
     })
@@ -963,6 +1111,47 @@ export async function reversePayment(
         reversalReason: reversalReason.trim(),
       },
     })
+
+    // 5. P3-06: Re-evaluate lateness, penalty accruals, forfeitures, and statuses on all affected obligations
+    const touchedLoanIds = new Set(
+      payment.allocations
+        .filter((a) => a.targetType === AllocationTargetType.LOAN)
+        .map((a) => a.targetId),
+    )
+    const touchedEAjoIds = new Set(
+      payment.allocations
+        .filter((a) => a.targetType === AllocationTargetType.EAJO)
+        .map((a) => a.targetId),
+    )
+    const touchedSavingsIds = new Set(
+      payment.allocations
+        .filter((a) => a.targetType === AllocationTargetType.SAVINGS)
+        .map((a) => a.targetId),
+    )
+
+    for (const loanId of touchedLoanIds) {
+      await recalculateLatenessInTx(tx, {
+        obligationType: 'LOAN',
+        obligationId: loanId,
+        actorId: reversedById,
+        skipStatusRefresh: true,
+      })
+    }
+    for (const eajoId of touchedEAjoIds) {
+      await recalculateLatenessInTx(tx, {
+        obligationType: 'EAJO',
+        obligationId: eajoId,
+        actorId: reversedById,
+        skipStatusRefresh: true,
+      })
+    }
+    for (const savingsId of touchedSavingsIds) {
+      await recalculateLatenessInTx(tx, {
+        obligationType: 'SAVINGS',
+        obligationId: savingsId,
+        actorId: reversedById,
+      })
+    }
 
     await recordAuditEvent(
       {

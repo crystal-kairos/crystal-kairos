@@ -62,6 +62,7 @@ import {
   type CalculatedAllocation,
 } from '@/lib/services/allocation.service'
 import { recordAuditEvent, AuditAction, AuditOutcome } from '@/lib/services/audit.service'
+import { recalculateLatenessInTx } from '@/lib/services/lateness.service'
 
 /**
  * Loan workflow (guide P3-04; §1.4, §1.9, §2.1, §2.7, §2.9, §2.11, §4.1).
@@ -1400,6 +1401,13 @@ export async function payLoanFromWallet(params: {
     if (!LOAN_REPAYABLE_STATUSES.includes(loan.status)) {
       throw err('INVALID_STATE', 'Only a disbursed, unfinished loan can be repaid.')
     }
+    const today = lagosToday()
+    await recalculateLatenessInTx(tx, {
+      obligationType: 'LOAN',
+      obligationId: loan.id,
+      asOf: today,
+      actorId: params.memberId,
+    })
     const periods = await getLoanAllocationPeriods(tx, { memberId: params.memberId, loanId: loan.id })
     const outstanding = periods.reduce(
       (s, p) => s.plus(p.penaltyDue).plus(p.interestDue).plus(p.principalDue),
@@ -1430,6 +1438,12 @@ export async function payLoanFromWallet(params: {
       sourceRef: { type: 'LOAN', id: loan.id },
     })
     for (const a of allocations) await applyLoanAllocation(tx, a)
+    await recalculateLatenessInTx(tx, {
+      obligationType: 'LOAN',
+      obligationId: loan.id,
+      asOf: valueDate,
+      actorId: params.memberId,
+    })
 
     await recordAuditEvent(
       {
