@@ -32,6 +32,10 @@ session, then the relevant section of the implementation guide.
     the profile check now looks at the member's own `passport-photos` files), and a new **Guarantees** page
     (`/dashboard/<member>/guarantees`, `getMyLoanGuaranteeRequests`) lets a loan guarantor accept, decline
     (incl. revised terms) or withdraw; the dashboard and Loans page show a notice when a request is waiting.
+  - Testing fix `fix/dashboard-wallet-and-savings-wallet-feedback` (from `dev`, not a guide step): the dashboard
+    wallet card now reads the journal wallet (`getUserLedgerBalances` → `getWalletSummary`; returns
+    `availableWallet`/`heldBalance` too) instead of legacy `WALLET_TOPUP`/`WALLET_WITHDRAWAL` transactions, and
+    savings "Apply wallet" shows a "paid from your wallet" message.
 - Everything still to do is in the **Delivery plan** below: Phase 3 (P3-03 … P3-11),
   Phase 4 (P4-01 … P4-07) and Phase 5 (P5-01 … P5-05).
 
@@ -401,6 +405,7 @@ Testing notes:
 - `tests/integration/member-lifecycle.test.ts` › invariant check can fail under a full parallel run: it checks the
   whole DB while `guarantees.test.ts` deliberately holds an ADMIN with savings until its `afterAll` (passes alone).
 - `tests/integration/guarantees.test.ts` flaked once under a full parallel run (passes alone).
+- `tests/integration/rate-policies.test.ts` › loan term rates flaked once under a full parallel run (passes alone).
 - Guarantor/borrower consent evidence (`lib/services/guarantor-evidence.service.ts`): if the Cloudinary upload
   fails, the consent is still recorded with placeholder `mock-cloudinary-…` evidence instead of failing. Needs a
   decision before launch (fail the decision, or retry the upload later); not owned by any wave yet.

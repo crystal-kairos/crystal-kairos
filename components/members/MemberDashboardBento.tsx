@@ -49,7 +49,10 @@ interface Transaction {
 interface MemberDashboardBentoProps {
   userId: string
   memberName: string
+  /** Available journal wallet balance (total minus amounts held for withdrawals). */
   walletBalance: number
+  /** Wallet money held for pending withdrawals (shown only when above zero). */
+  heldBalance?: number
   ajoRecords: AjoRecord[]
   transactions: Transaction[]
   hasBankAccounts: boolean
@@ -60,6 +63,7 @@ export const MemberDashboardBento = ({
   userId,
   memberName,
   walletBalance,
+  heldBalance = 0,
   ajoRecords,
   transactions,
   hasBankAccounts,
@@ -161,19 +165,23 @@ export const MemberDashboardBento = ({
 
       {/* 3. Bento Grid */}
       <div className='grid grid-cols-1 md:grid-cols-12 gap-6'>
-        {/* A. Confirmed Balance Card (col-span-8) */}
+        {/* A. Wallet Balance Card (col-span-8) */}
         <div className='col-span-1 md:col-span-8 bg-surface-container-lowest rounded-lg p-6 border border-outline-variant/15 shadow-[0_4px_12px_rgba(0,0,0,0.03)] relative overflow-hidden group flex flex-col justify-between min-h-50'>
           <div className='absolute inset-0 bg-linear-to-br from-primary/5 to-transparent pointer-events-none' />
           <div className='relative z-10'>
             <div className='flex items-center gap-2 text-muted-foreground'>
               <Wallet className='w-4 h-4 text-outline' />
               <span className='text-[10px] font-bold uppercase tracking-wider'>
-                Confirmed Balance
+                Wallet Balance
               </span>
             </div>
             <h3 className='text-4xl font-extrabold font-mono tracking-tight text-primary mt-3'>
               {formatCurrency(walletBalance)}
             </h3>
+            <p className='text-xs text-muted-foreground mt-1'>
+              Available to use
+              {heldBalance > 0 ? ` · ${formatCurrency(heldBalance)} held for a withdrawal` : ''}
+            </p>
           </div>
 
           <div className='relative z-10 flex flex-wrap gap-3 mt-6'>

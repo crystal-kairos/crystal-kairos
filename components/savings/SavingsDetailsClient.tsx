@@ -3,6 +3,7 @@
 import React, { useMemo, useState, useTransition } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
+import { toast } from 'sonner'
 import {
   AlertCircle,
   AlertTriangle,
@@ -120,6 +121,11 @@ export const SavingsDetailsClient = ({ userId, savingsPlan: plan, canAct, backHr
       if (res.success) {
         setWalletPayOpen(false)
         setWalletAmount('')
+        toast.success(
+          res.data && res.data.totalSpent > 0
+            ? `${naira(res.data.totalSpent)} paid from your wallet.`
+            : 'Nothing was due, so no wallet money was used.',
+        )
         router.refresh()
       } else {
         setActionError(res.error ?? 'Could not pay from wallet.')

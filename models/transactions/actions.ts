@@ -19,6 +19,7 @@ import {
 import { AppError } from '@/lib/errors/app-error'
 import { toActionErrorResult } from '@/lib/errors/to-action-result'
 import { validateAmount } from '@/lib/validation/money'
+import { getWalletSummary } from '@/lib/services/wallet.service'
 import { lockMembers } from '@/lib/db/concurrency'
 import {
   generateAndPersistLoanSchedule,
@@ -583,7 +584,10 @@ export const getUserLedgerBalances = async (userId: string) => {
       },
     })
 
-    let ledgerBalance = new Prisma.Decimal(0)
+    // The member wallet lives in the double-entry journal (P2-03/P3-06), not in legacy
+    // WALLET_TOPUP/WALLET_WITHDRAWAL transactions, which are no longer written.
+    const wallet = await getWalletSummary(userId)
+
     let totalAjoContributed = new Prisma.Decimal(0)
     let totalSavingsDeposited = new Prisma.Decimal(0)
     let totalSavingsWithdrawn = new Prisma.Decimal(0)
@@ -591,14 +595,7 @@ export const getUserLedgerBalances = async (userId: string) => {
     let totalLoansRepaid = new Prisma.Decimal(0)
 
     for (const tx of txs) {
-      // Base ledger balance includes general WALLET transactions
-      if (tx.category === TransactionCategory.WALLET_TOPUP) {
-        ledgerBalance = ledgerBalance.plus(tx.amount)
-      } else if (tx.category === TransactionCategory.WALLET_WITHDRAWAL) {
-        ledgerBalance = ledgerBalance.minus(tx.amount)
-      }
-
-      // Sub-ledgers breakdown
+      // Sub-ledgers breakdown (legacy transactions)
       if (tx.category === TransactionCategory.AJO_CONTRIBUTION) {
         totalAjoContributed = totalAjoContributed.plus(tx.amount)
       } else if (tx.category === TransactionCategory.SAVINGS_DEPOSIT) {
@@ -615,7 +612,11 @@ export const getUserLedgerBalances = async (userId: string) => {
     return {
       success: true,
       data: {
-        generalWalletBalance: ledgerBalance.toNumber(),
+        /** Total journal wallet balance, including amounts held for withdrawals. */
+        generalWalletBalance: wallet.totalBalance.toNumber(),
+        /** Wallet money the member can use now (total minus holds). */
+        availableWallet: wallet.availableBalance.toNumber(),
+        heldBalance: wallet.heldBalance.toNumber(),
         subLedgers: {
           ajo: {
             totalContributed: totalAjoContributed.toNumber(),
