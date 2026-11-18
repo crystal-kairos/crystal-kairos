@@ -68,6 +68,8 @@ const UserPage = async ({ params }: PageProps) => {
   
   const defaultBalances = {
     generalWalletBalance: 0,
+    availableWallet: 0,
+    heldBalance: 0,
     subLedgers: {
       ajo: { totalContributed: 0 },
       savings: { totalDeposited: 0, totalWithdrawn: 0, currentSavingsBalance: 0 },
@@ -101,7 +103,8 @@ const UserPage = async ({ params }: PageProps) => {
       <MemberDashboardBento
         userId={profileId}
         memberName={member.name}
-        walletBalance={balances.generalWalletBalance}
+        walletBalance={balances.availableWallet}
+        heldBalance={balances.heldBalance}
         ajoRecords={ajoRecords}
         transactions={transactions}
         hasBankAccounts={(member.bankAccounts || []).length > 0}
